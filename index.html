@@ -61,12 +61,12 @@
         </p>
 
         <!-- Quick Mode & Menu Navigation Tabs -->
-        <div class="lobby-nav-pills">
+        <div class="lobby-nav-pills primary-mode-pills">
           <button id="btn-mode-solo" class="nav-pill active-pill" type="button">
             🤖 PLAY SOLO
           </button>
           <button id="btn-mode-online" class="nav-pill" type="button">
-            🌐 PLAY ONLINE
+            🌐 MULTIPLAYER
           </button>
           <button id="btn-open-locker" class="nav-pill" type="button">
             🎨 LOCKER
@@ -176,43 +176,11 @@
             </div>
           </div>
 
-          <div class="form-row">
-            <div class="form-group">
-              <label for="lobby-mode">Session Mode</label>
-              <select id="lobby-mode">
-                <option value="solo_bots" selected>Solo Battle Royale (+AI Bots)</option>
-                <option value="online">Online Multiplayer Room Sync (+AI Fill)</option>
-              </select>
-            </div>
-
-            <div class="form-group">
-              <label for="lobby-room-code">Multiplayer Room Code</label>
-              <div class="room-code-input-row">
-                <input
-                  type="text"
-                  id="lobby-room-code"
-                  value="CICRAFT-1"
-                  maxlength="14"
-                  placeholder="CICRAFT-1"
-                />
-                <button
-                  id="btn-generate-room-code"
-                  class="copy-code-btn"
-                  type="button"
-                  title="Generate New Private Room Code"
-                >
-                  🎲 NEW
-                </button>
-                <button
-                  id="btn-copy-room-code"
-                  class="copy-code-btn"
-                  type="button"
-                  title="Copy Room Code"
-                >
-                  📋 COPY
-                </button>
-              </div>
-            </div>
+          <div class="form-group checkbox-group deployment-preference">
+            <label>
+              <input type="checkbox" id="lobby-skydrop" checked />
+              <span>Start matches with Sky-Drop Glider Deployment</span>
+            </label>
           </div>
 
           <!-- Multiplayer Room Status & Player Count Bar -->
@@ -225,6 +193,395 @@
             </span>
           </div>
 
+          <!-- Multiplayer Lobby Browser 3.0. All cards and counts below are
+               rendered only from authoritative server lobby messages. -->
+          <section
+            id="multiplayer-browser"
+            class="multiplayer-browser hidden"
+            aria-label="Multiplayer lobby browser"
+          >
+            <div class="lobby-browser-hero">
+              <div>
+                <span class="lobby-browser-eyebrow">CI ISLAND • LIVE MULTIPLAYER</span>
+                <h2>Choose your lobby</h2>
+                <p>Browse real server rooms, create your own match, or ready up with your squad.</p>
+              </div>
+              <div class="lobby-browser-hero-actions">
+                <span id="lobby-ping-label">📶 Ping: measuring…</span>
+                <button id="btn-refresh-lobbies" class="lobby-secondary-btn" type="button">
+                  ↻ REFRESH
+                </button>
+                <button id="btn-browser-create" class="lobby-create-shortcut-btn" type="button">
+                  ＋ CREATE LOBBY
+                </button>
+              </div>
+            </div>
+
+            <div class="lobby-browser-tabs" role="tablist" aria-label="Multiplayer lobby views">
+              <button
+                class="lobby-browser-tab active"
+                type="button"
+                role="tab"
+                aria-selected="true"
+                data-lobby-tab="browse"
+              >
+                BROWSE LOBBIES
+              </button>
+              <button
+                class="lobby-browser-tab"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                data-lobby-tab="create"
+              >
+                CREATE LOBBY
+              </button>
+              <button
+                class="lobby-browser-tab"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                data-lobby-tab="mine"
+              >
+                MY LOBBY
+              </button>
+            </div>
+
+            <div id="lobby-browser-message" class="lobby-browser-message hidden" aria-live="polite"></div>
+
+            <div id="lobby-tab-browse" class="lobby-browser-panel">
+              <div class="lobby-directory-meta">
+                <span id="lobby-directory-status" class="lobby-directory-status connecting">
+                  ⏳ Connecting to the live lobby server…
+                </span>
+                <span id="lobby-results-count">0 live lobbies</span>
+              </div>
+
+              <div class="lobby-search-wrap">
+                <label class="sr-only" for="lobby-search-input">
+                  Search by lobby name, room ID or host
+                </label>
+                <input
+                  id="lobby-search-input"
+                  type="search"
+                  placeholder="🔎 Search lobby name, room ID or host…"
+                  autocomplete="off"
+                />
+              </div>
+
+              <label class="human-only-filter" for="lobby-filter-human-only">
+                <input id="lobby-filter-human-only" type="checkbox" />
+                <span>
+                  <strong>👥 HUMAN PLAYERS ONLY — NO BOTS</strong>
+                  <small>Show only server-verified zero-bot lobbies</small>
+                </span>
+              </label>
+
+              <div class="lobby-filter-grid">
+                <div class="form-group">
+                  <label for="lobby-filter-visibility">Visibility</label>
+                  <select id="lobby-filter-visibility">
+                    <option value="all" selected>Public + Private</option>
+                    <option value="public">Public only</option>
+                    <option value="private">Private / locked</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="lobby-filter-match-type">Game Mode</label>
+                  <select id="lobby-filter-match-type">
+                    <option value="all" selected>All Battle Royale modes</option>
+                    <option value="human_only">Human Players Only — No Bots</option>
+                    <option value="ai_fill">AI Fill Battle Royale</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="lobby-filter-format">Format</label>
+                  <select id="lobby-filter-format">
+                    <option value="all" selected>Solo + Duo + Squad</option>
+                    <option value="solo">Solo</option>
+                    <option value="duo">Duo</option>
+                    <option value="squad">Squad</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="lobby-filter-slots">Available Slots</label>
+                  <select id="lobby-filter-slots">
+                    <option value="all" selected>Any slots</option>
+                    <option value="open">Has open slots</option>
+                    <option value="four_plus">4+ open slots</option>
+                    <option value="eight_plus">8+ open slots</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="lobby-filter-status">Status</label>
+                  <select id="lobby-filter-status">
+                    <option value="all" selected>All statuses</option>
+                    <option value="waiting">Waiting</option>
+                    <option value="starting">Starting</option>
+                    <option value="in_game">In game</option>
+                    <option value="full">Full</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="lobby-filter-map">Map</label>
+                  <select id="lobby-filter-map">
+                    <option value="all" selected>All maps</option>
+                    <option value="ci_island">CI Island</option>
+                  </select>
+                </div>
+                <div class="form-group lobby-sort-group">
+                  <label for="lobby-sort-select">Sort Lobbies</label>
+                  <select id="lobby-sort-select">
+                    <option value="most_players" selected>Most players</option>
+                    <option value="fewest_players">Fewest players</option>
+                    <option value="lowest_ping">Lowest ping</option>
+                    <option value="newest">Newest</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="join-by-code-card">
+                <div class="join-by-code-copy">
+                  <strong>Join by Room ID</strong>
+                  <span>Have an invite code? Join an existing lobby directly.</span>
+                </div>
+                <div class="join-by-code-row">
+                  <input
+                    id="lobby-join-code"
+                    type="text"
+                    placeholder="ROOM ID (e.g. HPLAY-AB12)"
+                    maxlength="14"
+                    autocomplete="off"
+                  />
+                  <input
+                    id="lobby-join-password"
+                    type="password"
+                    placeholder="Password (if locked)"
+                    autocomplete="off"
+                  />
+                  <button id="btn-join-by-code" class="lobby-join-btn" type="button">
+                    JOIN ROOM
+                  </button>
+                </div>
+              </div>
+
+              <div id="lobby-card-list" class="lobby-card-list" aria-live="polite"></div>
+              <div id="lobby-empty-state" class="lobby-empty-state">
+                <div class="lobby-empty-icon">🏝️</div>
+                <h3>No lobbies available right now</h3>
+                <p>Create a lobby and be the first Commander on CI Island.</p>
+                <button id="btn-empty-create-lobby" class="lobby-create-shortcut-btn" type="button">
+                  ＋ CREATE A LOBBY
+                </button>
+              </div>
+            </div>
+
+            <div id="lobby-tab-create" class="lobby-browser-panel hidden">
+              <div class="create-lobby-intro">
+                <h3>Create your match</h3>
+                <p>
+                  The server validates every setting, generates your unique Room ID,
+                  and publishes public lobbies instantly.
+                </p>
+              </div>
+
+              <div class="create-lobby-grid">
+                <div class="form-group create-name-group">
+                  <label for="create-lobby-name">Lobby Name</label>
+                  <input
+                    id="create-lobby-name"
+                    type="text"
+                    maxlength="32"
+                    placeholder="Commander's Lobby"
+                    autocomplete="off"
+                  />
+                </div>
+
+                <div class="form-group">
+                  <label for="create-lobby-visibility">Lobby Type</label>
+                  <select id="create-lobby-visibility">
+                    <option value="public" selected>🌐 Public — anyone can join</option>
+                    <option value="private">🔒 Private — invite or password</option>
+                  </select>
+                </div>
+
+                <div class="form-group">
+                  <label for="create-lobby-fill">Players</label>
+                  <select id="create-lobby-fill">
+                    <option value="human" selected>👥 Human Players Only — No Bots</option>
+                    <option value="ai">🤖 AI Bots Enabled (AI Fill)</option>
+                  </select>
+                </div>
+
+                <div class="form-group">
+                  <label for="create-lobby-max">Maximum Players</label>
+                  <select id="create-lobby-max">
+                    <option value="2">2 players</option>
+                    <option value="4">4 players</option>
+                    <option value="8">8 players</option>
+                    <option value="16">16 players</option>
+                    <option value="20" selected>20 players</option>
+                  </select>
+                </div>
+
+                <div class="form-group">
+                  <label for="create-lobby-map">Map</label>
+                  <select id="create-lobby-map">
+                    <option value="ci_island" selected>🏝️ CI Island — Expanded Battle Royale</option>
+                  </select>
+                </div>
+
+                <div class="form-group">
+                  <label for="create-lobby-format">Game Format</label>
+                  <select id="create-lobby-format">
+                    <option value="solo" selected>Solo</option>
+                    <option value="duo">Duo</option>
+                    <option value="squad">Squad</option>
+                  </select>
+                </div>
+
+                <div class="form-group">
+                  <label for="create-lobby-start">Match Start</label>
+                  <select id="create-lobby-start">
+                    <option value="all_ready" selected>Auto-start when everyone is ready</option>
+                    <option value="host_start">Host starts when everyone is ready</option>
+                    <option value="fill_lobby">Start only when lobby is full + ready</option>
+                  </select>
+                </div>
+              </div>
+
+              <div id="create-lobby-human-note" class="create-mode-note human">
+                <strong>🚫🤖 HUMAN PLAYERS ONLY — NO BOTS</strong>
+                <span>
+                  AI is locked to 0 by the server. Duo and Squad use server team
+                  assignments, friendly-fire protection, and team victory.
+                </span>
+              </div>
+
+              <div id="create-lobby-ai-note" class="create-mode-note ai hidden">
+                <strong>🤖 AI FILL ENABLED</strong>
+                <span>
+                  Human and AI counts are always shown separately. AI Fill uses
+                  Solo format so bot counts are never presented as humans.
+                </span>
+              </div>
+
+              <div id="create-lobby-bot-row" class="create-lobby-grid hidden">
+                <div class="form-group">
+                  <label for="create-lobby-bot-count">AI Bot Count</label>
+                  <select id="create-lobby-bot-count">
+                    <option value="0">0 AI bots</option>
+                    <option value="5">5 AI bots</option>
+                    <option value="9">9 AI bots</option>
+                    <option value="14" selected>14 AI bots</option>
+                    <option value="19">19 AI bots</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="create-lobby-bot-difficulty">AI Difficulty</label>
+                  <select id="create-lobby-bot-difficulty">
+                    <option value="easy">Recruit (Easy)</option>
+                    <option value="medium" selected>Veteran (Medium)</option>
+                    <option value="hard">Champion (Hard)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div id="create-lobby-password-row" class="form-group hidden">
+                <label for="create-lobby-password">Private Lobby Password <span>(optional)</span></label>
+                <input
+                  id="create-lobby-password"
+                  type="password"
+                  minlength="4"
+                  maxlength="32"
+                  placeholder="Leave blank for an unlisted invite-only lobby"
+                  autocomplete="new-password"
+                />
+                <small class="field-help">
+                  With a password, the lobby appears as locked in Browse. Without one,
+                  it stays unlisted and can be joined only by Room ID or invite link.
+                </small>
+              </div>
+
+              <button id="btn-create-lobby-submit" class="create-lobby-submit-btn" type="button">
+                🏠 CREATE LOBBY
+              </button>
+              <p class="create-lobby-footnote">
+                You become host. Share the Room ID or invite link from My Lobby.
+              </p>
+            </div>
+
+            <div id="lobby-tab-mine" class="lobby-browser-panel hidden">
+              <div id="my-lobby-empty" class="my-lobby-empty">
+                <div class="lobby-empty-icon">🎮</div>
+                <h3>You are not in a lobby</h3>
+                <p>Join a live lobby or create your own CI Island match.</p>
+                <div class="my-lobby-empty-actions">
+                  <button id="btn-my-empty-browse" class="lobby-secondary-btn" type="button">
+                    BROWSE LOBBIES
+                  </button>
+                  <button id="btn-my-empty-create" class="lobby-create-shortcut-btn" type="button">
+                    CREATE LOBBY
+                  </button>
+                </div>
+              </div>
+
+              <div id="my-lobby-content" class="hidden">
+                <div class="my-lobby-header">
+                  <span>MY CURRENT LOBBY</span>
+                  <h3 id="my-lobby-title">CI Island Lobby</h3>
+                  <p id="my-lobby-status" class="my-lobby-status">Waiting for players…</p>
+                </div>
+
+                <div id="my-lobby-stats" class="my-lobby-stats"></div>
+
+                <div class="my-lobby-invite-grid">
+                  <div class="form-group">
+                    <label for="my-lobby-code">Room ID / Lobby Code</label>
+                    <div class="copy-input-row">
+                      <input id="my-lobby-code" type="text" readonly />
+                      <button id="btn-copy-my-lobby-code" class="lobby-secondary-btn compact" type="button">
+                        COPY
+                      </button>
+                    </div>
+                  </div>
+                  <div class="form-group">
+                    <label for="my-lobby-invite">Invite Link</label>
+                    <div class="copy-input-row">
+                      <input id="my-lobby-invite" type="text" readonly />
+                      <button id="btn-copy-my-lobby-invite" class="lobby-secondary-btn compact" type="button">
+                        COPY LINK
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="my-lobby-roster-header">
+                  <strong>PLAYERS IN LOBBY</strong>
+                  <span>Server-verified humans • Bots listed separately above</span>
+                </div>
+                <div id="my-lobby-roster" class="my-lobby-roster" aria-live="polite"></div>
+
+                <div class="my-lobby-actions">
+                  <button id="btn-my-lobby-ready" class="my-lobby-ready-btn" type="button">
+                    READY UP
+                  </button>
+                  <button id="btn-my-lobby-start" class="my-lobby-start-btn hidden" type="button">
+                    ▶ START MATCH
+                  </button>
+                  <button id="btn-my-lobby-close" class="my-lobby-danger-btn hidden" type="button">
+                    CLOSE LOBBY
+                  </button>
+                  <button id="btn-my-lobby-leave" class="my-lobby-danger-btn" type="button">
+                    🚪 LEAVE LOBBY
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+
+          <section id="solo-session-controls" class="solo-session-controls" aria-label="Solo battle royale settings">
           <div class="form-row">
             <div class="form-group">
               <label for="lobby-bot-count">AI Combatants</label>
@@ -245,21 +602,16 @@
             </div>
           </div>
 
-          <div class="form-group checkbox-group">
-            <label>
-              <input type="checkbox" id="lobby-skydrop" checked />
-              <span>Start Match with Sky-Drop Glider Deployment</span>
-            </label>
-          </div>
-
           <div class="lobby-actions-row">
             <button id="btn-launch-match" class="primary-launch-btn">
               🚀 DROP INTO ISLAND
             </button>
-            <button id="btn-open-settings-lobby" class="secondary-action-btn" title="Settings">
-              ⚙️ SETTINGS
-            </button>
           </div>
+          </section>
+
+          <button id="btn-open-settings-lobby" class="secondary-action-btn global-settings-btn" title="Settings">
+            ⚙️ SETTINGS
+          </button>
         </div>
 
         <div class="controls-guide">
@@ -378,7 +730,7 @@
           </div>
         </div>
         <div id="hud-pickup-prompt" class="pickup-prompt hidden">
-          Press <kbd>F</kbd> to Pick Up
+          Press <kbd>F</kbd> / Tap <strong>LOOT</strong> to Pick Up
         </div>
         <div id="hud-loot-toast" class="loot-toast hidden"></div>
       </div>
@@ -438,35 +790,35 @@
         </div>
 
         <div class="hotbar-row">
-          <div id="hotbar-slot-0" class="hotbar-slot">
+          <div id="hotbar-slot-0" class="hotbar-slot" data-touch-slot="0" role="button" aria-label="Select weapon slot 1">
             <span class="slot-key">1</span>
             <span class="slot-icon">⛏️</span>
             <span class="slot-name">Harvester</span>
             <span class="slot-ammo">MELEE</span>
             <div class="slot-rarity-bar"></div>
           </div>
-          <div id="hotbar-slot-1" class="hotbar-slot active">
+          <div id="hotbar-slot-1" class="hotbar-slot active" data-touch-slot="1" role="button" aria-label="Select weapon slot 2">
             <span class="slot-key">2</span>
             <span class="slot-icon">🎯</span>
             <span class="slot-name">Pulse Rifle</span>
             <span class="slot-ammo">30/30</span>
             <div class="slot-rarity-bar"></div>
           </div>
-          <div id="hotbar-slot-2" class="hotbar-slot">
+          <div id="hotbar-slot-2" class="hotbar-slot" data-touch-slot="2" role="button" aria-label="Select weapon slot 3">
             <span class="slot-key">3</span>
             <span class="slot-icon">🔫</span>
             <span class="slot-name">Cyber Pistol</span>
             <span class="slot-ammo">15/15</span>
             <div class="slot-rarity-bar"></div>
           </div>
-          <div id="hotbar-slot-3" class="hotbar-slot">
+          <div id="hotbar-slot-3" class="hotbar-slot" data-touch-slot="3" role="button" aria-label="Select weapon slot 4">
             <span class="slot-key">4</span>
             <span class="slot-icon">·</span>
             <span class="slot-name">Empty</span>
             <span class="slot-ammo"></span>
             <div class="slot-rarity-bar"></div>
           </div>
-          <div id="hotbar-slot-4" class="hotbar-slot">
+          <div id="hotbar-slot-4" class="hotbar-slot" data-touch-slot="4" role="button" aria-label="Select weapon slot 5">
             <span class="slot-key">5</span>
             <span class="slot-icon">·</span>
             <span class="slot-name">Empty</span>
@@ -478,18 +830,57 @@
 
       <!-- Mobile / Touch Virtual Controls -->
       <div id="mobile-touch-controls" class="mobile-controls">
-        <div id="touch-joystick-zone" class="joystick-zone">
+        <div
+          id="touch-look-surface"
+          class="touch-look-surface"
+          aria-label="Drag to look around"
+        >
+          <span class="touch-look-hint">DRAG TO LOOK</span>
+        </div>
+
+        <div
+          id="touch-joystick-zone"
+          class="joystick-zone"
+          role="application"
+          aria-label="Virtual movement joystick. Push to the outer ring to sprint."
+        >
           <div id="touch-joystick-knob" class="joystick-knob"></div>
         </div>
-        <div class="touch-action-buttons">
-          <button id="touch-fire-btn" class="touch-btn fire">FIRE</button>
-          <button id="touch-aim-btn" class="touch-btn">ADS</button>
-          <button id="touch-jump-btn" class="touch-btn">JUMP</button>
-          <button id="touch-loot-btn" class="touch-btn">LOOT</button>
-          <button id="touch-wall-btn" class="touch-btn">WALL</button>
-          <button id="touch-ramp-btn" class="touch-btn">RAMP</button>
-          <button id="touch-floor-btn" class="touch-btn">FLOOR</button>
-          <button id="touch-roof-btn" class="touch-btn">ROOF</button>
+
+        <div class="touch-action-buttons" aria-label="Touch action controls">
+          <button id="touch-fire-btn" class="touch-btn fire" type="button" aria-label="Fire or place selected build piece">
+            🔥 FIRE
+          </button>
+          <button id="touch-aim-btn" class="touch-btn" type="button" aria-label="Toggle aim down sights">
+            🎯 ADS
+          </button>
+          <button id="touch-jump-btn" class="touch-btn" type="button" aria-label="Jump or glide">
+            ⤴️ JUMP
+          </button>
+          <button id="touch-loot-btn" class="touch-btn" type="button" aria-label="Interact or collect loot">
+            ✋ LOOT
+          </button>
+          <button id="touch-reload-btn" class="touch-btn" type="button" aria-label="Reload weapon">
+            ↻ LOAD
+          </button>
+          <button id="touch-weapon-btn" class="touch-btn" type="button" aria-label="Switch weapon">
+            🔫 SWAP
+          </button>
+          <button id="touch-material-btn" class="touch-btn" type="button" aria-label="Cycle building material">
+            🧱 MAT
+          </button>
+          <button id="touch-wall-btn" class="touch-btn build" type="button" aria-label="Select wall build preview">
+            WALL
+          </button>
+          <button id="touch-ramp-btn" class="touch-btn build" type="button" aria-label="Select ramp build preview">
+            RAMP
+          </button>
+          <button id="touch-floor-btn" class="touch-btn build" type="button" aria-label="Select floor build preview">
+            FLOOR
+          </button>
+          <button id="touch-roof-btn" class="touch-btn build" type="button" aria-label="Select roof build preview">
+            ROOF
+          </button>
         </div>
       </div>
     </div>
@@ -645,7 +1036,9 @@
               <strong>Jump/Glide:</strong> <kbd>Space</kbd> • <strong>Loot/Chest:</strong>
               <kbd>F</kbd> • <strong>Reload:</strong> <kbd>R</kbd> • <strong>Mute:</strong>
               <kbd>M</kbd> • <strong>Switch Material:</strong> <kbd>G</kbd>. On mobile/tablet,
-              use the on-screen virtual joystick and touch action buttons.
+              move with the bottom-left joystick (push to the gold outer ring to sprint),
+              drag the right side of the screen to look, and use the FIRE, ADS, JUMP,
+              LOOT, LOAD, SWAP, MAT, and build buttons or tap a weapon hotbar slot.
             </p>
           </div>
         </div>
@@ -668,6 +1061,20 @@
             <input
               type="range"
               id="setting-sensitivity"
+              min="0.3"
+              max="2.5"
+              step="0.1"
+              value="1.0"
+            />
+          </div>
+
+          <div class="form-group">
+            <label for="setting-touch-sensitivity">
+              Touch Camera Sensitivity: <span id="val-touch-sensitivity">1.0x</span>
+            </label>
+            <input
+              type="range"
+              id="setting-touch-sensitivity"
               min="0.3"
               max="2.5"
               step="0.1"

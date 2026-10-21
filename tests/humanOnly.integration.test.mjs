@@ -1,0 +1,1061 @@
+/**
+ * CI Craft — Human-only multiplayer integration tests.
+ *
+ * Boots the production authoritative server with a temporary SQLite account
+ * database and verifies the server-owned human-only lobby contract:
+ * authenticated real sessions only, zero bot injection, server-derived
+ * connected/ready counts, a two-human ready gate, disconnect/reconnect
+ * de-duplication, explicit leave, late-join rejection, token-free room
+ * snapshots, public matchmaking, human-only victory, capacity, and mode
+ * preservation across a process restart (via the reserved room-code prefix).
+ */
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+async function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.once('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
+  });
+}
+
+function waitForMessage(ws, predicate, timeoutMs = 6000, label = 'WebSocket message') {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      ws.removeEventListener('message', onMessage);
+      reject(new Error(`Timed out waiting for ${label}`));
+    }, timeoutMs);
+    function onMessage(event) {
+      let msg;
+      try {
+        msg = JSON.parse(String(event.data));
+      } catch {
+        return;
+      }
+      if (predicate(msg)) {
+        clearTimeout(timer);
+        ws.removeEventListener('message', onMessage);
+        resolve(msg);
+      }
+    }
+    ws.addEventListener('message', onMessage);
+  });
+}
+
+function waitForRoomState(ws, predicate, timeoutMs = 6000) {
+  return waitForMessage(
+    ws,
+    (msg) => msg.type === 'room_state' && predicate(msg),
+    timeoutMs,
+    'matching room_state'
+  );
+}
+
+async function connectClient(port) {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+  await new Promise((resolve, reject) => {
+    ws.addEventListener('open', resolve, { once: true });
+    ws.addEventListener('error', reject, { once: true });
+  });
+  return ws;
+}
+
+function sendJson(ws, payload) {
+  ws.send(JSON.stringify(payload));
+}
+
+async function postJson(base, route, payload = {}) {
+  const res = await fetch(`${base}${route}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json();
+  return { res, data };
+}
+
+async function createAccount(base, callsign) {
+  const { res, data } = await postJson(base, '/api/account/init', { callsign });
+  assert.equal(res.status, 200);
+  assert.equal(data.ok, true);
+  assert.ok(data.accountId && data.accountToken && data.passkey);
+  return data;
+}
+
+async function startServer({ port, sqlitePath }) {
+  const child = spawn(process.execPath, ['server/multiplayerServer.mjs'], {
+    cwd: ROOT_DIR,
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      HOST: '127.0.0.1',
+      PORT: String(port),
+      DATABASE_URL: '',
+      SQLITE_DB_PATH: sqlitePath,
+      ACCOUNT_TOKEN_SECRET: 'human-only-integration-secret-0123456789abcdef',
+      HUMAN_MATCH_COUNTDOWN_MS: '250',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  let serverLog = '';
+  child.stdout.on('data', (d) => (serverLog += d));
+  child.stderr.on('data', (d) => (serverLog += d));
+
+  const base = `http://127.0.0.1:${port}`;
+  let health = null;
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${base}/health`);
+      if (res.ok) {
+        health = await res.json();
+        break;
+      }
+    } catch {
+      // Server is still starting / migrating.
+    }
+    await new Promise((r) => setTimeout(r, 125));
+  }
+  assert.ok(health, `server did not become healthy. Log:\n${serverLog}`);
+  assert.equal(health.status, 'ok');
+  assert.match(serverLog, new RegExp(`listening on 127\\.0\\.0\\.1:${port}`));
+
+  let stopped = false;
+  const stop = async () => {
+    if (stopped || child.exitCode !== null) {
+      stopped = true;
+      return;
+    }
+    stopped = true;
+    const exited = new Promise((resolve) => child.once('exit', resolve));
+    child.kill('SIGTERM');
+    let exitTimer;
+    const exitCode = await Promise.race([
+      exited,
+      new Promise((resolve) => {
+        exitTimer = setTimeout(() => resolve('timeout'), 8000);
+      }),
+    ]);
+    clearTimeout(exitTimer);
+    if (exitCode === 'timeout') {
+      child.kill('SIGKILL');
+      assert.fail(`server did not exit on SIGTERM. Log:\n${serverLog}`);
+    }
+    assert.equal(exitCode, 0);
+  };
+
+  return { child, base, stop, getLog: () => serverLog };
+}
+
+function joinPayload({ roomCode, roomMode, sessionToken, account, playerName, position }) {
+  return {
+    type: 'join_room',
+    roomCode,
+    roomMode,
+    mode: roomMode,
+    purpose: 'lobby',
+    sessionToken,
+    accountId: account?.accountId,
+    accountToken: account?.accountToken,
+    playerName,
+    position: position || { x: 0, y: 10, z: 0 },
+  };
+}
+
+async function joinHumanRoom(ws, payload) {
+  const joined = waitForMessage(
+    ws,
+    (msg) => msg.type === 'room_joined' && msg.roomCode === payload.roomCode,
+    6000,
+    `room_joined for ${payload.roomCode}`
+  );
+  sendJson(ws, payload);
+  return joined;
+}
+
+function assertNoSecrets(serialized, secrets, label) {
+  for (const secret of secrets) {
+    if (secret) assert.doesNotMatch(serialized, new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), label);
+  }
+  assert.doesNotMatch(serialized, /accountToken|sessionToken|passkey|token_hash/i, label);
+}
+
+test('human-only rooms: authenticated lobby, ready gate, reconnect dedupe, zero bots, and victory', async () => {
+  const port = await getFreePort();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cicraft-human-test-'));
+  const server = await startServer({
+    port,
+    sqlitePath: path.join(tmpDir, 'cicraft.sqlite'),
+  });
+  const sockets = [];
+
+  try {
+    const accountA = await createAccount(server.base, 'Human_Alpha');
+    const accountB = await createAccount(server.base, 'Human_Bravo');
+    const accountC = await createAccount(server.base, 'Human_Charlie');
+    const accountD = await createAccount(server.base, 'Human_Delta');
+
+    // Mode validation is server-side at room creation.
+    const invalidMode = await postJson(server.base, '/api/room/create', {
+      roomMode: 'bots_disguised_as_humans',
+    });
+    assert.equal(invalidMode.res.status, 400);
+    assert.equal(invalidMode.data.ok, false);
+
+    const legacyRoom = await postJson(server.base, '/api/room/create', {
+      roomMode: 'online_ai_fill',
+    });
+    assert.equal(legacyRoom.res.status, 200);
+    assert.match(legacyRoom.data.roomCode, /^CI-[A-Z0-9]{4}$/);
+    assert.equal(legacyRoom.data.mode, 'online_ai_fill');
+
+    const privateRoom = await postJson(server.base, '/api/room/create', {
+      roomMode: 'human_only_private',
+    });
+    assert.equal(privateRoom.res.status, 200);
+    assert.match(privateRoom.data.roomCode, /^HUM-[A-Z0-9]{4}$/);
+    assert.equal(privateRoom.data.mode, 'human_only_private');
+    assert.equal(privateRoom.data.humanOnly, true);
+    assert.equal(privateRoom.data.aiFillEnabled, false);
+    assert.equal(privateRoom.data.botCount, 0);
+    assert.equal(privateRoom.data.minPlayers, 2);
+    assert.equal(privateRoom.data.maxPlayers, 20);
+    assert.equal(privateRoom.data.phase, 'lobby');
+    assert.doesNotMatch(JSON.stringify(privateRoom.data), /accountToken|sessionToken|passkey/i);
+
+    const roomCode = privateRoom.data.roomCode;
+
+    // Claiming to be human is not authentication. Forged/missing credentials
+    // and attempts to use a human session against a legacy room are rejected.
+    const unauthenticatedWs = await connectClient(port);
+    sockets.push(unauthenticatedWs);
+    let rejected = waitForMessage(
+      unauthenticatedWs,
+      (msg) => msg.type === 'join_rejected',
+      6000,
+      'unauthenticated join rejection'
+    );
+    sendJson(unauthenticatedWs, {
+      type: 'join_room',
+      roomCode,
+      roomMode: 'human_only_private',
+      sessionToken: 'sess_claimed_bot_human',
+      playerName: 'Definitely_Human_Bot',
+      participantType: 'human',
+      isBot: false,
+      isAuthenticated: true,
+      connectedHumans: 20,
+      readyHumans: 20,
+      position: { x: 0, y: 10, z: 0 },
+    });
+    assert.equal((await rejected).code, 'authentication_required');
+
+    rejected = waitForMessage(
+      unauthenticatedWs,
+      (msg) => msg.type === 'join_rejected',
+      6000,
+      'forged credential join rejection'
+    );
+    sendJson(unauthenticatedWs, {
+      type: 'join_room',
+      roomCode,
+      roomMode: 'human_only_private',
+      sessionToken: 'sess_forged_human',
+      accountId: accountA.accountId,
+      accountToken: `${accountA.accountId}.forgednonce.forgedsig`,
+      playerName: 'Forged_Human',
+      isAuthenticated: true,
+      position: { x: 0, y: 10, z: 0 },
+    });
+    assert.equal((await rejected).code, 'authentication_required');
+
+    rejected = waitForMessage(
+      unauthenticatedWs,
+      (msg) => msg.type === 'join_rejected',
+      6000,
+      'room mode mismatch rejection'
+    );
+    sendJson(
+      unauthenticatedWs,
+      joinPayload({
+        roomCode: legacyRoom.data.roomCode,
+        roomMode: 'human_only_private',
+        sessionToken: 'sess_mode_mismatch',
+        account: accountA,
+        playerName: 'Human_Alpha',
+      })
+    );
+    assert.equal((await rejected).code, 'room_mode_mismatch');
+    unauthenticatedWs.close();
+
+    // One authenticated human joins. Every client-supplied count/bot claim is
+    // ignored: the server reports its own one-human, zero-bot roster.
+    const wsA = await connectClient(port);
+    sockets.push(wsA);
+    const joinedA = await joinHumanRoom(wsA, {
+      ...joinPayload({
+        roomCode,
+        roomMode: 'human_only_private',
+        sessionToken: 'sess_human_alpha',
+        account: accountA,
+        playerName: 'Human_Alpha',
+        position: { x: 0, y: 10, z: 0 },
+      }),
+      botCount: 19,
+      aiFillEnabled: true,
+      connectedHumans: 20,
+      readyHumans: 20,
+      playerCount: 20,
+      participantType: 'bot',
+      isBot: true,
+    });
+    assert.equal(joinedA.connectedHumans, 1);
+    assert.equal(joinedA.readyHumans, 0);
+    assert.equal(joinedA.botCount, 0);
+    assert.equal(joinedA.humanOnly, true);
+    assert.equal(joinedA.canStart, false);
+    assert.match(joinedA.selfPlayerId, /^net_[a-f0-9]{12}$/);
+    assert.doesNotMatch(joinedA.selfPlayerId, /sess_human_alpha/);
+
+    const soloState = await waitForRoomState(
+      wsA,
+      (msg) => msg.connectedHumans === 1 && msg.players?.length === 1
+    );
+    assert.equal(soloState.players[0].name, 'Human_Alpha');
+    assert.equal(soloState.players[0].participantType, 'human');
+    assert.equal(soloState.players[0].isBot, false);
+    assert.equal(soloState.players[0].isAuthenticated, true);
+    assert.equal(soloState.players[0].isReady, false);
+    assertNoSecrets(
+      JSON.stringify(soloState),
+      [
+        accountA.accountToken,
+        accountA.passkey,
+        'sess_human_alpha',
+        accountB.accountToken,
+        accountB.passkey,
+      ],
+      'room_state must not expose account or session secrets'
+    );
+
+    // There is no bot-injection path, even if the fake bot claims to be human.
+    const botRejected = waitForMessage(
+      wsA,
+      (msg) => msg.type === 'bot_rejected',
+      6000,
+      'bot injection rejection'
+    );
+    sendJson(wsA, {
+      type: 'spawn_bot',
+      playerName: 'Injected_Bot',
+      participantType: 'human',
+      isBot: false,
+      isAuthenticated: true,
+      connectedHumans: 20,
+    });
+    assert.match((await botRejected).reason, /Bots cannot be injected/);
+
+    // One ready human cannot start, regardless of spoofed ready totals.
+    sendJson(wsA, {
+      type: 'set_ready',
+      ready: true,
+      connectedHumans: 20,
+      readyHumans: 20,
+      playerCount: 20,
+    });
+    const readySoloState = await waitForRoomState(
+      wsA,
+      (msg) =>
+        msg.connectedHumans === 1 &&
+        msg.readyHumans === 1 &&
+        msg.canStart === false &&
+        msg.phase === 'lobby'
+    );
+    assert.equal(readySoloState.players.length, 1);
+
+    const startRejected = waitForMessage(
+      wsA,
+      (msg) => msg.type === 'match_start_rejected',
+      6000,
+      'one-human start rejection'
+    );
+    sendJson(wsA, {
+      type: 'request_match_start',
+      connectedHumans: 20,
+      readyHumans: 20,
+      botCount: 0,
+    });
+    assert.match((await startRejected).reason, /at least 2 connected authenticated humans/);
+
+    let unexpectedStart = false;
+    await waitForMessage(wsA, (msg) => msg.type === 'match_started', 450, 'unexpected match_started')
+      .then(() => {
+        unexpectedStart = true;
+      })
+      .catch(() => {});
+    assert.equal(unexpectedStart, false);
+
+    // The second authenticated human joins. HTTP status is server-derived and
+    // contains no account/session secrets.
+    let wsB = await connectClient(port);
+    sockets.push(wsB);
+    const joinedB = await joinHumanRoom(
+      wsB,
+      joinPayload({
+        roomCode,
+        roomMode: 'human_only_private',
+        sessionToken: 'sess_human_bravo',
+        account: accountB,
+        playerName: 'Human_Bravo',
+        position: { x: 5, y: 10, z: 5 },
+      })
+    );
+    assert.equal(joinedB.connectedHumans, 2);
+
+    const twoHumanState = await waitForRoomState(
+      wsA,
+      (msg) =>
+        msg.connectedHumans === 2 &&
+        msg.readyHumans === 1 &&
+        msg.players?.length === 2 &&
+        msg.players.every((player) => player.participantType === 'human' && !player.isBot)
+    );
+    assert.deepEqual(
+      twoHumanState.players.map((player) => player.name).sort(),
+      ['Human_Alpha', 'Human_Bravo']
+    );
+
+    const statusRes = await fetch(
+      `${server.base}/api/room?code=${encodeURIComponent(roomCode)}`
+    );
+    const status = await statusRes.json();
+    assert.equal(statusRes.status, 200);
+    assert.equal(status.connectedHumans, 2);
+    assert.equal(status.readyHumans, 1);
+    assert.equal(status.botCount, 0);
+    assert.equal(status.canStart, false);
+    assertNoSecrets(
+      JSON.stringify(status),
+      [
+        accountA.accountToken,
+        accountA.passkey,
+        'sess_human_alpha',
+        accountB.accountToken,
+        accountB.passkey,
+        'sess_human_bravo',
+      ],
+      'HTTP room status must not expose account or session secrets'
+    );
+
+    // A pre-start socket disconnect removes Bravo from the lobby immediately.
+    const bravoLeft = waitForMessage(
+      wsA,
+      (msg) => msg.type === 'player_left' && msg.playerName === 'Human_Bravo',
+      6000,
+      'pre-start disconnect player_left'
+    );
+    wsB.close();
+    await bravoLeft;
+    const afterDisconnect = await waitForRoomState(
+      wsA,
+      (msg) =>
+        msg.connectedHumans === 1 &&
+        msg.players?.length === 1 &&
+        msg.players[0].name === 'Human_Alpha'
+    );
+    assert.equal(afterDisconnect.readyHumans, 1);
+
+    // Reconnecting with the same account and a new session creates exactly one
+    // unready Bravo seat, not a duplicate.
+    wsB = await connectClient(port);
+    sockets.push(wsB);
+    const rejoinedB = await joinHumanRoom(
+      wsB,
+      joinPayload({
+        roomCode,
+        roomMode: 'human_only_private',
+        sessionToken: 'sess_human_bravo_reconnected',
+        account: accountB,
+        playerName: 'Human_Bravo',
+        position: { x: 5, y: 10, z: 5 },
+      })
+    );
+    assert.equal(rejoinedB.connectedHumans, 2);
+    const afterReconnect = await waitForRoomState(
+      wsA,
+      (msg) =>
+        msg.connectedHumans === 2 &&
+        msg.players?.filter((player) => player.name === 'Human_Bravo').length === 1 &&
+        msg.players.find((player) => player.name === 'Human_Bravo')?.isReady === false
+    );
+    assert.equal(afterReconnect.players.length, 2);
+    const reconnectedBravoId = afterReconnect.players.find(
+      (player) => player.name === 'Human_Bravo'
+    ).id;
+
+    // A second live socket for the same verified account transfers the same
+    // seat/public ID and closes the old socket instead of duplicating Bravo.
+    const wsBReplacement = await connectClient(port);
+    sockets.push(wsBReplacement);
+    const transferredB = await joinHumanRoom(
+      wsBReplacement,
+      joinPayload({
+        roomCode,
+        roomMode: 'human_only_private',
+        sessionToken: 'sess_human_bravo_replacement',
+        account: accountB,
+        playerName: 'Human_Bravo',
+        position: { x: 5, y: 10, z: 5 },
+      })
+    );
+    assert.equal(transferredB.selfPlayerId, reconnectedBravoId);
+    const afterTransfer = await waitForRoomState(
+      wsA,
+      (msg) =>
+        msg.connectedHumans === 2 &&
+        msg.players?.filter((player) => player.name === 'Human_Bravo').length === 1
+    );
+    assert.equal(afterTransfer.players.length, 2);
+    wsB = wsBReplacement;
+
+    // Explicit leave releases a lobby seat immediately and decrements counts.
+    const wsC = await connectClient(port);
+    sockets.push(wsC);
+    await joinHumanRoom(
+      wsC,
+      joinPayload({
+        roomCode,
+        roomMode: 'human_only_private',
+        sessionToken: 'sess_human_charlie',
+        account: accountC,
+        playerName: 'Human_Charlie',
+        position: { x: 10, y: 10, z: 10 },
+      })
+    );
+    await waitForRoomState(
+      wsA,
+      (msg) => msg.connectedHumans === 3 && msg.players?.length === 3
+    );
+    const charlieLeft = waitForMessage(
+      wsA,
+      (msg) => msg.type === 'player_left' && msg.playerName === 'Human_Charlie',
+      6000,
+      'explicit leave player_left'
+    );
+    sendJson(wsC, { type: 'leave_room' });
+    await charlieLeft;
+    await waitForRoomState(
+      wsA,
+      (msg) =>
+        msg.connectedHumans === 2 &&
+        msg.players?.length === 2 &&
+        !msg.players.some((player) => player.name === 'Human_Charlie')
+    );
+    wsC.close();
+
+    // Two connected, authenticated, ready humans are sufficient. The server
+    // transitions through countdown and starts with exactly those two humans.
+    const countdownStatePromise = waitForRoomState(
+      wsA,
+      (msg) => msg.phase === 'countdown' && msg.readyHumans === 2 && msg.canStart === true
+    );
+    const matchStartedA = waitForMessage(
+      wsA,
+      (msg) => msg.type === 'match_started' && msg.roomCode === roomCode,
+      6000,
+      'private human match_started (Alpha)'
+    );
+    const matchStartedB = waitForMessage(
+      wsB,
+      (msg) => msg.type === 'match_started' && msg.roomCode === roomCode,
+      6000,
+      'private human match_started (Bravo)'
+    );
+    sendJson(wsB, { type: 'set_ready', ready: true });
+    await countdownStatePromise;
+    const [startedA, startedB] = await Promise.all([matchStartedA, matchStartedB]);
+    for (const started of [startedA, startedB]) {
+      assert.equal(started.mode, 'human_only_private');
+      assert.equal(started.humanOnly, true);
+      assert.equal(started.aiFillEnabled, false);
+      assert.equal(started.botCount, 0);
+      assert.equal(started.connectedHumans, 2);
+      assert.equal(started.matchParticipantCount, 2);
+      assert.equal(started.aliveHumans, 2);
+      assert.equal(started.players.length, 2);
+      assert.ok(
+        started.players.every(
+          (player) =>
+            player.participantType === 'human' &&
+            player.isBot === false &&
+            player.isParticipant === true
+        )
+      );
+    }
+    assert.equal(startedA.selfPlayerId, joinedA.selfPlayerId);
+    assert.equal(startedB.selfPlayerId, reconnectedBravoId);
+    assert.equal(
+      startedA.players.find((player) => player.id === startedA.selfPlayerId)?.name,
+      'Human_Alpha'
+    );
+    assert.equal(
+      startedB.players.find((player) => player.id === startedB.selfPlayerId)?.name,
+      'Human_Bravo'
+    );
+
+    const activeState = await waitForRoomState(
+      wsA,
+      (msg) =>
+        msg.phase === 'active' &&
+        msg.players?.length === 2 &&
+        msg.players.every(
+          (player) =>
+            player.participantType === 'human' &&
+            player.isBot === false &&
+            player.isAuthenticated === true &&
+            player.isParticipant === true
+        )
+    );
+    const alphaPublicId = activeState.players.find(
+      (player) => player.name === 'Human_Alpha'
+    ).id;
+    const bravoPublicId = activeState.players.find(
+      (player) => player.name === 'Human_Bravo'
+    ).id;
+    assert.equal(alphaPublicId, joinedA.selfPlayerId);
+    assert.equal(bravoPublicId, reconnectedBravoId);
+
+    // No late human (and therefore no AI substitute) can enter an active
+    // human-only match.
+    const wsLateC = await connectClient(port);
+    sockets.push(wsLateC);
+    const lateRejected = waitForMessage(
+      wsLateC,
+      (msg) => msg.type === 'join_rejected',
+      6000,
+      'active-match late join rejection'
+    );
+    sendJson(
+      wsLateC,
+      joinPayload({
+        roomCode,
+        roomMode: 'human_only_private',
+        sessionToken: 'sess_human_charlie_late',
+        account: accountC,
+        playerName: 'Human_Charlie',
+      })
+    );
+    assert.equal((await lateRejected).code, 'match_in_progress');
+    wsLateC.close();
+
+    // Human-only combat/victory considers only the two human participants.
+    // One server-capped 240-damage hit eliminates shield + health.
+    const serverHitB = waitForMessage(
+      wsB,
+      (msg) => msg.type === 'server_hit' && msg.victimId === bravoPublicId,
+      6000,
+      'human-only elimination server_hit'
+    );
+    const matchEndedA = waitForMessage(
+      wsA,
+      (msg) => msg.type === 'match_ended' && msg.roomCode === roomCode,
+      6000,
+      'human-only match_ended'
+    );
+    sendJson(wsA, {
+      type: 'combat_hit',
+      hitId: 'human_only_final_hit',
+      targetId: bravoPublicId,
+      damage: 240,
+      weaponName: 'Pulse Rifle',
+      hitPoint: { x: 5, y: 11, z: 5 },
+      // Spoofed claims must not alter authoritative elimination/victory logic.
+      victimIsBot: true,
+      aliveHumans: 20,
+      winnerId: bravoPublicId,
+    });
+    const hit = await serverHitB;
+    assert.equal(hit.eliminated, true);
+    assert.equal(hit.victimHealth, 0);
+    assert.equal(hit.victimShield, 0);
+
+    const ended = await matchEndedA;
+    assert.equal(ended.phase, 'ended');
+    assert.equal(ended.winnerId, alphaPublicId);
+    assert.equal(ended.winnerName, 'Human_Alpha');
+    assert.equal(ended.aliveHumans, 1);
+    assert.equal(ended.matchParticipantCount, 2);
+    assert.equal(ended.botCount, 0);
+    assert.equal(ended.placements[alphaPublicId], 1);
+    assert.equal(ended.placements[bravoPublicId], 2);
+
+    const alphaProfileRes = await fetch(
+      `${server.base}/api/progression?accountId=${encodeURIComponent(accountA.accountId)}`
+    );
+    const alphaProfile = await alphaProfileRes.json();
+    assert.equal(alphaProfileRes.status, 200);
+    assert.ok(alphaProfile.matchesPlayed >= 1);
+    assert.ok(alphaProfile.wins >= 1);
+    assert.ok(alphaProfile.eliminations >= 1);
+
+    const bravoProfileRes = await fetch(
+      `${server.base}/api/progression?accountId=${encodeURIComponent(accountB.accountId)}`
+    );
+    const bravoProfile = await bravoProfileRes.json();
+    assert.equal(bravoProfileRes.status, 200);
+    assert.ok(bravoProfile.matchesPlayed >= 1);
+    assert.equal(bravoProfile.wins, 0);
+    assert.equal(bravoProfile.bestPlacement, 2);
+
+    // Public human matchmaking returns the same open HPLAY lobby to both
+    // players, starts only after both ready, and explicit active leave is a
+    // human-participant forfeit.
+    const firstMatchmake = await postJson(server.base, '/api/room/matchmake', {
+      roomMode: 'human_only_public',
+    });
+    assert.equal(firstMatchmake.res.status, 200);
+    assert.match(firstMatchmake.data.roomCode, /^HPLAY-[A-Z0-9]{4}$/);
+    assert.equal(firstMatchmake.data.mode, 'human_only_public');
+    assert.equal(firstMatchmake.data.botCount, 0);
+    const publicRoomCode = firstMatchmake.data.roomCode;
+
+    const wsPublicC = await connectClient(port);
+    sockets.push(wsPublicC);
+    await joinHumanRoom(
+      wsPublicC,
+      joinPayload({
+        roomCode: publicRoomCode,
+        roomMode: 'human_only_public',
+        sessionToken: 'sess_human_charlie_public',
+        account: accountC,
+        playerName: 'Human_Charlie',
+        position: { x: 0, y: 10, z: 0 },
+      })
+    );
+
+    const secondMatchmake = await postJson(server.base, '/api/room/matchmake', {
+      roomMode: 'human_only_public',
+    });
+    assert.equal(secondMatchmake.data.roomCode, publicRoomCode);
+    assert.equal(secondMatchmake.data.connectedHumans, 1);
+
+    const wsPublicD = await connectClient(port);
+    sockets.push(wsPublicD);
+    await joinHumanRoom(
+      wsPublicD,
+      joinPayload({
+        roomCode: publicRoomCode,
+        roomMode: 'human_only_public',
+        sessionToken: 'sess_human_delta_public',
+        account: accountD,
+        playerName: 'Human_Delta',
+        position: { x: 5, y: 10, z: 5 },
+      })
+    );
+
+    const publicStarted = waitForMessage(
+      wsPublicC,
+      (msg) => msg.type === 'match_started' && msg.roomCode === publicRoomCode,
+      6000,
+      'public human match_started'
+    );
+    sendJson(wsPublicC, { type: 'set_ready', ready: true });
+    sendJson(wsPublicD, { type: 'set_ready', ready: true });
+    const publicStart = await publicStarted;
+    assert.equal(publicStart.matchParticipantCount, 2);
+    assert.equal(publicStart.botCount, 0);
+
+    const publicEnded = waitForMessage(
+      wsPublicC,
+      (msg) => msg.type === 'match_ended' && msg.roomCode === publicRoomCode,
+      6000,
+      'public human forfeit match_ended'
+    );
+    sendJson(wsPublicD, { type: 'leave_room' });
+    const publicEnd = await publicEnded;
+    assert.equal(publicEnd.winnerName, 'Human_Charlie');
+    assert.equal(publicEnd.aliveHumans, 1);
+    assert.equal(Object.keys(publicEnd.placements).length, 2);
+
+    // Storm eliminations are also server-authoritative in human-only rooms:
+    // a participant moved outside the safe zone is damaged/eliminated by the
+    // server, and victory is awarded to the remaining human participant.
+    wsA.close();
+    wsB.close();
+    const stormRoom = await postJson(server.base, '/api/room/create', {
+      roomMode: 'human_only_private',
+    });
+    const stormRoomCode = stormRoom.data.roomCode;
+    const wsStormA = await connectClient(port);
+    const wsStormB = await connectClient(port);
+    sockets.push(wsStormA, wsStormB);
+    await joinHumanRoom(
+      wsStormA,
+      joinPayload({
+        roomCode: stormRoomCode,
+        roomMode: 'human_only_private',
+        sessionToken: 'sess_human_alpha_storm',
+        account: accountA,
+        playerName: 'Human_Alpha',
+        position: { x: 0, y: 10, z: 0 },
+      })
+    );
+    await joinHumanRoom(
+      wsStormB,
+      joinPayload({
+        roomCode: stormRoomCode,
+        roomMode: 'human_only_private',
+        sessionToken: 'sess_human_bravo_storm',
+        account: accountB,
+        playerName: 'Human_Bravo',
+        position: { x: 5, y: 10, z: 5 },
+      })
+    );
+    const stormStarted = waitForMessage(
+      wsStormA,
+      (msg) => msg.type === 'match_started' && msg.roomCode === stormRoomCode,
+      6000,
+      'storm-test human match_started'
+    );
+    sendJson(wsStormA, { type: 'set_ready', ready: true });
+    sendJson(wsStormB, { type: 'set_ready', ready: true });
+    const stormStart = await stormStarted;
+    const stormBravoId = stormStart.players.find(
+      (player) => player.name === 'Human_Bravo'
+    ).id;
+
+    const nonLethalHit = waitForMessage(
+      wsStormB,
+      (msg) => msg.type === 'server_hit' && msg.victimId === stormBravoId,
+      6000,
+      'storm-test non-lethal hit'
+    );
+    sendJson(wsStormA, {
+      type: 'combat_hit',
+      hitId: 'storm_setup_hit',
+      targetId: stormBravoId,
+      damage: 149,
+      weaponName: 'Pulse Rifle',
+      hitPoint: { x: 5, y: 11, z: 5 },
+    });
+    const setupHit = await nonLethalHit;
+    assert.equal(setupHit.victimHealth, 1);
+    assert.equal(setupHit.victimShield, 0);
+    assert.equal(setupHit.eliminated, false);
+
+    const stormHit = waitForMessage(
+      wsStormB,
+      (msg) =>
+        msg.type === 'server_hit' &&
+        msg.attackerId === 'storm' &&
+        msg.victimId === stormBravoId &&
+        msg.eliminated === true,
+      6000,
+      'server storm elimination hit'
+    );
+    const stormEnded = waitForMessage(
+      wsStormA,
+      (msg) => msg.type === 'match_ended' && msg.roomCode === stormRoomCode,
+      6000,
+      'storm elimination match_ended'
+    );
+    sendJson(wsStormB, {
+      type: 'player_sync',
+      position: { x: 400, y: 10, z: 0 },
+      velocity: { x: 0, y: 0, z: 0 },
+      yaw: 0,
+      facingYaw: 0,
+      pitch: 0,
+      isGliding: false,
+      isGrounded: true,
+    });
+    const stormElimination = await stormHit;
+    assert.equal(stormElimination.victimHealth, 0);
+    const stormEnd = await stormEnded;
+    assert.equal(stormEnd.winnerName, 'Human_Alpha');
+    assert.equal(stormEnd.aliveHumans, 1);
+    assert.equal(stormEnd.placements[stormBravoId], 2);
+  } finally {
+    for (const ws of sockets) {
+      try {
+        ws.close();
+      } catch {
+        // ignore
+      }
+    }
+    await server.stop();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('human-only room capacity is enforced server-side at 20 authenticated humans', async () => {
+  const port = await getFreePort();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cicraft-human-capacity-'));
+  const server = await startServer({
+    port,
+    sqlitePath: path.join(tmpDir, 'cicraft.sqlite'),
+  });
+  const sockets = [];
+
+  try {
+    const room = await postJson(server.base, '/api/room/create', {
+      roomMode: 'human_only_private',
+    });
+    const roomCode = room.data.roomCode;
+
+    for (let i = 1; i <= 20; i++) {
+      const label = String(i).padStart(2, '0');
+      const account = await createAccount(server.base, `Capacity_${label}`);
+      const ws = await connectClient(port);
+      sockets.push(ws);
+      const joined = await joinHumanRoom(
+        ws,
+        joinPayload({
+          roomCode,
+          roomMode: 'human_only_private',
+          sessionToken: `sess_capacity_${label}`,
+          account,
+          playerName: `Capacity_${label}`,
+        })
+      );
+      assert.equal(joined.connectedHumans, i);
+      assert.equal(joined.maxPlayers, 20);
+      assert.equal(joined.botCount, 0);
+    }
+
+    const overflowAccount = await createAccount(server.base, 'Capacity_21');
+    const overflowWs = await connectClient(port);
+    sockets.push(overflowWs);
+    const overflowRejected = waitForMessage(
+      overflowWs,
+      (msg) => msg.type === 'join_rejected',
+      6000,
+      'room_full rejection'
+    );
+    sendJson(
+      overflowWs,
+      joinPayload({
+        roomCode,
+        roomMode: 'human_only_private',
+        sessionToken: 'sess_capacity_21',
+        account: overflowAccount,
+        playerName: 'Capacity_21',
+      })
+    );
+    assert.equal((await overflowRejected).code, 'room_full');
+
+    const statusRes = await fetch(
+      `${server.base}/api/room?code=${encodeURIComponent(roomCode)}`
+    );
+    const status = await statusRes.json();
+    assert.equal(status.connectedHumans, 20);
+    assert.equal(status.totalHumans, 20);
+    assert.equal(status.botCount, 0);
+  } finally {
+    for (const ws of sockets) {
+      try {
+        ws.close();
+      } catch {
+        // ignore
+      }
+    }
+    await server.stop();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('reserved human room codes preserve human-only mode across a server restart', async () => {
+  const port = await getFreePort();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cicraft-human-restart-'));
+  const sqlitePath = path.join(tmpDir, 'cicraft.sqlite');
+  let firstServer;
+  let secondServer;
+  const sockets = [];
+
+  try {
+    firstServer = await startServer({ port, sqlitePath });
+    const account = await createAccount(firstServer.base, 'Restart_Human');
+    const room = await postJson(firstServer.base, '/api/room/create', {
+      roomMode: 'human_only_private',
+    });
+    const roomCode = room.data.roomCode;
+    await firstServer.stop();
+
+    secondServer = await startServer({ port, sqlitePath });
+    const statusRes = await fetch(
+      `${secondServer.base}/api/room?code=${encodeURIComponent(roomCode)}`
+    );
+    const status = await statusRes.json();
+    assert.equal(status.exists, false, 'in-memory rooms do not survive a restart');
+    assert.equal(status.mode, 'human_only_private');
+    assert.equal(status.humanOnly, true);
+    assert.equal(status.aiFillEnabled, false);
+    assert.equal(status.botCount, 0);
+    assert.equal(status.minPlayers, 2);
+    assert.equal(status.phase, 'lobby');
+
+    // Even without an explicit roomMode field, the HUM- prefix cannot degrade
+    // into a legacy AI-fill room after the restart.
+    const unauthenticatedWs = await connectClient(port);
+    sockets.push(unauthenticatedWs);
+    const rejected = waitForMessage(
+      unauthenticatedWs,
+      (msg) => msg.type === 'join_rejected',
+      6000,
+      'post-restart unauthenticated rejection'
+    );
+    sendJson(unauthenticatedWs, {
+      type: 'join_room',
+      roomCode,
+      sessionToken: 'sess_restart_unauthenticated',
+      playerName: 'Restart_Bot_Claim',
+      participantType: 'human',
+      isBot: false,
+      isAuthenticated: true,
+      position: { x: 0, y: 10, z: 0 },
+    });
+    assert.equal((await rejected).code, 'authentication_required');
+    unauthenticatedWs.close();
+
+    const ws = await connectClient(port);
+    sockets.push(ws);
+    const joined = await joinHumanRoom(ws, {
+      type: 'join_room',
+      roomCode,
+      sessionToken: 'sess_restart_authenticated',
+      accountId: account.accountId,
+      accountToken: account.accountToken,
+      playerName: 'Restart_Human',
+      position: { x: 0, y: 10, z: 0 },
+    });
+    assert.equal(joined.mode, 'human_only_private');
+    assert.equal(joined.phase, 'lobby');
+    assert.equal(joined.connectedHumans, 1);
+    assert.equal(joined.botCount, 0);
+    assert.equal(joined.canStart, false);
+  } finally {
+    for (const ws of sockets) {
+      try {
+        ws.close();
+      } catch {
+        // ignore
+      }
+    }
+    if (secondServer) await secondServer.stop();
+    if (firstServer) await firstServer.stop();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

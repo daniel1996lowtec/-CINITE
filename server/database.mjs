@@ -484,6 +484,32 @@ export class PersistenceManager {
     return null;
   }
 
+  /**
+   * Verify an existing account credential pair without creating or replacing
+   * an account. Human-only multiplayer uses this stricter path so that a
+   * missing/forged token can never be converted into an authenticated seat.
+   * Returns the persisted profile, or null when credentials are invalid.
+   */
+  async verifyAccountCredentials({ accountId, accountToken, callsign }) {
+    if (!accountId || !accountToken) return null;
+    if (!this.verifySignedTokenFormat(accountId, accountToken)) return null;
+
+    const existing = await this.getAccountRow(accountId);
+    if (!existing) return null;
+    if (!timingSafeHexEqual(existing.token_hash, sha256Hex(accountToken))) {
+      return null;
+    }
+
+    if (callsign) {
+      const cleanCallsign = sanitizeCallsign(callsign);
+      if (cleanCallsign !== existing.callsign) {
+        return this.updateAccountCosmetics(accountId, undefined, cleanCallsign);
+      }
+    }
+
+    return this.rowToProfile(existing);
+  }
+
   async createOrVerifyAccount({ accountId, accountToken, callsign, cosmetics }) {
     const cleanCallsign = sanitizeCallsign(callsign);
 

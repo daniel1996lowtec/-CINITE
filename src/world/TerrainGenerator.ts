@@ -1,5 +1,15 @@
 import * as THREE from 'three';
 import { TimeOfDayPreset } from '../network/schemas';
+import {
+  EXPANSION_BUILDINGS,
+  EXPANSION_LANDMARKS,
+  ISLAND_ROAD_SEGMENTS,
+  ISLAND_SETTLEMENTS,
+  LEGENDARY_TOWER,
+  distancePointToSegment,
+  getBuildingFootprint,
+  getLandmarkFootprint,
+} from './WorldLayout';
 
 export interface POIDefinition {
   id: string;
@@ -11,15 +21,24 @@ export interface POIDefinition {
   color: string;
 }
 
+interface StructureTerrainPad {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+  height: number;
+  blendWidth: number;
+}
+
 export const ISLAND_POIS: POIDefinition[] = [
   {
     id: 'pipeline_plaza',
-    name: 'Pipeline Plaza',
+    name: 'Legendary Tower',
     x: 0,
     z: 0,
     radius: 42,
     baseHeight: 4.5,
-    color: '#38bdf8',
+    color: '#facc15',
   },
   {
     id: 'docker_docks',
@@ -86,6 +105,44 @@ export const ISLAND_POIS: POIDefinition[] = [
   },
 ];
 
+const settlementRoutePoints: POIDefinition[] = ISLAND_SETTLEMENTS.map((settlement) => ({
+  id: settlement.id,
+  name: settlement.name,
+  x: settlement.x,
+  z: settlement.z,
+  radius: settlement.radius,
+  baseHeight: settlement.baseHeight,
+  color: settlement.color,
+}));
+
+/**
+ * Bot patrol/landing route points in a rough geographic loop. This extends,
+ * rather than replaces, the eight named POIs: every original POI is still
+ * present in ISLAND_POIS and appears exactly once here.
+ */
+export const ISLAND_ROUTE_POINTS: POIDefinition[] = [
+  ISLAND_POIS[0],
+  settlementRoutePoints[11],
+  ISLAND_POIS[4],
+  settlementRoutePoints[9],
+  ISLAND_POIS[7],
+  settlementRoutePoints[8],
+  ISLAND_POIS[1],
+  settlementRoutePoints[1],
+  ISLAND_POIS[5],
+  settlementRoutePoints[0],
+  settlementRoutePoints[3],
+  ISLAND_POIS[3],
+  settlementRoutePoints[2],
+  ISLAND_POIS[6],
+  settlementRoutePoints[5],
+  settlementRoutePoints[4],
+  ISLAND_POIS[2],
+  settlementRoutePoints[10],
+  settlementRoutePoints[6],
+  settlementRoutePoints[7],
+];
+
 export class TerrainGenerator {
   public readonly worldSize = 540;
   public readonly islandRadius = 230;
@@ -105,6 +162,49 @@ export class TerrainGenerator {
   private waterTexture: THREE.CanvasTexture | null = null;
   private terrainDetailTexture: THREE.CanvasTexture | null = null;
   private time = 0;
+
+  /**
+   * Small deterministic pads under expansion structures. POI/settlement
+   * plateaus handle district-scale flattening; these footprint pads remove
+   * the last local slope so foundations, doors and interior loot never sit
+   * above/below the terrain at one corner. Docks and the bridge are excluded
+   * because they intentionally stand over water.
+   */
+  private readonly structureTerrainPads: StructureTerrainPad[] = [
+    {
+      minX: LEGENDARY_TOWER.x - 19,
+      maxX: LEGENDARY_TOWER.x + 19,
+      minZ: LEGENDARY_TOWER.z - 19,
+      maxZ: LEGENDARY_TOWER.z + 19,
+      height: this.getUnpaddedTerrainHeight(LEGENDARY_TOWER.x, LEGENDARY_TOWER.z),
+      blendWidth: 5.5,
+    },
+    ...EXPANSION_BUILDINGS.map((building) => {
+      const footprint = getBuildingFootprint(building);
+      return {
+        minX: footprint.minX - 1.0,
+        maxX: footprint.maxX + 1.0,
+        minZ: footprint.minZ - 1.0,
+        maxZ: footprint.maxZ + 1.0,
+        height: this.getUnpaddedTerrainHeight(building.x, building.z),
+        blendWidth: 4.2,
+      };
+    }),
+    ...EXPANSION_LANDMARKS.filter(
+      (landmark) =>
+        landmark.kind === 'watchtower' || landmark.kind === 'camp' || landmark.kind === 'ruin'
+    ).map((landmark) => {
+      const footprint = getLandmarkFootprint(landmark);
+      return {
+        minX: footprint.minX - 0.6,
+        maxX: footprint.maxX + 0.6,
+        minZ: footprint.minZ - 0.6,
+        maxZ: footprint.maxZ + 0.6,
+        height: this.getUnpaddedTerrainHeight(landmark.x, landmark.z),
+        blendWidth: 3.6,
+      };
+    }),
+  ];
 
   private createTerrainMicroTexture(): THREE.CanvasTexture | null {
     if (typeof document === 'undefined') return null;
@@ -208,7 +308,7 @@ export class TerrainGenerator {
     return Math.hypot(dx, dz);
   }
 
-  public getTerrainHeight(x: number, z: number): number {
+  private getUnpaddedTerrainHeight(x: number, z: number): number {
     const distFromCenter = Math.hypot(x, z);
 
     if (distFromCenter > this.islandRadius + 24) {
@@ -263,6 +363,26 @@ export class TerrainGenerator {
       }
     }
 
+    // 4b. Secondary settlement plateaus. These use the same smoothstep
+    // blend as the named POIs so modular buildings sit on believable,
+    // walkable ground without changing the island's macro silhouette.
+    for (const settlement of ISLAND_SETTLEMENTS) {
+      const dx = x - settlement.x;
+      const dz = z - settlement.z;
+      const influenceRadius = settlement.radius * 1.35;
+      if (Math.abs(dx) > influenceRadius || Math.abs(dz) > influenceRadius) continue;
+      const d = Math.hypot(dx, dz);
+      if (d < influenceRadius) {
+        const innerRadius = settlement.radius * 0.78;
+        const blend =
+          d <= innerRadius
+            ? 1.0
+            : 1.0 - (d - innerRadius) / (influenceRadius - innerRadius);
+        const smooth = blend * blend * (3 - 2 * blend);
+        height = height * (1 - smooth) + settlement.baseHeight * smooth;
+      }
+    }
+
     // 5. Mirror Lake Basin at (-46, 38) with central treasure islet
     const lakeDist = Math.hypot(x - -46, z - 38);
     if (lakeDist < 30) {
@@ -293,17 +413,60 @@ export class TerrainGenerator {
     return height;
   }
 
+  public getTerrainHeight(x: number, z: number): number {
+    const height = this.getUnpaddedTerrainHeight(x, z);
+
+    // Never let a structure pad fill the lake or river channel.
+    if (Math.hypot(x + 46, z - 38) < 27 || this.getRiverDistance(x, z) < 7) {
+      return height;
+    }
+
+    let bestBlend = 0;
+    let bestHeight = height;
+    for (const pad of this.structureTerrainPads) {
+      if (
+        x < pad.minX - pad.blendWidth ||
+        x > pad.maxX + pad.blendWidth ||
+        z < pad.minZ - pad.blendWidth ||
+        z > pad.maxZ + pad.blendWidth
+      ) {
+        continue;
+      }
+      const outsideX = Math.max(pad.minX - x, 0, x - pad.maxX);
+      const outsideZ = Math.max(pad.minZ - z, 0, z - pad.maxZ);
+      const outside = Math.max(outsideX, outsideZ);
+      const blend = outside <= 0 ? 1 : Math.max(0, 1 - outside / pad.blendWidth);
+      const smooth = blend * blend * (3 - 2 * blend);
+      if (smooth > bestBlend) {
+        bestBlend = smooth;
+        bestHeight = pad.height;
+      }
+    }
+
+    return height * (1 - bestBlend) + bestHeight * bestBlend;
+  }
+
   public getRoadDistance(x: number, z: number): number {
     let minDist = 999;
-    for (let i = 1; i < ISLAND_POIS.length; i++) {
-      const poi = ISLAND_POIS[i];
-      if (poi.id === 'mirror_lake') continue;
-      const l2 = poi.x * poi.x + poi.z * poi.z;
-      let t = (x * poi.x + z * poi.z) / l2;
-      t = Math.max(0, Math.min(1, t));
-      const projX = t * poi.x;
-      const projZ = t * poi.z;
-      const dist = Math.hypot(x - projX, z - projZ);
+    for (const segment of ISLAND_ROAD_SEGMENTS) {
+      // Cheap axis-aligned rejection keeps terrain generation fast while
+      // preserving exact point-to-segment distance for nearby roads.
+      if (
+        x < Math.min(segment.fromX, segment.toX) - minDist ||
+        x > Math.max(segment.fromX, segment.toX) + minDist ||
+        z < Math.min(segment.fromZ, segment.toZ) - minDist ||
+        z > Math.max(segment.fromZ, segment.toZ) + minDist
+      ) {
+        continue;
+      }
+      const dist = distancePointToSegment(
+        x,
+        z,
+        segment.fromX,
+        segment.fromZ,
+        segment.toX,
+        segment.toZ
+      );
       if (dist < minDist) minDist = dist;
     }
     return minDist;
@@ -341,6 +504,16 @@ export class TerrainGenerator {
       const riverDist = this.getRiverDistance(vx, vz);
       const lakeDist = Math.hypot(vx - -46, vz - 38);
       const slope = this.getTerrainSlope(vx, vz);
+      let expansionSettlement: (typeof ISLAND_SETTLEMENTS)[number] | null = null;
+      for (const settlement of ISLAND_SETTLEMENTS) {
+        const sdx = vx - settlement.x;
+        const sdz = vz - settlement.z;
+        const coreRadius = settlement.radius * 0.78;
+        if (sdx * sdx + sdz * sdz < coreRadius * coreRadius) {
+          expansionSettlement = settlement;
+          break;
+        }
+      }
 
       if (vy < -0.35) {
         // Deep seabed & riverbed
@@ -368,6 +541,31 @@ export class TerrainGenerator {
       } else if (roadDist < 4.9) {
         // Soft dirt road shoulder transition
         color.copy(dirtShoulderColor);
+      } else if (expansionSettlement) {
+        // Handcrafted ground treatments make secondary settlements readable
+        // from the drop ship without adding extra terrain meshes.
+        const checker = (Math.floor(vx * 0.32) + Math.floor(vz * 0.32)) % 2 === 0;
+        switch (expansionSettlement.ground) {
+          case 'paved':
+            color.setHex(checker ? 0x94a3b8 : 0xb6c2d2);
+            break;
+          case 'industrial':
+            color.setHex(checker ? 0x78716c : 0x8b8580);
+            break;
+          case 'farm':
+            color.setHex(Math.sin(vz * 1.25) > 0 ? 0xa16207 : 0x65a30d);
+            break;
+          case 'sand':
+            color.setHex(checker ? 0xfacc15 : 0xfde047);
+            break;
+          case 'alpine':
+            color.setHex(checker ? 0xcbd5e1 : 0xe2e8f0);
+            break;
+          case 'dirt':
+          default:
+            color.setHex(checker ? 0xb48a5a : 0xc29b61);
+            break;
+        }
       } else if (distKeep < 25) {
         const keepTile = (Math.floor(vx * 0.3) + Math.floor(vz * 0.3)) % 2 === 0;
         color.setHex(keepTile ? 0x64748b : 0x475569);

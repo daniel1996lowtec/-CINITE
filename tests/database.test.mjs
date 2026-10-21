@@ -127,6 +127,66 @@ test('account lifecycle: create, verify, passkey restore, progression dedup, res
   }
 });
 
+test('verifyAccountCredentials: strict verification never creates or replaces accounts', async () => {
+  const first = tempSqlitePath();
+  const second = tempSqlitePath();
+  try {
+    const db = new PersistenceManager({ databaseUrl: '', sqlitePath: first.sqlitePath });
+    await db.init();
+    const created = await db.createOrVerifyAccount({ callsign: 'Strict_Human' });
+
+    const verified = await db.verifyAccountCredentials({
+      accountId: created.accountId,
+      accountToken: created.accountToken,
+      callsign: 'Strict_Human',
+    });
+    assert.equal(verified.accountId, created.accountId);
+    assert.equal(verified.callsign, 'Strict_Human');
+
+    assert.equal(
+      await db.verifyAccountCredentials({
+        accountId: created.accountId,
+        accountToken: `${created.accountId}.forgednonce.forgedsig`,
+        callsign: 'Impostor',
+      }),
+      null
+    );
+    assert.equal(
+      await db.verifyAccountCredentials({ accountId: created.accountId }),
+      null
+    );
+    assert.equal(await db.verifyAccountCredentials({}), null);
+
+    const unchanged = await db.getAccountRow(created.accountId);
+    assert.equal(unchanged.callsign, 'Strict_Human');
+
+    // A correctly signed token for an account that only exists in another DB
+    // must return null here and must not provision that account as a side effect.
+    const otherDb = new PersistenceManager({
+      databaseUrl: '',
+      sqlitePath: second.sqlitePath,
+    });
+    await otherDb.init();
+    const otherAccount = await otherDb.createOrVerifyAccount({
+      callsign: 'Other_Database_Human',
+    });
+    assert.equal(
+      await db.verifyAccountCredentials({
+        accountId: otherAccount.accountId,
+        accountToken: otherAccount.accountToken,
+      }),
+      null
+    );
+    assert.equal(await db.getAccountRow(otherAccount.accountId), null);
+
+    await otherDb.close();
+    await db.close();
+  } finally {
+    fs.rmSync(first.dir, { recursive: true, force: true });
+    fs.rmSync(second.dir, { recursive: true, force: true });
+  }
+});
+
 test('resolvePgConnectionConfig: Render internal URL uses plaintext on the private network', () => {
   const { connectionString, ssl } = resolvePgConnectionConfig(
     'postgresql://cicraft_user:secret@dpg-dbc993gae00c7391btg0-a:5432/cicraft',

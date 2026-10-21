@@ -6,9 +6,12 @@ import {
   LobbyConfig,
   PlayerInputPacket,
   PlayerState,
+  RoomSnapshot,
   StarterLoadoutType,
   TimeOfDayPreset,
   WeaponCategory,
+  effectiveBotCountForMode,
+  isHumanOnlySessionMode,
 } from '../network/schemas';
 import {
   NetworkConnectionState,
@@ -18,6 +21,7 @@ import {
 import { IslandWorld } from '../world/IslandWorld';
 import { CharacterMesh } from '../entities/CharacterMesh';
 import { ThirdPersonCamera } from '../camera/ThirdPersonCamera';
+import { clampNumber, combineMoveInput } from '../input/touchInputMath';
 import { PlayerController } from '../entities/PlayerController';
 import { BotAIController } from '../entities/BotAIController';
 import { LootSystem } from '../systems/LootSystem';
@@ -64,6 +68,17 @@ export class GameEngine {
     humanCount: number
   ) => void;
   public onProgressionUpdated?: () => void;
+  public onHumanLobbyUpdated?: (snapshot: RoomSnapshot | null) => void;
+  public onHumanLobbyJoinRejected?: (code: string, reason: string) => void;
+  public onHumanRoomActionRejected?: (reason: string) => void;
+  public onHumanMatchStarted?: (snapshot: RoomSnapshot) => void;
+  public onLobbyUpdated?: (snapshot: RoomSnapshot | null) => void;
+  public onLobbyJoinRejected?: (code: string, reason: string) => void;
+  public onLobbyActionRejected?: (reason: string) => void;
+  public onLobbyMatchStarted?: (snapshot: RoomSnapshot) => void;
+  public onLobbyClosed?: (snapshot: RoomSnapshot, reason: string) => void;
+  /** Notified after held input is cleared so touch UI state can resync. */
+  public onTransientInputCleared?: () => void;
 
   private characterMeshes: Map<string, CharacterMesh> = new Map();
   private lastTime = performance.now();
@@ -93,8 +108,14 @@ export class GameEngine {
     starterLoadout: 'balanced',
   };
 
+  private pendingLobbyConfig: LobbyConfig | null = null;
+  private serverAuthorizedLobbyStart: boolean = false;
+  private localEliminationPlacement: number | null = null;
+  private localEliminatedByName: string = '';
+
   public settings: GameSettings = {
     mouseSensitivity: 1.0,
+    touchSensitivity: 1.0,
     audioVolume: 0.8,
     sfxVolume: 0.9,
     graphicsQuality: 'high',
@@ -114,6 +135,9 @@ export class GameEngine {
   public mobileMoveX = 0;
   public mobileMoveZ = 0;
   public mobileJump = false;
+  public mobileSprint = false;
+  public touchFireHeld = false;
+  public touchAimHeld = false;
 
   private fpsFrames = 0;
   private fpsTimer = 0;
@@ -125,12 +149,13 @@ export class GameEngine {
   constructor(container: HTMLElement) {
     this.container = container;
     this.basePixelRatio = Math.min(window.devicePixelRatio || 1, 1.5);
+    const initialViewport = this.getViewportSize();
 
     this.renderer = new THREE.WebGLRenderer({
       antialias: true,
       powerPreference: 'high-performance',
     });
-    this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.renderer.setSize(initialViewport.width, initialViewport.height);
     this.renderer.setPixelRatio(this.basePixelRatio);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -144,7 +169,9 @@ export class GameEngine {
 
     this.setupLighting();
 
-    this.tpCamera = new ThirdPersonCamera(window.innerWidth / window.innerHeight);
+    this.tpCamera = new ThirdPersonCamera(
+      initialViewport.width / initialViewport.height
+    );
     this.network = new NetworkManager();
     this.world = new IslandWorld(this.scene);
     this.world.generate();
@@ -178,6 +205,7 @@ export class GameEngine {
     });
 
     window.addEventListener('resize', () => this.onWindowResize());
+    window.visualViewport?.addEventListener('resize', () => this.onWindowResize());
     requestAnimationFrame((t) => this.animate(t));
   }
 
@@ -330,6 +358,39 @@ export class GameEngine {
       this.onProgressionUpdated?.();
     };
 
+    this.network.onRoomSnapshot = (snapshot) => {
+      if (!snapshot || snapshot.isLobbyManaged || snapshot.humanOnly) {
+        this.onLobbyUpdated?.(snapshot);
+        this.onHumanLobbyUpdated?.(snapshot);
+      }
+    };
+
+    this.network.onJoinRejected = (code, reason) => {
+      this.pendingLobbyConfig = null;
+      this.serverAuthorizedLobbyStart = false;
+      this.onLobbyJoinRejected?.(code, reason);
+      this.onHumanLobbyJoinRejected?.(code, reason);
+    };
+
+    this.network.onRoomActionRejected = (reason) => {
+      this.onLobbyActionRejected?.(reason);
+      this.onHumanRoomActionRejected?.(reason);
+    };
+
+    this.network.onRoomClosed = (snapshot, reason) => {
+      this.pendingLobbyConfig = null;
+      this.serverAuthorizedLobbyStart = false;
+      this.onLobbyClosed?.(snapshot, reason);
+    };
+
+    this.network.onMatchStarted = (snapshot) => {
+      this.beginServerAuthorizedLobbyMatch(snapshot);
+    };
+
+    this.network.onMatchEnded = (snapshot, placements) => {
+      this.handleServerMatchEnded(snapshot, placements);
+    };
+
     // Outgoing local player actions -> Room Server & Bot Sound Investigation
     this.playerController.onLocalWeaponFired = (category, muzzlePos, hitPoint) => {
       this.botController.notifySoundEvent(muzzlePos.x, muzzlePos.z, 95);
@@ -389,6 +450,24 @@ export class GameEngine {
       );
     };
 
+    this.lootSystem.onServerAuthoritativeLootRequested = (
+      item,
+      predictedSwappedDrop
+    ) => this.network.sendAuthoritativeLootCollectRequest(item, predictedSwappedDrop);
+
+    this.network.onAuthoritativeLootCollected = (item, swappedDrop) => {
+      const lp = this.network.state.players.get(this.network.localPlayerId);
+      if (!lp) return;
+      this.lootSystem.applyAuthoritativeLootCollected(
+        this.network.state,
+        lp,
+        item,
+        this.particles,
+        this.sound,
+        swappedDrop
+      );
+    };
+
     this.network.onRemoteLootCollected = (
       _collectorId,
       lootId,
@@ -420,7 +499,13 @@ export class GameEngine {
       );
     };
 
-    this.network.onLootCollectRejected = (lootId) => {
+    this.network.onLootCollectRejected = (lootId, reason) => {
+      const item = this.network.state.lootItems.get(lootId);
+      if (item?.serverAuthoritative && !/already collected/i.test(reason)) {
+        this.lootSystem.clearAuthoritativeLootPending(lootId);
+        this.hud.showLootToast(reason, '#f87171', false);
+        return;
+      }
       this.lootSystem.removeLootItem(this.network.state, lootId);
     };
 
@@ -513,8 +598,12 @@ export class GameEngine {
 
       const state = this.network.state;
       const localPlayer = state.players.get(this.network.localPlayerId);
-      const isLocalVictim = ev.victimSessionToken === this.network.sessionToken;
-      const isLocalAttacker = ev.attackerId === `net_${this.network.sessionToken}`;
+      const isLocalVictim =
+        ev.victimId === this.network.localPlayerId ||
+        ev.victimId === this.network.serverPlayerId;
+      const isLocalAttacker =
+        ev.attackerId === this.network.localPlayerId ||
+        ev.attackerId === this.network.serverPlayerId;
       const victim = isLocalVictim
         ? localPlayer
         : state.players.get(ev.victimId);
@@ -603,13 +692,45 @@ export class GameEngine {
         this.recountAliveCombatants();
 
         if (isLocalVictim && localPlayer) {
-          this.showEndScreen(
-            false,
-            Math.max(2, state.aliveCount + 1),
-            localPlayer,
-            ev.attackerName
-          );
-        } else if (state.aliveCount <= 1 && localPlayer && localPlayer.alive) {
+          this.localEliminatedByName = ev.attackerName;
+          const teamMode = this.currentConfig.teamMode || 'solo';
+          if (teamMode !== 'solo' && localPlayer.teamId) {
+            const aliveTeammate = Array.from(state.players.values()).find(
+              (player) =>
+                player.id !== localPlayer.id &&
+                player.alive &&
+                player.teamId === localPlayer.teamId
+            );
+            if (aliveTeammate) {
+              // The local player's result is not final while a teammate is
+              // alive. Spectate that teammate and let the authoritative
+              // team placement arrive with match_ended.
+              this.localEliminationPlacement = null;
+              this.clearTransientInput();
+              if (document.pointerLockElement) document.exitPointerLock();
+              this.spectatedPlayerId = aliveTeammate.id;
+              this.hud.updateSpectatorBanner(aliveTeammate);
+            } else {
+              const aliveTeamCount = new Set(
+                Array.from(state.players.values())
+                  .filter((player) => player.alive)
+                  .map((player) => player.teamId || player.id)
+              ).size;
+              const placement = Math.max(2, aliveTeamCount + 1);
+              this.localEliminationPlacement = placement;
+              this.showEndScreen(false, placement, localPlayer, ev.attackerName);
+            }
+          } else {
+            const placement = Math.max(2, state.aliveCount + 1);
+            this.localEliminationPlacement = placement;
+            this.showEndScreen(false, placement, localPlayer, ev.attackerName);
+          }
+        } else if (
+          !isHumanOnlySessionMode(this.currentConfig.mode) &&
+          state.aliveCount <= 1 &&
+          localPlayer &&
+          localPlayer.alive
+        ) {
           state.phase = 'ENDED';
           state.winnerName = localPlayer.name;
           this.sound.playVictory();
@@ -674,7 +795,18 @@ export class GameEngine {
 
   public applySettings(newSettings: Partial<GameSettings>): void {
     Object.assign(this.settings, newSettings);
+    this.settings.mouseSensitivity = clampNumber(
+      this.settings.mouseSensitivity,
+      0.3,
+      2.5
+    );
+    this.settings.touchSensitivity = clampNumber(
+      this.settings.touchSensitivity ?? 1,
+      0.3,
+      2.5
+    );
     this.tpCamera.sensitivity = this.settings.mouseSensitivity;
+    this.tpCamera.touchSensitivity = this.settings.touchSensitivity;
     this.sound.setVolume(this.settings.audioVolume);
     if (this.settings.sfxVolume !== undefined) {
       this.sound.setSfxVolume(this.settings.sfxVolume);
@@ -693,6 +825,8 @@ export class GameEngine {
         this.world.terrain.atmosphereMotes.visible = false;
       }
       this.world.foliageGroup.visible = false;
+      this.world.detailFoliageGroup.visible = false;
+      this.world.expansionDetailGroup.visible = false;
       this.tpCamera.camera.far = 310;
       this.tpCamera.camera.updateProjectionMatrix();
     } else if (this.settings.graphicsQuality === 'medium') {
@@ -707,6 +841,8 @@ export class GameEngine {
         this.world.terrain.atmosphereMotes.visible = false;
       }
       this.world.foliageGroup.visible = true;
+      this.world.detailFoliageGroup.visible = false;
+      this.world.expansionDetailGroup.visible = false;
       this.tpCamera.camera.far = 380;
       this.tpCamera.camera.updateProjectionMatrix();
     } else {
@@ -721,6 +857,8 @@ export class GameEngine {
         this.world.terrain.atmosphereMotes.visible = true;
       }
       this.world.foliageGroup.visible = true;
+      this.world.detailFoliageGroup.visible = true;
+      this.world.expansionDetailGroup.visible = true;
       this.tpCamera.camera.far = 460;
       this.tpCamera.camera.updateProjectionMatrix();
     }
@@ -788,18 +926,191 @@ export class GameEngine {
     }
   }
 
+  /** Connect to a server-owned lobby without starting gameplay. */
+  public joinMultiplayerLobby(config: LobbyConfig): void {
+    if (config.mode === 'solo_bots') return;
+
+    const isHumanOnly = isHumanOnlySessionMode(config.mode);
+    const lobbyConfig: LobbyConfig = {
+      ...config,
+      botCount: effectiveBotCountForMode(config.mode, config.botCount),
+      cosmetics: config.cosmetics || this.progression.cosmetics,
+    };
+    if (lobbyConfig.createLobby) {
+      lobbyConfig.createLobby = {
+        ...lobbyConfig.createLobby,
+        humanOnly: isHumanOnly,
+        botCount: isHumanOnly ? 0 : lobbyConfig.botCount,
+        botDifficulty: lobbyConfig.difficulty,
+      };
+    }
+    this.pendingLobbyConfig = lobbyConfig;
+    this.currentConfig = lobbyConfig;
+    this.serverAuthorizedLobbyStart = false;
+    this.localEliminationPlacement = null;
+    this.localEliminatedByName = '';
+    this.matchResultRecorded = false;
+    this.isRunningMatch = false;
+
+    this.network.setAccountCredentials(
+      this.progression.credentials.accountId,
+      this.progression.credentials.accountToken
+    );
+
+    this.network.connectToLobbyRoom(lobbyConfig);
+  }
+
+  /** Backward-compatible wrapper for the original human-only entry point. */
+  public joinHumanLobby(config: LobbyConfig): void {
+    if (!isHumanOnlySessionMode(config.mode)) return;
+    this.joinMultiplayerLobby({ ...config, botCount: 0 });
+  }
+
+  public setLobbyReady(ready: boolean): void {
+    this.network.setReady(ready);
+  }
+
+  public setHumanLobbyReady(ready: boolean): void {
+    this.setLobbyReady(ready);
+  }
+
+  public requestLobbyMatchStart(): void {
+    this.network.setReady(true);
+    this.network.requestMatchStart();
+  }
+
+  public requestHumanMatchStart(): void {
+    this.requestLobbyMatchStart();
+  }
+
+  public closeLobby(): void {
+    this.network.closeRoom();
+  }
+
+  public leaveMultiplayerLobby(): void {
+    this.pendingLobbyConfig = null;
+    this.serverAuthorizedLobbyStart = false;
+    this.network.leaveRoom();
+    this.onLobbyUpdated?.(null);
+    this.onHumanLobbyUpdated?.(null);
+  }
+
+  public leaveHumanLobby(): void {
+    this.leaveMultiplayerLobby();
+  }
+
+  private beginServerAuthorizedLobbyMatch(snapshot: RoomSnapshot): void {
+    const pendingConfig = this.pendingLobbyConfig;
+    if (!pendingConfig || pendingConfig.mode === 'solo_bots') return;
+
+    const expectsHumanOnly = isHumanOnlySessionMode(pendingConfig.mode);
+    if (
+      !snapshot.isLobbyManaged ||
+      snapshot.matchParticipantCount < snapshot.minPlayers ||
+      (expectsHumanOnly &&
+        (!snapshot.humanOnly || snapshot.aiFillEnabled || snapshot.botCount !== 0)) ||
+      (!expectsHumanOnly && snapshot.humanOnly)
+    ) {
+      this.onLobbyActionRejected?.(
+        expectsHumanOnly
+          ? 'The server did not provide a valid human-only match start.'
+          : 'The server did not provide a valid lobby match start.'
+      );
+      this.onHumanRoomActionRejected?.(
+        'The server did not provide a valid human-only match start.'
+      );
+      return;
+    }
+
+    const localServerPlayerId = snapshot.selfPlayerId || this.network.serverPlayerId;
+    const localIsParticipant = snapshot.players.some(
+      (player) => player.id === localServerPlayerId && player.isParticipant
+    );
+    if (!localIsParticipant) return;
+
+    this.serverAuthorizedLobbyStart = true;
+    this.startMatch({
+      ...pendingConfig,
+      roomCode: snapshot.roomCode,
+      // The server snapshot is authoritative for these room settings. In a
+      // human-only room it is always zero; in AI Fill it is the host's
+      // configured client-spawned AI count, kept separate from humans.
+      botCount: expectsHumanOnly ? 0 : snapshot.botCount,
+      difficulty: snapshot.botDifficulty,
+      lobbyName: snapshot.name,
+      maxPlayers: snapshot.maxPlayers,
+      mapId: snapshot.mapId,
+      teamMode: snapshot.teamMode,
+      startCondition: snapshot.startCondition,
+      visibility: snapshot.visibility === 'private' ? 'private' : 'public',
+    });
+    this.serverAuthorizedLobbyStart = false;
+    this.pendingLobbyConfig = null;
+    this.onLobbyMatchStarted?.(snapshot);
+    this.onHumanMatchStarted?.(snapshot);
+  }
+
+  private beginServerAuthorizedHumanMatch(snapshot: RoomSnapshot): void {
+    this.beginServerAuthorizedLobbyMatch(snapshot);
+  }
+
+  private handleServerMatchEnded(
+    snapshot: RoomSnapshot,
+    placements: Record<string, number>
+  ): void {
+    if (!this.isRunningMatch || this.matchResultRecorded) return;
+
+    const localPlayer = this.network.state.players.get(this.network.localPlayerId);
+    if (!localPlayer) return;
+
+    this.network.state.phase = 'ENDED';
+    this.network.state.winnerName = snapshot.winnerName || localPlayer.name;
+    const isVictory =
+      snapshot.winnerId === this.network.serverPlayerId ||
+      snapshot.winnerIds.includes(this.network.serverPlayerId);
+    const serverPlacement = placements[this.network.serverPlayerId];
+    const placement = isVictory
+      ? 1
+      : Number(serverPlacement || this.localEliminationPlacement || 0) ||
+        Math.max(2, this.network.state.aliveCount + 1);
+
+    if (isVictory) this.sound.playVictory();
+    this.showEndScreen(
+      isVictory,
+      placement,
+      localPlayer,
+      this.localEliminatedByName
+    );
+  }
+
   public startMatch(config: LobbyConfig): void {
+    const isHumanOnly = isHumanOnlySessionMode(config.mode);
+    const isServerLobbyStart = this.serverAuthorizedLobbyStart;
+    const requiresServerLobbyStart =
+      isHumanOnly ||
+      Boolean(config.createLobby) ||
+      Boolean(this.pendingLobbyConfig && config.mode !== 'solo_bots');
+    if (requiresServerLobbyStart && !isServerLobbyStart) {
+      // Lobby-managed gameplay may only begin from the server's
+      // match_started event. This is especially strict for human-only rooms.
+      return;
+    }
+
     this.currentConfig = {
       ...config,
+      botCount: effectiveBotCountForMode(config.mode, config.botCount),
       cosmetics: config.cosmetics || this.progression.cosmetics,
     };
     this.sound.resume();
     this.isPaused = false;
+    this.clearTransientInput();
     this.activeBuildPreview = null;
     this.spectatedPlayerId = null;
     this.countdownTimer = 2.6;
     this.lastCountdownBeepInt = 4;
     this.matchResultRecorded = false;
+    this.localEliminationPlacement = null;
+    this.localEliminatedByName = '';
     this.hud.updateBuildModeIndicator(null);
     this.hud.updateSpectatorBanner(null);
     this.hud.resetHUD();
@@ -815,8 +1126,23 @@ export class GameEngine {
     this.particles.clear();
     this.world.resetDynamicStructures();
 
-    const spawnX = (Math.random() - 0.5) * 40;
-    const spawnZ = (Math.random() - 0.5) * 40;
+    let spawnX = (Math.random() - 0.5) * 40;
+    let spawnZ = (Math.random() - 0.5) * 40;
+    if (
+      !this.currentConfig.skyDrop &&
+      Math.abs(spawnX) < 17 &&
+      Math.abs(spawnZ) < 17
+    ) {
+      // Ground spawns use a clear Plaza approach instead of appearing
+      // inside the central tower's walls/core. Skydiving remains free-form.
+      if (Math.abs(spawnX) >= Math.abs(spawnZ)) {
+        spawnX = spawnX < 0 ? -19 : 19;
+        spawnZ = 4;
+      } else {
+        spawnX = 4;
+        spawnZ = spawnZ < 0 ? -19 : 19;
+      }
+    }
     const groundY = this.world.terrain.getTerrainHeight(spawnX, spawnZ);
     const spawnY = this.currentConfig.skyDrop ? 92 : groundY + 0.3;
 
@@ -825,28 +1151,50 @@ export class GameEngine {
       this.progression.credentials.accountToken
     );
 
-    const localPlayer = this.network.initializeMatch(
-      this.currentConfig,
-      spawnX,
-      spawnY,
-      spawnZ
-    );
+    const localPlayer =
+      isHumanOnly || isServerLobbyStart
+        ? this.network.initializeStartedMatch(this.currentConfig, spawnX, spawnY, spawnZ)
+        : this.network.initializeMatch(this.currentConfig, spawnX, spawnY, spawnZ);
     this.createCharacterMeshForPlayer(localPlayer);
 
-    this.lootSystem.populateWorldLoot(this.network.state, this.world);
+    this.lootSystem.populateWorldLoot(this.network.state, this.world, {
+      // Online clients must not create the unique vault items themselves;
+      // the room server sends that registry in room_loot_sync.
+      includeLegendaryTowerVaultLoot: !this.network.isOnlineRoom,
+    });
 
-    const bots = this.botController.spawnBots(
-      this.currentConfig.botCount,
-      this.network.state,
-      this.world,
-      this.currentConfig.skyDrop
-    );
-    for (const bot of bots) {
-      this.createCharacterMeshForPlayer(bot);
+    if (!isHumanOnly) {
+      const bots = this.botController.spawnBots(
+        this.currentConfig.botCount,
+        this.network.state,
+        this.world,
+        this.currentConfig.skyDrop
+      );
+      for (const bot of bots) {
+        this.createCharacterMeshForPlayer(bot);
+      }
     }
 
-    this.network.state.totalParticipants = this.network.state.players.size;
-    this.network.state.aliveCount = this.network.state.players.size;
+    if (isHumanOnly || isServerLobbyStart) {
+      const snapshot = this.network.roomSnapshot;
+      const humanParticipants =
+        snapshot?.matchParticipantCount || snapshot?.connectedHumans || 1;
+      this.network.state.totalParticipants = Math.max(
+        0,
+        isHumanOnly
+          ? humanParticipants
+          : humanParticipants + (snapshot?.botCount ?? this.currentConfig.botCount)
+      );
+      this.network.state.aliveCount = Math.max(
+        0,
+        isHumanOnly
+          ? snapshot?.aliveHumans || this.network.state.totalParticipants
+          : this.network.state.totalParticipants
+      );
+    } else {
+      this.network.state.totalParticipants = this.network.state.players.size;
+      this.network.state.aliveCount = this.network.state.players.size;
+    }
     this.isRunningMatch = true;
 
     document.getElementById('lobby-overlay')?.classList.add('hidden');
@@ -860,13 +1208,34 @@ export class GameEngine {
     const cdModePill = document.getElementById('countdown-mode-pill');
     if (cdOverlay) cdOverlay.classList.remove('hidden');
     if (cdModePill) {
-      cdModePill.textContent =
-        this.currentConfig.mode === 'online'
-          ? `🌐 ONLINE ROOM: ${this.network.roomCode}`
-          : `🤖 SOLO BATTLE ROYALE (${this.network.state.totalParticipants} CONTENDERS)`;
+      cdModePill.textContent = isHumanOnly
+        ? `👥 HUMAN PLAYERS ONLY — NO BOTS • ROOM: ${this.network.roomCode} • ${this.network.state.totalParticipants} HUMANS`
+        : isServerLobbyStart
+          ? `🌐 MULTIPLAYER LOBBY: ${this.network.roomCode} • ${this.network.roomSnapshot?.matchParticipantCount ?? 1} HUMANS + ${this.currentConfig.botCount} AI`
+          : this.currentConfig.mode === 'online'
+            ? `🌐 ONLINE ROOM: ${this.network.roomCode}`
+            : `🤖 SOLO BATTLE ROYALE (${this.network.state.totalParticipants} CONTENDERS)`;
     }
 
     this.requestPointerLock();
+  }
+
+  /** Clears held/one-shot controls so pause/end transitions cannot leak input. */
+  public clearTransientInput(): void {
+    this.mouseFireHeld = false;
+    this.mouseAimHeld = false;
+    this.touchFireHeld = false;
+    this.touchAimHeld = false;
+    this.mobileMoveX = 0;
+    this.mobileMoveZ = 0;
+    this.mobileJump = false;
+    this.mobileSprint = false;
+    this.pendingSlotSelect = -1;
+    this.pendingInteract = false;
+    this.pendingReload = false;
+    this.pendingCycleMaterial = false;
+    this.pendingBuild = null;
+    this.onTransientInputCleared?.();
   }
 
   public togglePauseMenu(forceState?: boolean): void {
@@ -874,6 +1243,7 @@ export class GameEngine {
     this.isPaused = forceState !== undefined ? forceState : !this.isPaused;
     const pauseEl = document.getElementById('pause-overlay');
     if (this.isPaused) {
+      this.clearTransientInput();
       pauseEl?.classList.remove('hidden');
       if (document.pointerLockElement) {
         document.exitPointerLock();
@@ -889,9 +1259,18 @@ export class GameEngine {
   public returnToMainMenu(): void {
     this.isRunningMatch = false;
     this.isPaused = false;
+    this.clearTransientInput();
     this.activeBuildPreview = null;
     this.spectatedPlayerId = null;
-    this.network.disconnectMultiplayerRoom();
+    if (
+      isHumanOnlySessionMode(this.currentConfig.mode) ||
+      this.pendingLobbyConfig ||
+      this.network.isLobbyManagedRoom
+    ) {
+      this.leaveMultiplayerLobby();
+    } else {
+      this.network.disconnectMultiplayerRoom();
+    }
     this.world.updateBuildPreview(null, 0, 0, 0, 0, false);
     this.hud.updateSpectatorBanner(null);
 
@@ -953,8 +1332,14 @@ export class GameEngine {
   }
 
   public requestPointerLock(): void {
-    const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-    if (!isTouch && this.renderer.domElement.requestPointerLock) {
+    // Touch-only phones/tablets do not use pointer lock, but hybrid laptops
+    // with both a touchscreen and a fine mouse pointer should retain the
+    // existing desktop pointer-lock experience.
+    const touchOnly =
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(hover: none) and (pointer: coarse)').matches &&
+      !window.matchMedia('(pointer: fine)').matches;
+    if (!touchOnly && this.renderer.domElement.requestPointerLock) {
       this.renderer.domElement.requestPointerLock();
     }
   }
@@ -1087,6 +1472,17 @@ export class GameEngine {
       }
     }
 
+    // Authoritative snapshots prune departed remote humans from state; remove
+    // their 3D meshes too so an explicit leave/forfeit cannot leave a frozen
+    // character in the world.
+    for (const [playerId, mesh] of Array.from(this.characterMeshes.entries())) {
+      if (playerId.startsWith('net_') && !state.players.has(playerId)) {
+        this.scene.remove(mesh.root);
+        mesh.dispose();
+        this.characterMeshes.delete(playerId);
+      }
+    }
+
     if (this.countdownTimer > 0) {
       this.countdownTimer = Math.max(0, this.countdownTimer - dt);
       const secInt = Math.ceil(this.countdownTimer);
@@ -1114,24 +1510,28 @@ export class GameEngine {
       state.matchTimer += dt;
     }
 
-    let moveX =
+    const keyboardMoveX =
       (this.keys.has('KeyD') || this.keys.has('ArrowRight') ? 1 : 0) -
       (this.keys.has('KeyA') || this.keys.has('ArrowLeft') ? 1 : 0);
-    let moveZ =
+    const keyboardMoveZ =
       (this.keys.has('KeyS') || this.keys.has('ArrowDown') ? 1 : 0) -
       (this.keys.has('KeyW') || this.keys.has('ArrowUp') ? 1 : 0);
+    const { moveX, moveZ } = combineMoveInput(
+      keyboardMoveX,
+      keyboardMoveZ,
+      this.mobileMoveX,
+      this.mobileMoveZ
+    );
 
-    if (Math.abs(this.mobileMoveX) > 0.05 || Math.abs(this.mobileMoveZ) > 0.05) {
-      moveX = this.mobileMoveX;
-      moveZ = this.mobileMoveZ;
-    }
-
+    let fireHeld = this.mouseFireHeld || this.touchFireHeld;
     let buildTypeToPlace: BuildPieceType | null = this.pendingBuild;
-    if (this.activeBuildPreview && this.mouseFireHeld) {
+    if (this.activeBuildPreview && fireHeld) {
       buildTypeToPlace = this.activeBuildPreview;
       this.activeBuildPreview = null;
       this.hud.updateBuildModeIndicator(null);
       this.mouseFireHeld = false;
+      this.touchFireHeld = false;
+      fireHeld = false;
     }
 
     const inputPacket: PlayerInputPacket = {
@@ -1140,9 +1540,12 @@ export class GameEngine {
       moveX,
       moveZ,
       jump: this.keys.has('Space') || this.mobileJump,
-      sprint: this.keys.has('ShiftLeft') || this.keys.has('ShiftRight'),
-      aim: this.mouseAimHeld,
-      fire: this.mouseFireHeld && !this.activeBuildPreview,
+      sprint:
+        this.keys.has('ShiftLeft') ||
+        this.keys.has('ShiftRight') ||
+        this.mobileSprint,
+      aim: this.mouseAimHeld || this.touchAimHeld,
+      fire: fireHeld && !this.activeBuildPreview,
       reload: this.pendingReload,
       interact: this.pendingInteract,
       buildType: buildTypeToPlace,
@@ -1232,21 +1635,23 @@ export class GameEngine {
     // Smoothly interpolate remote human players at 60Hz+ render rate
     this.network.updateRemotePlayers(dt);
 
-    this.perfMonitor.beginSubsystem();
-    this.botController.updateBots(
-      dt,
-      state,
-      this.world,
-      this.characterMeshes,
-      this.playerController,
-      this.lootSystem,
-      this.particles,
-      this.sound,
-      this.currentConfig.difficulty,
-      (attacker, victim, dmg, isHead, isShield, weaponName, hitPoint) =>
-        this.handlePlayerHit(attacker, victim, dmg, isHead, isShield, weaponName, hitPoint)
-    );
-    this.perfMonitor.endSubsystem('botAi');
+    if (!isHumanOnlySessionMode(this.currentConfig.mode)) {
+      this.perfMonitor.beginSubsystem();
+      this.botController.updateBots(
+        dt,
+        state,
+        this.world,
+        this.characterMeshes,
+        this.playerController,
+        this.lootSystem,
+        this.particles,
+        this.sound,
+        this.currentConfig.difficulty,
+        (attacker, victim, dmg, isHead, isShield, weaponName, hitPoint) =>
+          this.handlePlayerHit(attacker, victim, dmg, isHead, isShield, weaponName, hitPoint)
+      );
+      this.perfMonitor.endSubsystem('botAi');
+    }
 
     // Storm update: if connected to an authoritative online room, server drives storm coordinates
     if (this.network.isOnlineRoom && this.network.roomConnected) {
@@ -1255,16 +1660,22 @@ export class GameEngine {
       this.stormSystem.update(dt, state);
     }
 
-    this.stormDamageTicker += dt;
-    if (this.stormDamageTicker >= 1.0) {
-      this.stormDamageTicker = 0;
-      for (const p of state.players.values()) {
-        if (!p.alive || p.isGliding) continue;
-        if (!p.isBot && p.id !== this.network.localPlayerId) continue;
-        if (this.stormSystem.isPositionInStorm(state, p.position.x, p.position.z)) {
-          this.applyDirectHealthDamage(p, state.storm.damagePerSecond, null, 'The Storm');
+    if (!isHumanOnlySessionMode(this.currentConfig.mode)) {
+      this.stormDamageTicker += dt;
+      if (this.stormDamageTicker >= 1.0) {
+        this.stormDamageTicker = 0;
+        for (const p of state.players.values()) {
+          if (!p.alive || p.isGliding) continue;
+          if (!p.isBot && p.id !== this.network.localPlayerId) continue;
+          if (this.stormSystem.isPositionInStorm(state, p.position.x, p.position.z)) {
+            this.applyDirectHealthDamage(p, state.storm.damagePerSecond, null, 'The Storm');
+          }
         }
       }
+    } else {
+      // Human-only storm damage/eliminations are server-authoritative and
+      // arrive as server_hit events; local prediction would double-apply it.
+      this.stormDamageTicker = 0;
     }
 
     this.perfMonitor.beginSubsystem();
@@ -1313,6 +1724,32 @@ export class GameEngine {
 
   private recountAliveCombatants(): void {
     const state = this.network.state;
+
+    if (isHumanOnlySessionMode(this.currentConfig.mode)) {
+      const snapshot = this.network.roomSnapshot;
+      if (snapshot?.matchParticipantCount) {
+        state.totalParticipants = snapshot.matchParticipantCount;
+      }
+
+      if (snapshot && state.players.size < snapshot.matchParticipantCount) {
+        state.aliveCount = snapshot.aliveHumans;
+        return;
+      }
+
+      let aliveHumans = 0;
+      for (const player of state.players.values()) {
+        const isHumanPlayer =
+          !player.isBot &&
+          (player.id === this.network.localPlayerId || player.id.startsWith('net_')) &&
+          player.isParticipant !== false;
+        if (isHumanPlayer && player.alive) aliveHumans++;
+      }
+      state.aliveCount = state.totalParticipants
+        ? Math.min(state.totalParticipants, aliveHumans)
+        : aliveHumans;
+      return;
+    }
+
     let alive = 0;
     for (const p of state.players.values()) {
       if (p.alive) alive++;
@@ -1330,6 +1767,15 @@ export class GameEngine {
     hitPoint: THREE.Vector3
   ): void {
     if (!victim.alive) return;
+    if (
+      this.currentConfig.teamMode &&
+      this.currentConfig.teamMode !== 'solo' &&
+      attacker.id !== victim.id &&
+      attacker.teamId &&
+      attacker.teamId === victim.teamId
+    ) {
+      return;
+    }
 
     attacker.damageDealt += damage;
 
@@ -1491,6 +1937,7 @@ export class GameEngine {
     localPlayer: PlayerState,
     eliminatedBy: string
   ): void {
+    this.clearTransientInput();
     if (document.pointerLockElement) {
       document.exitPointerLock();
     }
@@ -1515,9 +1962,20 @@ export class GameEngine {
 
     banner.textContent = isVictory ? '👑 VICTORY ROYALE!' : '💀 ELIMINATED';
     banner.className = isVictory ? 'end-title victory' : 'end-title defeated';
+    const teamMode = this.currentConfig.teamMode || 'solo';
+    const isTeamMatch = teamMode === 'duo' || teamMode === 'squad';
+    const placementTotal = isTeamMatch
+      ? new Set(
+          Array.from(this.network.state.players.values()).map(
+            (player) => player.teamId || player.id
+          )
+        ).size
+      : this.network.state.totalParticipants;
     subtitle.textContent = isVictory
-      ? `${localPlayer.name} conquered the CI Craft Island!`
-      : `Eliminated by ${eliminatedBy} — Placed #${placement} of ${this.network.state.totalParticipants}`;
+      ? isTeamMatch
+        ? `Your ${teamMode === 'duo' ? 'Duo' : 'Squad'} team conquered the CI Craft Island!`
+        : `${localPlayer.name} conquered the CI Craft Island!`
+      : `Eliminated by ${eliminatedBy} — Placed #${placement} of ${placementTotal}${isTeamMatch ? ' teams' : ''}`;
 
     if (spectateBtn) {
       spectateBtn.classList.toggle(
@@ -1568,12 +2026,27 @@ export class GameEngine {
     endOverlay.classList.remove('hidden');
   }
 
+  private getViewportSize(): { width: number; height: number } {
+    const visualViewport = window.visualViewport;
+    return {
+      width: Math.max(1, Math.round(visualViewport?.width ?? window.innerWidth)),
+      height: Math.max(1, Math.round(visualViewport?.height ?? window.innerHeight)),
+    };
+  }
+
   private onWindowResize(): void {
-    this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.tpCamera.resize(window.innerWidth / window.innerHeight);
+    const { width, height } = this.getViewportSize();
+    this.renderer.setSize(width, height);
+    this.tpCamera.resize(width / height);
   }
 
   public handleMouseMove(movementX: number, movementY: number): void {
     this.tpCamera.handleMouseMove(movementX, movementY);
+  }
+
+  public handleTouchLook(deltaX: number, deltaY: number): void {
+    const localPlayer = this.network.state.players.get(this.network.localPlayerId);
+    const precisionScale = localPlayer?.isAiming ? 0.62 : 1;
+    this.tpCamera.handleTouchLook(deltaX, deltaY, precisionScale);
   }
 }

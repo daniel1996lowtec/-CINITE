@@ -53,6 +53,16 @@ export class LootSystem {
     itemSnapshot: LootItemState,
     swappedDrop?: LootItemState
   ) => void;
+  /**
+   * Online vault pickups are not applied optimistically. GameEngine sends
+   * this request to the server; inventory changes happen only when the
+   * server's loot_collected confirmation returns.
+   */
+  public onServerAuthoritativeLootRequested?: (
+    item: LootItemState,
+    predictedSwappedDrop?: LootItemState
+  ) => boolean;
+  private authoritativePendingIds: Map<string, number> = new Map();
 
   // Shared Geometries & Materials (eliminates ~400 redundant allocations per match)
   private readonly chestBoxGeo = new THREE.BoxGeometry(1.3, 0.56, 0.88);
@@ -100,6 +110,8 @@ export class LootSystem {
   private readonly ringMatCache: Map<WeaponRarity, THREE.MeshBasicMaterial> = new Map();
   private readonly beamGeoCache: Map<WeaponRarity, THREE.CylinderGeometry> = new Map();
   private readonly beamMatCache: Map<WeaponRarity, THREE.MeshBasicMaterial> = new Map();
+  private towerBeamGeo: THREE.CylinderGeometry | null = null;
+  private towerBeamMat: THREE.MeshBasicMaterial | null = null;
   private readonly matDropMatCache: Map<BuildMaterialType, THREE.MeshStandardMaterial> =
     new Map();
 
@@ -116,9 +128,14 @@ export class LootSystem {
     this.chestVisuals.clear();
     this.spawnPopTimers.clear();
     this.collectedIds.clear();
+    this.authoritativePendingIds.clear();
   }
 
-  public populateWorldLoot(state: MatchState, world: IslandWorld): void {
+  public populateWorldLoot(
+    state: MatchState,
+    world: IslandWorld,
+    options: { includeLegendaryTowerVaultLoot?: boolean } = {}
+  ): void {
     this.clearAll();
 
     // 1. Spawn Golden Treasure Chests at POI Chest Points
@@ -184,6 +201,33 @@ export class LootSystem {
         }
       }
     });
+
+    // 3. Fixed tower climb rewards. Unlike generic ground points these
+    // never roll a legendary weapon below the roof.
+    for (const definition of world.legendaryTowerFloorLootItems) {
+      this.spawnFromItemState(
+        state,
+        { ...definition, position: { ...definition.position } },
+        false
+      );
+    }
+
+    // 4. Offline matches populate the vault locally. Online matches pass
+    // includeLegendaryTowerVaultLoot=false and render only the registry
+    // sent by the authoritative room server.
+    if (options.includeLegendaryTowerVaultLoot !== false) {
+      for (const definition of world.legendaryTowerVaultLootItems) {
+        this.spawnFromItemState(
+          state,
+          {
+            ...definition,
+            position: { ...definition.position },
+            serverAuthoritative: false,
+          },
+          false
+        );
+      }
+    }
   }
 
   public spawnWeaponOrConsumableDrop(
@@ -354,40 +398,62 @@ export class LootSystem {
       const ring = new THREE.Mesh(this.lootRingGeo, ringMat);
       ring.rotation.x = -Math.PI / 2;
       ring.position.y = 0.05;
+      if (item.isLegendaryTowerLoot) ring.scale.setScalar(1.65);
       group.add(ring);
 
       if (item.itemType === 'weapon' || item.itemType === 'consumable') {
-        const beamH =
-          item.rarity === 'legendary'
+        const beamH = item.isLegendaryTowerLoot
+          ? 6.4
+          : item.rarity === 'legendary'
             ? 3.4
             : item.rarity === 'epic'
-            ? 2.6
-            : item.rarity === 'rare'
-            ? 2.0
-            : 1.35;
-        let beamGeo = this.beamGeoCache.get(item.rarity);
-        if (!beamGeo) {
-          beamGeo = new THREE.CylinderGeometry(0.16, 0.44, beamH, 10, 1, true);
-          this.beamGeoCache.set(item.rarity, beamGeo);
-        }
-        let beamMat = this.beamMatCache.get(item.rarity);
-        if (!beamMat) {
-          const beamOpacity =
-            item.rarity === 'legendary'
-              ? 0.34
-              : item.rarity === 'epic'
-              ? 0.26
+              ? 2.6
               : item.rarity === 'rare'
-              ? 0.2
-              : 0.13;
-          beamMat = new THREE.MeshBasicMaterial({
-            color: rarityInfo.int,
-            transparent: true,
-            opacity: beamOpacity,
-            side: THREE.DoubleSide,
-            depthWrite: false,
-          });
-          this.beamMatCache.set(item.rarity, beamMat);
+                ? 2.0
+                : 1.35;
+        let beamGeo: THREE.CylinderGeometry | undefined;
+        let beamMat: THREE.MeshBasicMaterial | undefined;
+        if (item.isLegendaryTowerLoot) {
+          if (!this.towerBeamGeo) {
+            this.towerBeamGeo = new THREE.CylinderGeometry(0.24, 0.68, beamH, 12, 1, true);
+          }
+          if (!this.towerBeamMat) {
+            this.towerBeamMat = new THREE.MeshBasicMaterial({
+              color: 0xfacc15,
+              transparent: true,
+              opacity: 0.36,
+              side: THREE.DoubleSide,
+              depthWrite: false,
+              blending: THREE.AdditiveBlending,
+            });
+          }
+          beamGeo = this.towerBeamGeo;
+          beamMat = this.towerBeamMat;
+        } else {
+          beamGeo = this.beamGeoCache.get(item.rarity);
+          if (!beamGeo) {
+            beamGeo = new THREE.CylinderGeometry(0.16, 0.44, beamH, 10, 1, true);
+            this.beamGeoCache.set(item.rarity, beamGeo);
+          }
+          beamMat = this.beamMatCache.get(item.rarity);
+          if (!beamMat) {
+            const beamOpacity =
+              item.rarity === 'legendary'
+                ? 0.34
+                : item.rarity === 'epic'
+                  ? 0.26
+                  : item.rarity === 'rare'
+                    ? 0.2
+                    : 0.13;
+            beamMat = new THREE.MeshBasicMaterial({
+              color: rarityInfo.int,
+              transparent: true,
+              opacity: beamOpacity,
+              side: THREE.DoubleSide,
+              depthWrite: false,
+            });
+            this.beamMatCache.set(item.rarity, beamMat);
+          }
         }
         const beam = new THREE.Mesh(beamGeo, beamMat);
         beam.position.y = beamH / 2 + 0.05;
@@ -397,7 +463,7 @@ export class LootSystem {
       if (item.itemType === 'weapon' || item.itemType === 'consumable') {
         const wMesh = createWeaponMesh(item.weaponCategory || 'assault_rifle', item.rarity);
         wMesh.position.y = 0.48;
-        wMesh.scale.setScalar(1.3);
+        wMesh.scale.setScalar(item.isLegendaryTowerLoot ? 1.58 : 1.3);
         wMesh.name = 'floating_item';
         group.add(wMesh);
         this.floatingItems.set(item.id, wMesh);
@@ -444,6 +510,11 @@ export class LootSystem {
     this.floatingItems.delete(id);
     this.chestVisuals.delete(id);
     this.spawnPopTimers.delete(id);
+    this.authoritativePendingIds.delete(id);
+  }
+
+  public clearAuthoritativeLootPending(lootId: string): void {
+    this.authoritativePendingIds.delete(lootId);
   }
 
   public findNearestInteractable(
@@ -457,7 +528,13 @@ export class LootSystem {
     let bestDist = maxDist;
 
     for (const item of state.lootItems.values()) {
-      if (item.opened || this.collectedIds.has(item.id)) continue;
+      if (
+        item.opened ||
+        this.collectedIds.has(item.id) ||
+        this.authoritativePendingIds.has(item.id)
+      ) {
+        continue;
+      }
       const d = Math.hypot(item.position.x - px, item.position.y - py, item.position.z - pz);
       if (d < bestDist) {
         bestDist = d;
@@ -479,6 +556,19 @@ export class LootSystem {
     for (const item of state.lootItems.values()) {
       if (item.opened || this.collectedIds.has(item.id)) continue;
       if (item.itemType !== 'ammo' && item.itemType !== 'material') continue;
+      if (item.serverAuthoritative) {
+        if (player.isBot || this.authoritativePendingIds.has(item.id)) continue;
+        const dxAuth = item.position.x - player.position.x;
+        const dzAuth = item.position.z - player.position.z;
+        if (
+          dxAuth * dxAuth + dzAuth * dzAuth < 4.84 &&
+          Math.abs(item.position.y - player.position.y) < 2.2 &&
+          this.onServerAuthoritativeLootRequested?.(item)
+        ) {
+          this.authoritativePendingIds.set(item.id, this.time);
+        }
+        continue;
+      }
       const dx = item.position.x - player.position.x;
       const dz = item.position.z - player.position.z;
       if (dx * dx + dz * dz < 4.84 && Math.abs(item.position.y - player.position.y) < 2.2) {
@@ -524,14 +614,114 @@ export class LootSystem {
     }
   }
 
+  private buildWeaponOrConsumableItem(
+    category: WeaponCategory,
+    rarity: WeaponRarity,
+    x: number,
+    y: number,
+    z: number,
+    id: string
+  ): LootItemState {
+    const stats = createWeaponStats(category, rarity);
+    return {
+      id,
+      itemType: stats.isConsumable ? 'consumable' : 'weapon',
+      weaponCategory: category,
+      rarity,
+      name: stats.name,
+      amount: 1,
+      position: { x, y, z },
+      opened: false,
+    };
+  }
+
+  private predictSwappedDrop(
+    player: PlayerState,
+    item: LootItemState
+  ): LootItemState | undefined {
+    if (
+      (item.itemType !== 'weapon' && item.itemType !== 'consumable') ||
+      !item.weaponCategory
+    ) {
+      return undefined;
+    }
+    const stats = createWeaponStats(item.weaponCategory, item.rarity);
+    if (stats.isConsumable) {
+      for (let i = 1; i < 5; i++) {
+        const slot = player.inventory[i];
+        if (slot && slot.category === item.weaponCategory && slot.count < 3) {
+          return undefined;
+        }
+      }
+    }
+    for (let i = 1; i < 5; i++) {
+      if (!player.inventory[i]) return undefined;
+    }
+    const targetSlot = player.activeSlot === 0 ? 1 : player.activeSlot;
+    const oldSlot = player.inventory[targetSlot];
+    if (!oldSlot) return undefined;
+    return this.buildWeaponOrConsumableItem(
+      oldSlot.category,
+      oldSlot.rarity,
+      player.position.x + 0.8,
+      player.position.y,
+      player.position.z + 0.8,
+      `swap_${player.id}_${Date.now().toString(36)}`
+    );
+  }
+
+  /** Applies a vault pickup only after the room server confirms the claim. */
+  public applyAuthoritativeLootCollected(
+    state: MatchState,
+    player: PlayerState,
+    authoritativeItem: LootItemState,
+    particles: ParticleSystem,
+    sound: SoundManager,
+    swappedDrop?: LootItemState
+  ): void {
+    this.authoritativePendingIds.delete(authoritativeItem.id);
+    if (this.collectedIds.has(authoritativeItem.id)) return;
+    const item = state.lootItems.get(authoritativeItem.id) || authoritativeItem;
+    if (!state.lootItems.has(item.id)) state.lootItems.set(item.id, item);
+    const shouldSpawnSwappedDrop = Boolean(
+      swappedDrop && this.predictSwappedDrop(player, item)
+    );
+    this.interactWithLoot(state, player, item, particles, sound, {
+      confirmed: true,
+      swappedDropAlreadySpawned: shouldSpawnSwappedDrop ? swappedDrop : undefined,
+    });
+    if (shouldSpawnSwappedDrop && swappedDrop) {
+      this.spawnFromItemState(state, swappedDrop, true);
+    }
+  }
+
   public interactWithLoot(
     state: MatchState,
     player: PlayerState,
     item: LootItemState,
     particles: ParticleSystem,
-    sound: SoundManager
+    sound: SoundManager,
+    authoritativeOptions?: {
+      confirmed?: boolean;
+      swappedDropAlreadySpawned?: LootItemState;
+    }
   ): void {
     if (this.collectedIds.has(item.id)) return;
+    if (player.isBot && item.serverAuthoritative) return;
+    if (item.serverAuthoritative && !authoritativeOptions?.confirmed) {
+      if (this.authoritativePendingIds.has(item.id)) return;
+      const predictedSwappedDrop = this.predictSwappedDrop(player, item);
+      if (
+        this.onServerAuthoritativeLootRequested?.(item, predictedSwappedDrop)
+      ) {
+        this.authoritativePendingIds.set(item.id, this.time);
+      }
+      return;
+    }
+    if (authoritativeOptions?.confirmed) {
+      this.authoritativePendingIds.delete(item.id);
+    }
+    const notifyLocalCollection = !authoritativeOptions?.confirmed;
 
     if (item.itemType === 'chest') {
       if (item.opened) return;
@@ -638,7 +828,7 @@ export class LootSystem {
       if (!player.isBot) {
         sound.playPickup(false, false);
         this.onLocalLootFeedback?.(`+${item.name}`, item.rarity, false);
-        this.onLocalLootCollected?.(item.id, item);
+        if (notifyLocalCollection) this.onLocalLootCollected?.(item.id, item);
       }
       particles.spawnLootPickupEffect(
         new THREE.Vector3(item.position.x, item.position.y, item.position.z),
@@ -656,7 +846,7 @@ export class LootSystem {
       if (!player.isBot) {
         sound.playPickup(false, false);
         this.onLocalLootFeedback?.(`+${item.name}`, item.rarity, false);
-        this.onLocalLootCollected?.(item.id, item);
+        if (notifyLocalCollection) this.onLocalLootCollected?.(item.id, item);
       }
       particles.spawnLootPickupEffect(
         new THREE.Vector3(item.position.x, item.position.y, item.position.z),
@@ -684,7 +874,7 @@ export class LootSystem {
                 item.rarity,
                 false
               );
-              this.onLocalLootCollected?.(item.id, item);
+              if (notifyLocalCollection) this.onLocalLootCollected?.(item.id, item);
             }
             particles.spawnLootPickupEffect(
               new THREE.Vector3(item.position.x, item.position.y, item.position.z),
@@ -712,16 +902,18 @@ export class LootSystem {
         const oldSlot = player.inventory[targetSlot];
         if (oldSlot) {
           swappedOutName = oldSlot.name;
-          swappedDrop = this.spawnWeaponOrConsumableDrop(
-            state,
-            oldSlot.category,
-            oldSlot.rarity,
-            player.position.x + 0.8,
-            player.position.y,
-            player.position.z + 0.8,
-            `swap_${player.id}_${Date.now().toString(36)}`,
-            true
-          );
+          swappedDrop =
+            authoritativeOptions?.swappedDropAlreadySpawned ||
+            this.spawnWeaponOrConsumableDrop(
+              state,
+              oldSlot.category,
+              oldSlot.rarity,
+              player.position.x + 0.8,
+              player.position.y,
+              player.position.z + 0.8,
+              `swap_${player.id}_${Date.now().toString(36)}`,
+              true
+            );
         }
       }
 
@@ -749,7 +941,9 @@ export class LootSystem {
           Boolean(swappedOutName),
           swappedOutName
         );
-        this.onLocalLootCollected?.(item.id, item, swappedDrop);
+        if (notifyLocalCollection) {
+          this.onLocalLootCollected?.(item.id, item, swappedDrop);
+        }
       }
 
       if (stats.ammoType !== 'none') {
@@ -901,6 +1095,9 @@ export class LootSystem {
   public update(dt: number, cameraPos?: THREE.Vector3): void {
     this.time += dt;
     this.frameCounter++;
+    for (const [lootId, requestedAt] of this.authoritativePendingIds.entries()) {
+      if (this.time - requestedAt > 4) this.authoritativePendingIds.delete(lootId);
+    }
     const isEvenFrame = (this.frameCounter & 1) === 0;
 
     for (const [id, rem] of this.spawnPopTimers.entries()) {

@@ -10,7 +10,7 @@ import {
   WeaponRarity,
 } from '../network/schemas';
 import { IslandWorld } from '../world/IslandWorld';
-import { ISLAND_POIS } from '../world/TerrainGenerator';
+import { ISLAND_ROUTE_POINTS } from '../world/TerrainGenerator';
 import { createWeaponStats, RARITY_COLORS } from '../weapons/WeaponDefinitions';
 import { CharacterMesh } from './CharacterMesh';
 import { PlayerController, ShotHitCallback } from './PlayerController';
@@ -95,6 +95,42 @@ export class BotAIController {
         mem.investigateTimer = 6.0;
       }
     }
+  }
+
+  /**
+   * Picks a patrol point in the open streets/squares around a route centre.
+   * Expansion districts place buildings only 10–15m from those centres, so a
+   * purely random ±12m waypoint can otherwise land inside a house and make a
+   * bot hug its wall until the waypoint timer expires. This is called only
+   * when a waypoint changes, not per frame.
+   */
+  private findOpenWaypoint(
+    world: IslandWorld,
+    centerX: number,
+    centerZ: number,
+    spread: number
+  ): { x: number; z: number } {
+    let fallbackX = centerX;
+    let fallbackZ = centerZ;
+
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const x = centerX + (Math.random() - 0.5) * spread;
+      const z = centerZ + (Math.random() - 0.5) * spread;
+      if (attempt === 0) {
+        fallbackX = x;
+        fallbackZ = z;
+      }
+      if (Math.hypot(x, z) > 224) continue;
+      if (world.terrain.getTerrainHeight(x, z) < 0.75) continue;
+      if (world.terrain.getRiverDistance(x, z) < 5) continue;
+      if (world.mapExpansion.isInsideStructure(x, z, 1.1)) continue;
+      return { x, z };
+    }
+
+    if (!world.mapExpansion.isInsideStructure(centerX, centerZ, 1.1)) {
+      return { x: centerX, z: centerZ };
+    }
+    return { x: fallbackX, z: fallbackZ };
   }
 
   public spawnBots(
@@ -199,15 +235,12 @@ export class BotAIController {
       state.players.set(id, bot);
       spawned.push(bot);
 
-      const poiIdx = i % ISLAND_POIS.length;
-      const poi = ISLAND_POIS[poiIdx];
+      const poiIdx = i % ISLAND_ROUTE_POINTS.length;
+      const poi = ISLAND_ROUTE_POINTS[poiIdx];
+      const initialWaypoint = this.findOpenWaypoint(world, poi.x, poi.z, 24);
       this.memories.set(id, {
         aiState: 'PATROLLING',
-        waypoint: new THREE.Vector3(
-          poi.x + (Math.random() - 0.5) * 24,
-          poi.baseHeight,
-          poi.z + (Math.random() - 0.5) * 24
-        ),
+        waypoint: new THREE.Vector3(initialWaypoint.x, poi.baseHeight, initialWaypoint.z),
         waypointTimer: 8 + Math.random() * 6,
         poiRouteIndex: poiIdx,
         investigateTimer: 0,
@@ -413,18 +446,15 @@ export class BotAIController {
           mem.waypoint.z - bot.position.z
         );
         if (mem.waypointTimer <= 0 || distToWp < 4.5) {
-          mem.poiRouteIndex = (mem.poiRouteIndex + 1) % ISLAND_POIS.length;
-          const nextPoi = ISLAND_POIS[mem.poiRouteIndex];
+          mem.poiRouteIndex = (mem.poiRouteIndex + 1) % ISLAND_ROUTE_POINTS.length;
+          const nextPoi = ISLAND_ROUTE_POINTS[mem.poiRouteIndex];
           const poiDistToStorm = Math.hypot(
             nextPoi.x - stormCenterX,
             nextPoi.z - stormCenterZ
           );
           if (poiDistToStorm < stormRadius * 0.8) {
-            mem.waypoint.set(
-              nextPoi.x + (Math.random() - 0.5) * 20,
-              0,
-              nextPoi.z + (Math.random() - 0.5) * 20
-            );
+            const openWaypoint = this.findOpenWaypoint(world, nextPoi.x, nextPoi.z, 20);
+            mem.waypoint.set(openWaypoint.x, 0, openWaypoint.z);
           } else {
             const angle = Math.random() * Math.PI * 2;
             const r = Math.random() * Math.min(stormRadius * 0.72, 145);
@@ -668,10 +698,13 @@ export class BotAIController {
     let bestDist = radius;
 
     for (const item of state.lootItems.values()) {
-      if (item.opened) continue;
+      if (item.opened || item.serverAuthoritative) continue;
       if (item.itemType !== 'chest' && item.itemType !== 'weapon' && item.itemType !== 'consumable') {
         continue;
       }
+      // Do not path toward second-floor/rooftop loot from ground level (or
+      // vice versa): the whisker steering has no stair/ramp route planner.
+      if (Math.abs(item.position.y - bot.position.y) > 2.4) continue;
       const d = Math.hypot(
         item.position.x - bot.position.x,
         item.position.z - bot.position.z
