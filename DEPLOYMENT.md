@@ -6,7 +6,7 @@ This guide explains how to deploy **CI Craft 3D Battle Royale** to a permanent p
 
 ## 1. Architecture Overview
 
-`server/multiplayerServer.mjs` is a single unified Node.js (>= 22) production server that:
+`server/multiplayerServer.mjs` is a single unified Node.js (pinned to 22.14.0 via `.node-version` / `package.json` `engines`) production server that:
 1. Serves the compiled static Three.js frontend (`dist/` and `public/models/soldier.glb`).
 2. Upgrades `/ws` connections to authoritative WebSocket (`ws://` in dev, `wss://` over HTTPS in production).
 3. Exposes REST endpoints for health checks (`GET /health`), room creation/discovery (`POST /api/room/create`, `GET /api/room`), and persistent account authentication & cross-device passkey linking (`POST /api/account/init`, `POST /api/account/restore`, `POST /api/account/cosmetics`, `GET /api/progression`).
@@ -25,7 +25,9 @@ Configure these in your hosting dashboard (never commit real secrets to Git):
 | Variable | Required | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `NODE_ENV` | Yes | `production` | Enables production runtime behavior. |
-| `PORT` | Auto | `2567` | TCP port bound by the HTTP + WebSocket server (injected automatically by Render/Railway/Fly). |
+| `PORT` | Auto | `2567` (local fallback only) | TCP port bound by the HTTP + WebSocket server. Injected automatically by Render/Railway/Fly — never hardcode it in hosting config (`render.yaml` etc.), or the platform cannot route traffic to the process. |
+| `DATABASE_CONNECT_RETRIES` | No | `5` | PostgreSQL connection attempts (with backoff) during startup before failing the deploy. |
+| `DATABASE_FALLBACK_SQLITE` | No | *(unset)* | Emergency escape hatch: set to `1` to fall back to on-disk SQLite when `DATABASE_URL` is unreachable. Not recommended on ephemeral disks. |
 | `HOST` | No | `0.0.0.0` | Network interface to bind. |
 | `DATABASE_URL` | Recommended | *(empty -> SQLite)* | PostgreSQL connection URL (`postgresql://user:pass@host:5432/dbname?sslmode=require`). |
 | `ACCOUNT_TOKEN_SECRET` | Yes (Prod) | *(auto-saved in `./data/.server_secret`)* | 64-character hex secret for HMAC-SHA256 account token signing. Generate via `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`. |
@@ -41,10 +43,11 @@ This repository includes `render.yaml` which configures both the Node.js Web Ser
 1. Push your branch/repository to GitHub.
 2. In the [Render Dashboard](https://dashboard.render.com/), click **New +** -> **Blueprint** and select this repository.
 3. Render will automatically read `render.yaml` and configure:
-   - **Build Command**: `npm ci && npm run build && npm run db:migrate`
+   - **Build Command**: `npm ci && npm run build`
    - **Start Command**: `npm run start`
    - **Health Check Path**: `/health`
-   - **Environment Variables**: `NODE_ENV=production`, `ACCOUNT_TOKEN_SECRET` (auto-generated), and `DATABASE_URL` (linked to `cicraft-postgres`).
+   - **Environment Variables**: `NODE_ENV=production`, `NODE_VERSION=22.14.0`, `ACCOUNT_TOKEN_SECRET` (auto-generated), and `DATABASE_URL` (linked to `cicraft-postgres`). `PORT` is injected by Render at runtime and must not be set manually.
+   - **Database Migrations**: run automatically (and idempotently) during server startup — never add `npm run db:migrate` to the build command, because Render's internal PostgreSQL hostname is only reachable over the private network at runtime, not during build.
 4. Once deployed, open your `https://<your-service>.onrender.com` URL. Both HTTPS and `wss://<your-service>.onrender.com/ws` work automatically.
 
 ---
@@ -58,7 +61,7 @@ This repository includes `render.yaml` which configures both the Node.js Web Ser
    node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
    ```
 4. Railway automatically uses `railway.json`:
-   - **Build Command**: `npm ci && npm run build && npm run db:migrate`
+   - **Build Command**: `npm ci && npm run build` (migrations run automatically at server startup)
    - **Start Command**: `npm run start`
    - **Healthcheck Path**: `/health`
 5. Generate a public domain in Railway Settings -> Networking.

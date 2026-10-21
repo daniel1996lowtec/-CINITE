@@ -1,18 +1,27 @@
-# Render Blueprint (`render.yaml`) for CI Craft 2.8/2.9 Online Multiplayer & Persistent Accounts
+# Render Blueprint (`render.yaml`) for CI Craft Online Multiplayer & Persistent Accounts
 # Deploys the Node.js HTTP/WSS server + static frontend AND provisions a managed PostgreSQL database.
+#
+# Notes:
+# - Do NOT set PORT here: Render injects its own PORT at runtime and routes traffic to it.
+#   The server binds 0.0.0.0:$PORT (falling back to 2567 only for local development).
+# - Do NOT run database migrations in buildCommand: Render's internal DATABASE_URL hostname
+#   is only resolvable over the private network at runtime, not during build.
+#   `server/multiplayerServer.mjs` runs the idempotent migrations during startup instead.
 services:
   - type: web
     name: cicraft-battle-royale
     runtime: node
     plan: free
-    buildCommand: npm ci && npm run build && npm run db:migrate
+    buildCommand: npm ci && npm run build
     startCommand: npm run start
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production
-      - key: PORT
-        value: 2567
+      - key: NODE_VERSION
+        value: 22.14.0
+      - key: HOST
+        value: 0.0.0.0
       - key: ACCOUNT_TOKEN_SECRET
         generateValue: true
       - key: ALLOWED_ORIGINS
@@ -27,4 +36,3 @@ databases:
     databaseName: cicraft
     user: cicraft_user
     plan: free
-

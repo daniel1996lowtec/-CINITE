@@ -26,7 +26,13 @@ const ROOT_DIR = path.resolve(__dirname, '..');
 const DIST_DIR = path.join(ROOT_DIR, 'dist');
 const PUBLIC_DIR = path.join(ROOT_DIR, 'public');
 
-const PORT = Number(process.env.PORT || 2567);
+// Hosting platforms (Render/Railway/Fly) inject PORT at runtime — always honor
+// it. 2567 is only the local-development fallback when PORT is unset/invalid.
+const parsedPort = Number(process.env.PORT);
+const PORT =
+  Number.isInteger(parsedPort) && parsedPort > 0 && parsedPort <= 65535
+    ? parsedPort
+    : 2567;
 const HOST = process.env.HOST || '0.0.0.0';
 const MAX_WS_PAYLOAD_BYTES = 16 * 1024;
 const MAX_HTTP_BODY_BYTES = 32 * 1024;
@@ -54,7 +60,18 @@ const MIME_TYPES = {
 };
 
 const db = new PersistenceManager();
-await db.init();
+// Database connection + idempotent schema migrations run at server startup
+// (never during the Docker/platform image build, where the production
+// DATABASE_URL — e.g. Render's internal PostgreSQL hostname — is unreachable).
+try {
+  await db.init();
+} catch (err) {
+  console.error(
+    '[CI Craft Multiplayer] Fatal: database initialization (connection/migrations) failed:',
+    err
+  );
+  process.exit(1);
+}
 
 /** @type {Map<string, any>} */
 const rooms = new Map();
@@ -373,7 +390,7 @@ const server = http.createServer(async (req, res) => {
     }
     sendJson(res, 200, {
       status: 'ok',
-      version: '2.8.0',
+      version: '3.0.0',
       uptimeSec: Math.floor((Date.now() - SERVER_STARTED_AT) / 1000),
       rooms: rooms.size,
       activePlayers,
@@ -1315,6 +1332,11 @@ async function gracefulShutdown(signal) {
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+server.on('error', (err) => {
+  console.error(`[CI Craft Multiplayer] Fatal server error on ${HOST}:${PORT}:`, err);
+  process.exit(1);
+});
 
 server.listen(PORT, HOST, () => {
   console.log(

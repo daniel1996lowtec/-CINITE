@@ -13,8 +13,12 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DatabaseSync } from 'node:sqlite';
 import pg from 'pg';
+
+// NOTE: `node:sqlite` is loaded lazily inside `PersistenceManager.init()`.
+// A static import would crash the process before PostgreSQL mode can even
+// start on any Node build where the (still experimental) built-in SQLite
+// module is unavailable, even though SQLite is only used for local dev.
 
 const { Pool } = pg;
 
@@ -129,6 +133,76 @@ function loadOrCreateServerSecret() {
   return generated;
 }
 
+/**
+ * Decide the `pg` SSL configuration for a `DATABASE_URL`.
+ *
+ * Rules (in priority order):
+ * 1. An explicit `sslmode` in the URL (or `PGSSLMODE` in the environment) wins:
+ *    `disable` -> no TLS; `require`/`prefer`/`verify-ca`/`verify-full` -> TLS with
+ *    `rejectUnauthorized: false`. Render Postgres uses certificates that cannot be
+ *    verified with `verify-ca`/`verify-full` on internal connections (self-signed),
+ *    and node-postgres treats `sslmode=require` in the URL as `verify-full`, so the
+ *    mode is translated to an explicit `ssl` object instead (see rule 3).
+ * 2. With no explicit mode: loopback and private/internal hostnames (Render's
+ *    `dpg-...` internal hostnames, `*.internal`, docker service names — i.e. hosts
+ *    reachable only over the platform's private network) use plaintext, which is
+ *    what Render/Railway internal database URLs expect. Public hostnames (external
+ *    Render/Neon/Supabase URLs, ...) use TLS with `rejectUnauthorized: false`.
+ * 3. SSL parameters are stripped from the returned connection string: if any of
+ *    `sslmode`/`sslcert`/`sslkey`/`sslrootcert` are present in the URL,
+ *    node-postgres ignores the explicit `ssl` config object entirely.
+ *
+ * @param {string} databaseUrl
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {{ connectionString: string, ssl: false | { rejectUnauthorized: false } }}
+ */
+export function resolvePgConnectionConfig(databaseUrl, env = process.env) {
+  let parsed;
+  try {
+    parsed = new URL(databaseUrl);
+  } catch {
+    // Unparseable URL: hand it to `pg` unchanged with the historically safe default.
+    return { connectionString: databaseUrl, ssl: { rejectUnauthorized: false } };
+  }
+
+  const sslMode = (
+    env.PGSSLMODE ||
+    parsed.searchParams.get('sslmode') ||
+    ''
+  ).toLowerCase();
+
+  const host = parsed.hostname.toLowerCase();
+  const isLoopback = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+  const isInternalHost =
+    !host.includes('.') || host.endsWith('.internal') || host.endsWith('.local');
+
+  let ssl;
+  if (sslMode === 'disable') {
+    ssl = false;
+  } else if (
+    sslMode === 'require' ||
+    sslMode === 'prefer' ||
+    sslMode === 'verify-ca' ||
+    sslMode === 'verify-full'
+  ) {
+    ssl = { rejectUnauthorized: false };
+  } else if (isLoopback || isInternalHost) {
+    ssl = false;
+  } else {
+    ssl = { rejectUnauthorized: false };
+  }
+
+  for (const param of ['sslmode', 'sslcert', 'sslkey', 'sslrootcert', 'uselibpqcompat']) {
+    parsed.searchParams.delete(param);
+  }
+
+  return { connectionString: parsed.toString(), ssl };
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export class PersistenceManager {
   constructor(options = {}) {
     this.databaseUrl = options.databaseUrl ?? process.env.DATABASE_URL ?? '';
@@ -136,11 +210,30 @@ export class PersistenceManager {
       options.sqlitePath ??
       process.env.SQLITE_DB_PATH ??
       path.join(DATA_DIR, 'cicraft.sqlite');
+    // PostgreSQL startup retries: managed databases (Render/Railway) can take a
+    // few seconds to accept connections when the web service boots.
+    this.connectRetries = Math.max(
+      1,
+      Math.floor(
+        Number(options.connectRetries ?? process.env.DATABASE_CONNECT_RETRIES ?? 5) || 5
+      )
+    );
+    this.retryBaseDelayMs = Math.max(
+      0,
+      Number(options.retryBaseDelayMs ?? process.env.DATABASE_RETRY_DELAY_MS ?? 1000) || 0
+    );
+    // When DATABASE_URL is configured, silently falling back to on-disk SQLite
+    // would lose account persistence on ephemeral hosts (Render/Railway), so it
+    // is opt-in only via `DATABASE_FALLBACK_SQLITE=1`.
+    this.allowSqliteFallback =
+      options.allowSqliteFallback ??
+      (process.env.DATABASE_FALLBACK_SQLITE === '1' ||
+        process.env.DATABASE_FALLBACK_SQLITE === 'true');
     this.secret = loadOrCreateServerSecret();
     this.backend = 'uninitialized';
     /** @type {import('pg').Pool | null} */
     this.pgPool = null;
-    /** @type {DatabaseSync | null} */
+    /** @type {import('node:sqlite').DatabaseSync | null} */
     this.sqliteDb = null;
     this.isConnected = false;
     this.lastError = null;
@@ -148,35 +241,72 @@ export class PersistenceManager {
 
   async init() {
     if (this.databaseUrl) {
-      try {
-        this.pgPool = new Pool({
-          connectionString: this.databaseUrl,
-          max: Number(process.env.PG_POOL_MAX || 10),
-          idleTimeoutMillis: 30000,
-          connectionTimeoutMillis: 8000,
-          ssl:
-            this.databaseUrl.includes('localhost') ||
-            this.databaseUrl.includes('127.0.0.1') ||
-            process.env.PGSSLMODE === 'disable'
-              ? false
-              : { rejectUnauthorized: false },
-        });
-        await this.pgPool.query('SELECT 1');
-        this.backend = 'postgresql';
-        await this.runMigrations();
-        this.isConnected = true;
-        console.log('[CI Craft DB] Connected to PostgreSQL database and verified schema.');
-        return;
-      } catch (err) {
-        this.lastError = err instanceof Error ? err.message : String(err);
-        console.warn(
-          `[CI Craft DB] PostgreSQL connection failed (${this.lastError}); falling back to durable on-disk SQLite.`
-        );
-        if (this.pgPool) {
-          await this.pgPool.end().catch(() => {});
-          this.pgPool = null;
+      let lastErr = null;
+      for (let attempt = 1; attempt <= this.connectRetries; attempt++) {
+        try {
+          const { connectionString, ssl } = resolvePgConnectionConfig(this.databaseUrl);
+          this.pgPool = new Pool({
+            connectionString,
+            max: Number(process.env.PG_POOL_MAX || 10),
+            idleTimeoutMillis: 30000,
+            connectionTimeoutMillis: 8000,
+            ssl,
+          });
+          // An idle-client error without a listener would crash the process;
+          // log it instead (the pool discards the broken client).
+          this.pgPool.on('error', (err) => {
+            this.lastError = err instanceof Error ? err.message : String(err);
+            console.error(`[CI Craft DB] PostgreSQL pool error: ${this.lastError}`);
+          });
+          await this.pgPool.query('SELECT 1');
+          this.backend = 'postgresql';
+          // Migrations run here, at server startup — never during the Docker/
+          // platform image build, where the private DATABASE_URL host is
+          // unreachable (e.g. Render's internal connection string).
+          await this.runMigrations();
+          this.isConnected = true;
+          this.lastError = null;
+          console.log('[CI Craft DB] Connected to PostgreSQL database and verified schema.');
+          return;
+        } catch (err) {
+          lastErr = err;
+          this.lastError = err instanceof Error ? err.message : String(err);
+          if (this.pgPool) {
+            await this.pgPool.end().catch(() => {});
+            this.pgPool = null;
+          }
+          this.backend = 'uninitialized';
+          if (attempt < this.connectRetries) {
+            const delayMs = Math.min(this.retryBaseDelayMs * 2 ** (attempt - 1), 8000);
+            console.warn(
+              `[CI Craft DB] PostgreSQL connection attempt ${attempt}/${this.connectRetries} failed (${this.lastError}); retrying in ${delayMs}ms...`
+            );
+            await sleep(delayMs);
+          }
         }
       }
+
+      if (!this.allowSqliteFallback) {
+        throw new Error(
+          `Failed to connect to PostgreSQL via DATABASE_URL after ${this.connectRetries} attempt(s): ${this.lastError}. ` +
+            'Refusing to silently fall back to ephemeral SQLite (set DATABASE_FALLBACK_SQLITE=1 to allow it).',
+          { cause: lastErr }
+        );
+      }
+      console.warn(
+        `[CI Craft DB] PostgreSQL unavailable (${this.lastError}); DATABASE_FALLBACK_SQLITE is set, falling back to on-disk SQLite.`
+      );
+    }
+
+    let DatabaseSync;
+    try {
+      ({ DatabaseSync } = await import('node:sqlite'));
+    } catch (err) {
+      throw new Error(
+        'The built-in node:sqlite module is unavailable in this Node.js runtime. ' +
+          'Use Node.js 22.14.0 (see .node-version) for local SQLite development, or set DATABASE_URL to use PostgreSQL.',
+        { cause: err }
+      );
     }
 
     fs.mkdirSync(path.dirname(this.sqlitePath), { recursive: true });
@@ -229,15 +359,24 @@ export class PersistenceManager {
     `;
 
     if (this.backend === 'postgresql' && this.pgPool) {
-      await this.pgPool.query(createMigrationsSql);
-      await this.pgPool.query(createAccountsSql);
-      await this.pgPool.query(createEventsSql);
-      await this.pgPool.query(
-        `INSERT INTO schema_migrations (version, name, applied_at)
-         VALUES (1, 'v2_8_initial_accounts_and_events', $1)
-         ON CONFLICT (version) DO NOTHING`,
-        [Date.now()]
-      );
+      // Serialize concurrent startup migrations across instances/restarts:
+      // `CREATE TABLE IF NOT EXISTS` alone can still race in PostgreSQL.
+      const client = await this.pgPool.connect();
+      try {
+        await client.query('SELECT pg_advisory_lock($1)', [727_001]);
+        await client.query(createMigrationsSql);
+        await client.query(createAccountsSql);
+        await client.query(createEventsSql);
+        await client.query(
+          `INSERT INTO schema_migrations (version, name, applied_at)
+           VALUES (1, 'v2_8_initial_accounts_and_events', $1)
+           ON CONFLICT (version) DO NOTHING`,
+          [Date.now()]
+        );
+      } finally {
+        await client.query('SELECT pg_advisory_unlock($1)', [727_001]).catch(() => {});
+        client.release();
+      }
     } else if (this.sqliteDb) {
       this.sqliteDb.exec(createMigrationsSql);
       this.sqliteDb.exec(createAccountsSql);
