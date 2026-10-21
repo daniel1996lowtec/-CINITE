@@ -6,8 +6,12 @@ import {
   BuildPieceType,
   LobbyConfig,
   OutfitPresetId,
+  RoomSnapshot,
+  SessionMode,
   StarterLoadoutType,
   TimeOfDayPreset,
+  effectiveBotCountForMode,
+  isHumanOnlySessionMode,
 } from './network/schemas';
 import {
   ACCENT_COLOR_SWATCHES,
@@ -298,18 +302,437 @@ window.addEventListener('DOMContentLoaded', () => {
   const modeSelectEl = document.getElementById('lobby-mode') as HTMLSelectElement;
   const soloBtn = document.getElementById('btn-mode-solo');
   const onlineBtn = document.getElementById('btn-mode-online');
+  const humanPublicBtn = document.getElementById('btn-mode-human-public');
+  const humanPrivateBtn = document.getElementById('btn-mode-human-private');
   const connStatusEl = document.getElementById('lobby-conn-status');
   const playerCountEl = document.getElementById('lobby-player-count');
   const botCountSelectEl = document.getElementById('lobby-bot-count') as HTMLSelectElement;
+  const difficultySelectEl = document.getElementById(
+    'lobby-difficulty'
+  ) as HTMLSelectElement;
   const loadoutSelectEl = document.getElementById(
     'lobby-starter-loadout'
   ) as HTMLSelectElement;
+  const launchBtn = document.getElementById(
+    'btn-launch-match'
+  ) as HTMLButtonElement | null;
 
   const roomCodeInput = document.getElementById('lobby-room-code') as HTMLInputElement;
   const genRoomBtn = document.getElementById('btn-generate-room-code');
 
+  const humanLobbyPanel = document.getElementById('human-lobby-panel');
+  const humanLobbyRoomTypeEl = document.getElementById('human-lobby-room-type');
+  const humanLobbyMessageEl = document.getElementById('human-lobby-status-message');
+  const humanConnectedCountEl = document.getElementById('human-connected-count');
+  const humanReadyCountEl = document.getElementById('human-ready-count');
+  const humanMatchStatusEl = document.getElementById('human-match-status');
+  const humanBotCountEl = document.getElementById('human-bot-count');
+  const humanRosterEl = document.getElementById('human-lobby-roster');
+  const humanCreateBtn = document.getElementById(
+    'btn-human-create-room'
+  ) as HTMLButtonElement | null;
+  const humanJoinBtn = document.getElementById(
+    'btn-human-join-room'
+  ) as HTMLButtonElement | null;
+  const humanReadyBtn = document.getElementById(
+    'btn-human-ready'
+  ) as HTMLButtonElement | null;
+  const humanStartBtn = document.getElementById(
+    'btn-human-start-match'
+  ) as HTMLButtonElement | null;
+  const humanLeaveBtn = document.getElementById(
+    'btn-human-leave-room'
+  ) as HTMLButtonElement | null;
+
+  let activeHumanSnapshot: RoomSnapshot | null = null;
+  let humanLobbyBusy = false;
+  let humanLobbyNotice = '';
+  let humanLobbyNoticeIsError = false;
+
+  const getSelectedSessionMode = (): SessionMode => {
+    const value = modeSelectEl?.value;
+    if (
+      value === 'online' ||
+      value === 'human_only_public' ||
+      value === 'human_only_private' ||
+      value === 'solo_bots'
+    ) {
+      return value;
+    }
+    return 'solo_bots';
+  };
+
+  const sessionModeForSnapshot = (snapshot: RoomSnapshot): SessionMode =>
+    snapshot.mode === 'human_only_private'
+      ? 'human_only_private'
+      : snapshot.mode === 'human_only_public'
+        ? 'human_only_public'
+        : 'online';
+
+  const humanPhaseLabel = (snapshot: RoomSnapshot | null): string => {
+    if (!snapshot) return 'NOT CONNECTED';
+    switch (snapshot.phase) {
+      case 'lobby':
+        return 'WAITING IN LOBBY';
+      case 'countdown':
+        return 'STARTING MATCH';
+      case 'active':
+        return 'MATCH LIVE';
+      case 'ended':
+        return 'MATCH ENDED';
+      default:
+        return String(snapshot.phase).toUpperCase();
+    }
+  };
+
+  const isHumanLobbyConnectionPending = (): boolean =>
+    Boolean(activeHumanSnapshot) ||
+    (engine.network.isOnlineRoom &&
+      isHumanOnlySessionMode(getSelectedSessionMode()) &&
+      (engine.network.roomConnected ||
+        engine.network.connectionState === 'connecting' ||
+        engine.network.connectionState === 'reconnecting'));
+
+  const renderHumanLobbyPanel = () => {
+    const selectedMode = getSelectedSessionMode();
+    const isHumanMode = isHumanOnlySessionMode(selectedMode);
+    humanLobbyPanel?.classList.toggle('hidden', !isHumanMode);
+
+    if (botCountSelectEl) botCountSelectEl.disabled = isHumanMode;
+    if (difficultySelectEl) difficultySelectEl.disabled = isHumanMode;
+
+    if (!isHumanMode) {
+      if (roomCodeInput) roomCodeInput.disabled = false;
+      if (launchBtn) {
+        launchBtn.disabled = false;
+        launchBtn.textContent = '🚀 DROP INTO ISLAND';
+      }
+      return;
+    }
+
+    const snapshot = activeHumanSnapshot;
+    const isPrivate = selectedMode === 'human_only_private';
+    const connectedHumans = snapshot?.connectedHumans ?? 0;
+    const readyHumans = snapshot?.readyHumans ?? 0;
+    const maxPlayers = snapshot?.maxPlayers ?? 20;
+    const minPlayers = snapshot?.minPlayers ?? 2;
+    const selfPlayerId = snapshot?.selfPlayerId || engine.network.serverPlayerId;
+    const selfPlayer = snapshot?.players.find((player) => player.id === selfPlayerId);
+    const inRoom = isHumanLobbyConnectionPending();
+    const inLobbyPhase =
+      snapshot?.phase === 'lobby' || snapshot?.phase === 'countdown';
+
+    if (humanLobbyRoomTypeEl) {
+      humanLobbyRoomTypeEl.textContent = isPrivate
+        ? 'PRIVATE HUMAN ROOM'
+        : 'PUBLIC HUMAN LOBBY';
+    }
+    if (humanConnectedCountEl) {
+      humanConnectedCountEl.textContent = `${connectedHumans} / ${maxPlayers}`;
+    }
+    if (humanReadyCountEl) {
+      humanReadyCountEl.textContent = `${readyHumans} / ${Math.max(connectedHumans, minPlayers)}`;
+    }
+    if (humanMatchStatusEl) {
+      humanMatchStatusEl.textContent = humanLobbyBusy
+        ? 'CONNECTING'
+        : humanPhaseLabel(snapshot);
+    }
+    if (humanBotCountEl) humanBotCountEl.textContent = '0';
+
+    let message = humanLobbyNotice;
+    if (!message) {
+      if (!snapshot) {
+        message = isPrivate
+          ? `Waiting for players... Create a private human room, share its HUM code, and ready up. At least ${minPlayers} connected humans are required; AI bots will never be added.`
+          : `Waiting for players... Find or join a public human lobby and ready up. At least ${minPlayers} connected humans are required; AI bots will never be added.`;
+      } else if (snapshot.phase === 'lobby' && connectedHumans < minPlayers) {
+        message = `Waiting for players... ${connectedHumans}/${minPlayers} humans connected. Share room code ${snapshot.roomCode} with another real player.`;
+      } else if (snapshot.phase === 'lobby' && readyHumans < connectedHumans) {
+        message = `Waiting for readiness... ${readyHumans}/${connectedHumans} connected humans are ready. Every connected human must ready up before the server starts.`;
+      } else if (snapshot.phase === 'lobby') {
+        message = 'Everyone is ready. The server is validating the human-only roster and will start the countdown.';
+      } else if (snapshot.phase === 'countdown') {
+        message = `All ${connectedHumans} humans are ready. Match starting with 0 bots...`;
+      } else if (snapshot.phase === 'active') {
+        message = `Match live with ${snapshot.matchParticipantCount} human participants and 0 bots.`;
+      } else {
+        message = snapshot.winnerName
+          ? `Match ended. Winner: ${snapshot.winnerName}.`
+          : 'Match ended.';
+      }
+    }
+    if (humanLobbyMessageEl) {
+      humanLobbyMessageEl.textContent = message;
+      humanLobbyMessageEl.classList.toggle(
+        'err',
+        Boolean(humanLobbyNotice && humanLobbyNoticeIsError)
+      );
+    }
+
+    if (connStatusEl) {
+      connStatusEl.className = humanLobbyNoticeIsError && humanLobbyNotice
+        ? 'room-status-tag err'
+        : snapshot
+          ? 'room-status-tag'
+          : 'room-status-tag warn';
+      connStatusEl.textContent = snapshot
+        ? `👥 ROOM ${snapshot.roomCode} • HUMAN PLAYERS ONLY — NO BOTS • ${humanPhaseLabel(snapshot)}`
+        : '👥 HUMAN PLAYERS ONLY — NO BOTS';
+    }
+    if (playerCountEl) {
+      playerCountEl.textContent = `👥 ${connectedHumans}/${maxPlayers} Humans • ${readyHumans} Ready • 0 Bots`;
+    }
+
+    if (roomCodeInput) {
+      roomCodeInput.disabled = inRoom;
+      roomCodeInput.placeholder = isPrivate
+        ? 'HUM-XXXX'
+        : 'HPLAY-XXXX (or use Find Room)';
+      if (snapshot) roomCodeInput.value = snapshot.roomCode;
+    }
+
+    if (humanCreateBtn) {
+      humanCreateBtn.disabled = humanLobbyBusy || inRoom || engine.isRunningMatch;
+      humanCreateBtn.textContent = isPrivate
+        ? '🏠 CREATE ROOM'
+        : '🔎 FIND / CREATE ROOM';
+    }
+    if (humanJoinBtn) {
+      humanJoinBtn.disabled = humanLobbyBusy || inRoom || engine.isRunningMatch;
+      humanJoinBtn.textContent = isPrivate ? '➡️ JOIN ROOM' : '➡️ JOIN ROOM CODE';
+    }
+    if (humanReadyBtn) {
+      humanReadyBtn.disabled = !snapshot || !inLobbyPhase || !selfPlayer;
+      humanReadyBtn.textContent = selfPlayer?.isReady ? '↩️ UNREADY' : '✅ READY';
+    }
+    if (humanStartBtn) {
+      humanStartBtn.disabled =
+        !snapshot ||
+        snapshot.phase !== 'lobby' ||
+        connectedHumans < minPlayers ||
+        !selfPlayer;
+      humanStartBtn.textContent = snapshot?.canStart
+        ? '🚀 START MATCH'
+        : selfPlayer?.isReady
+          ? '🚀 REQUEST START'
+          : '✅ READY + REQUEST START';
+    }
+    if (humanLeaveBtn) humanLeaveBtn.disabled = !inRoom && !humanLobbyBusy;
+
+    if (launchBtn) {
+      if (!snapshot) {
+        launchBtn.disabled = humanLobbyBusy || inRoom;
+        launchBtn.textContent = isPrivate
+          ? '🏠 CREATE / JOIN HUMAN ROOM'
+          : '🔎 FIND HUMAN ROOM';
+      } else if (snapshot.phase === 'lobby') {
+        launchBtn.disabled = connectedHumans < minPlayers;
+        launchBtn.textContent =
+          connectedHumans < minPlayers
+            ? `⏳ WAITING FOR ${minPlayers - connectedHumans} MORE HUMAN${minPlayers - connectedHumans === 1 ? '' : 'S'}`
+            : '✅ READY / START WHEN ALL READY';
+      } else if (snapshot.phase === 'countdown') {
+        launchBtn.disabled = true;
+        launchBtn.textContent = '⏳ MATCH STARTING...';
+      } else {
+        launchBtn.disabled = true;
+        launchBtn.textContent = snapshot.phase === 'active' ? '👥 MATCH LIVE' : '🏁 MATCH ENDED';
+      }
+    }
+
+    if (humanRosterEl) {
+      humanRosterEl.replaceChildren();
+      const humanPlayers = (snapshot?.players || []).filter(
+        (player) => player.participantType === 'human' && !player.isBot
+      );
+      if (humanPlayers.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'human-roster-empty';
+        empty.textContent = 'No connected humans yet. Waiting for players...';
+        humanRosterEl.appendChild(empty);
+      } else {
+        for (const player of humanPlayers) {
+          const row = document.createElement('div');
+          row.className = `human-roster-player${player.isReady ? ' ready' : ''}${
+            player.isConnected ? '' : ' disconnected'
+          }`;
+
+          const name = document.createElement('span');
+          name.className = 'roster-name';
+          name.textContent = `${player.isConnected ? '🟢' : '⚪'} ${player.name}${
+            player.id === selfPlayerId ? ' (YOU)' : ''
+          }`;
+
+          const status = document.createElement('span');
+          status.className = 'roster-status';
+          status.textContent = !player.isConnected
+            ? 'RECONNECTING'
+            : snapshot?.phase === 'active'
+              ? player.alive
+                ? 'IN MATCH'
+                : 'ELIMINATED'
+              : player.isReady
+                ? 'READY'
+                : 'NOT READY';
+
+          row.append(name, status);
+          humanRosterEl.appendChild(row);
+        }
+      }
+    }
+  };
+
+  const buildHumanLobbyConfig = (
+    mode: SessionMode,
+    roomCode: string
+  ): LobbyConfig => {
+    const nameInput = document.getElementById(
+      'lobby-player-name'
+    ) as HTMLInputElement | null;
+    const skyDropCheck = document.getElementById(
+      'lobby-skydrop'
+    ) as HTMLInputElement | null;
+    return {
+      playerName: nameInput?.value || 'Commander_CI',
+      mode,
+      roomCode,
+      botCount: 0,
+      difficulty: (difficultySelectEl?.value as BotDifficulty) || 'medium',
+      skyDrop: skyDropCheck?.checked ?? true,
+      starterLoadout:
+        (loadoutSelectEl?.value as StarterLoadoutType) || 'balanced',
+      cosmetics: engine.progression.cosmetics,
+    };
+  };
+
+  const ensureVerifiedHumanAccount = async (callsign: string): Promise<boolean> => {
+    const initialized = await engine.progression.initializeServerAccount(callsign);
+    const credentials = engine.progression.credentials;
+    if (!initialized || !credentials.accountId || !credentials.accountToken) {
+      return false;
+    }
+    engine.network.setAccountCredentials(
+      credentials.accountId,
+      credentials.accountToken
+    );
+    renderCareerProgressionStrip();
+    return true;
+  };
+
+  const setHumanLobbyNotice = (message: string, isError = false) => {
+    humanLobbyNotice = message;
+    humanLobbyNoticeIsError = isError;
+    renderHumanLobbyPanel();
+  };
+
+  const resolveHumanRoomCode = async (
+    action: 'create' | 'join'
+  ): Promise<string | null> => {
+    const mode = getSelectedSessionMode();
+    if (!isHumanOnlySessionMode(mode)) return null;
+    const enteredCode = (roomCodeInput?.value || '').trim().toUpperCase();
+
+    if (mode === 'human_only_private') {
+      if (action === 'create') {
+        return engine.network.createPrivateRoom(mode);
+      }
+      if (!enteredCode.startsWith('HUM-')) {
+        setHumanLobbyNotice(
+          'Enter a valid private human room code beginning with HUM-, or create a new private room.',
+          true
+        );
+        return null;
+      }
+      const status = await engine.network.fetchRoomStatus(enteredCode);
+      if (
+        status.ok &&
+        status.exists &&
+        (status.mode !== 'human_only_private' || !status.humanOnly || status.botCount !== 0)
+      ) {
+        setHumanLobbyNotice(
+          'That room is not a verified private human-only room, so it cannot be joined from this mode.',
+          true
+        );
+        return null;
+      }
+      return enteredCode;
+    }
+
+    if (action === 'join' && enteredCode.startsWith('HPLAY-')) {
+      const status = await engine.network.fetchRoomStatus(enteredCode);
+      if (
+        status.ok &&
+        status.exists &&
+        (status.mode !== 'human_only_public' || !status.humanOnly || status.botCount !== 0)
+      ) {
+        setHumanLobbyNotice(
+          'That room is not a verified public human-only room, so it cannot be joined from this mode.',
+          true
+        );
+        return null;
+      }
+      return enteredCode;
+    }
+
+    const match = await engine.network.matchmakeHumanRoom();
+    if (match.ok && match.roomCode) return match.roomCode;
+    return engine.network.createPrivateRoom(mode);
+  };
+
+  const enterHumanLobby = async (action: 'create' | 'join') => {
+    const mode = getSelectedSessionMode();
+    if (!isHumanOnlySessionMode(mode) || humanLobbyBusy || engine.isRunningMatch) {
+      return;
+    }
+    if (isHumanLobbyConnectionPending()) {
+      setHumanLobbyNotice('Leave the current human room before joining another one.');
+      return;
+    }
+
+    humanLobbyBusy = true;
+    humanLobbyNotice = '';
+    humanLobbyNoticeIsError = false;
+    renderHumanLobbyPanel();
+
+    try {
+      const roomCode = await resolveHumanRoomCode(action);
+      if (!roomCode) return;
+      if (roomCodeInput) roomCodeInput.value = roomCode;
+
+      const config = buildHumanLobbyConfig(mode, roomCode);
+      const verified = await ensureVerifiedHumanAccount(config.playerName);
+      if (!verified) {
+        setHumanLobbyNotice(
+          'Could not verify a persistent server account. Check your connection or link your account passkey, then try again. Human-only rooms require authenticated real accounts.',
+          true
+        );
+        return;
+      }
+
+      humanLobbyNotice = `Connecting to ${roomCode}... Waiting for players...`;
+      humanLobbyNoticeIsError = false;
+      engine.joinHumanLobby(config);
+      renderHumanLobbyPanel();
+    } finally {
+      humanLobbyBusy = false;
+      renderHumanLobbyPanel();
+    }
+  };
+
+  const leaveCurrentHumanLobby = (showNotice = true) => {
+    if (!activeHumanSnapshot && !isHumanLobbyConnectionPending()) return;
+    activeHumanSnapshot = null;
+    humanLobbyNotice = showNotice
+      ? 'You left the human-only room. Your seat, ready state, and lobby counts were released on the server.'
+      : '';
+    humanLobbyNoticeIsError = false;
+    engine.leaveHumanLobby();
+    renderHumanLobbyPanel();
+  };
+
   const refreshOnlineRoomOccupancy = async () => {
-    const isOnline = modeSelectEl?.value === 'online';
+    const isOnline = getSelectedSessionMode() === 'online';
     if (!isOnline || engine.isRunningMatch) return;
     const code = (roomCodeInput?.value || 'CICRAFT-1').trim().toUpperCase();
     const status = await engine.network.fetchRoomStatus(code);
@@ -332,9 +755,31 @@ window.addEventListener('DOMContentLoaded', () => {
   };
 
   const updateLobbyModeSummary = () => {
-    const isOnline = modeSelectEl?.value === 'online';
-    soloBtn?.classList.toggle('active-pill', !isOnline);
-    onlineBtn?.classList.toggle('active-pill', isOnline);
+    const mode = getSelectedSessionMode();
+    soloBtn?.classList.toggle('active-pill', mode === 'solo_bots');
+    onlineBtn?.classList.toggle('active-pill', mode === 'online');
+    humanPublicBtn?.classList.toggle('active-pill', mode === 'human_only_public');
+    humanPrivateBtn?.classList.toggle('active-pill', mode === 'human_only_private');
+
+    if (roomCodeInput && !isHumanOnlySessionMode(mode)) {
+      roomCodeInput.placeholder = 'CICRAFT-1';
+    }
+
+    if (isHumanOnlySessionMode(mode)) {
+      renderHumanLobbyPanel();
+      return;
+    }
+
+    humanLobbyPanel?.classList.add('hidden');
+    if (botCountSelectEl) botCountSelectEl.disabled = false;
+    if (difficultySelectEl) difficultySelectEl.disabled = false;
+    if (roomCodeInput) roomCodeInput.disabled = false;
+    if (launchBtn) {
+      launchBtn.disabled = false;
+      launchBtn.textContent = '🚀 DROP INTO ISLAND';
+    }
+
+    const isOnline = mode === 'online';
     const botCount = parseInt(botCountSelectEl?.value || '14', 10) || 14;
     if (connStatusEl) {
       connStatusEl.className = 'room-status-tag';
@@ -352,35 +797,108 @@ window.addEventListener('DOMContentLoaded', () => {
     }
   };
 
+  const setSelectedSessionMode = (mode: SessionMode) => {
+    const currentHumanMode = activeHumanSnapshot
+      ? sessionModeForSnapshot(activeHumanSnapshot)
+      : getSelectedSessionMode();
+    if (
+      activeHumanSnapshot &&
+      isHumanOnlySessionMode(currentHumanMode) &&
+      currentHumanMode !== mode
+    ) {
+      leaveCurrentHumanLobby(false);
+    }
+    if (modeSelectEl) modeSelectEl.value = mode;
+    humanLobbyNotice = '';
+    humanLobbyNoticeIsError = false;
+    updateLobbyModeSummary();
+  };
+
   genRoomBtn?.addEventListener('click', async () => {
     engine.sound.playUIClick();
-    const newCode = await engine.network.createPrivateRoom();
-    if (roomCodeInput) {
-      roomCodeInput.value = newCode;
+    const mode = getSelectedSessionMode();
+    if (isHumanLobbyConnectionPending()) {
+      setHumanLobbyNotice('Leave the current human room before generating another room code.');
+      return;
     }
-    if (modeSelectEl) {
+    const targetMode = mode === 'solo_bots' ? 'online' : mode;
+    const newCode = await engine.network.createPrivateRoom(targetMode);
+    if (roomCodeInput) roomCodeInput.value = newCode;
+    if (mode === 'solo_bots' && modeSelectEl) {
       modeSelectEl.value = 'online';
     }
     updateLobbyModeSummary();
   });
 
   roomCodeInput?.addEventListener('change', () => {
+    if (isHumanOnlySessionMode(getSelectedSessionMode())) {
+      humanLobbyNotice = '';
+      humanLobbyNoticeIsError = false;
+      renderHumanLobbyPanel();
+      return;
+    }
     void refreshOnlineRoomOccupancy();
   });
 
   soloBtn?.addEventListener('click', () => {
     engine.sound.playUIClick();
-    if (modeSelectEl) modeSelectEl.value = 'solo_bots';
-    updateLobbyModeSummary();
+    setSelectedSessionMode('solo_bots');
   });
 
   onlineBtn?.addEventListener('click', () => {
     engine.sound.playUIClick();
-    if (modeSelectEl) modeSelectEl.value = 'online';
-    updateLobbyModeSummary();
+    setSelectedSessionMode('online');
   });
 
-  modeSelectEl?.addEventListener('change', updateLobbyModeSummary);
+  humanPublicBtn?.addEventListener('click', () => {
+    engine.sound.playUIClick();
+    setSelectedSessionMode('human_only_public');
+  });
+
+  humanPrivateBtn?.addEventListener('click', () => {
+    engine.sound.playUIClick();
+    setSelectedSessionMode('human_only_private');
+  });
+
+  humanCreateBtn?.addEventListener('click', () => {
+    engine.sound.playUIClick();
+    void enterHumanLobby('create');
+  });
+
+  humanJoinBtn?.addEventListener('click', () => {
+    engine.sound.playUIClick();
+    void enterHumanLobby('join');
+  });
+
+  humanReadyBtn?.addEventListener('click', () => {
+    engine.sound.playUIClick();
+    const selfPlayerId =
+      activeHumanSnapshot?.selfPlayerId || engine.network.serverPlayerId;
+    const selfPlayer = activeHumanSnapshot?.players.find(
+      (player) => player.id === selfPlayerId
+    );
+    humanLobbyNotice = '';
+    humanLobbyNoticeIsError = false;
+    engine.setHumanLobbyReady(!selfPlayer?.isReady);
+    renderHumanLobbyPanel();
+  });
+
+  humanStartBtn?.addEventListener('click', () => {
+    engine.sound.playUIClick();
+    humanLobbyNotice = '';
+    humanLobbyNoticeIsError = false;
+    engine.requestHumanMatchStart();
+    renderHumanLobbyPanel();
+  });
+
+  humanLeaveBtn?.addEventListener('click', () => {
+    engine.sound.playUIClick();
+    leaveCurrentHumanLobby(true);
+  });
+
+  modeSelectEl?.addEventListener('change', () => {
+    setSelectedSessionMode(getSelectedSessionMode());
+  });
   botCountSelectEl?.addEventListener('change', updateLobbyModeSummary);
   loadoutSelectEl?.addEventListener('change', () => {
     engine.updateLobbyCharacterPreview(
@@ -389,15 +907,81 @@ window.addEventListener('DOMContentLoaded', () => {
     );
   });
 
+  engine.onHumanLobbyUpdated = (snapshot) => {
+    if (snapshot && !snapshot.humanOnly) return;
+    const previousPhase = activeHumanSnapshot?.phase;
+    activeHumanSnapshot = snapshot;
+    if (snapshot) {
+      if (previousPhase !== snapshot.phase) {
+        humanLobbyNotice = '';
+        humanLobbyNoticeIsError = false;
+      }
+      const snapshotMode = sessionModeForSnapshot(snapshot);
+      if (modeSelectEl && isHumanOnlySessionMode(snapshotMode)) {
+        modeSelectEl.value = snapshotMode;
+      }
+      if (roomCodeInput) roomCodeInput.value = snapshot.roomCode;
+      soloBtn?.classList.toggle('active-pill', snapshotMode === 'solo_bots');
+      onlineBtn?.classList.toggle('active-pill', snapshotMode === 'online');
+      humanPublicBtn?.classList.toggle(
+        'active-pill',
+        snapshotMode === 'human_only_public'
+      );
+      humanPrivateBtn?.classList.toggle(
+        'active-pill',
+        snapshotMode === 'human_only_private'
+      );
+    }
+    renderHumanLobbyPanel();
+  };
+
+  engine.onHumanLobbyJoinRejected = (_code, reason) => {
+    activeHumanSnapshot = null;
+    setHumanLobbyNotice(reason, true);
+  };
+
+  engine.onHumanRoomActionRejected = (reason) => {
+    setHumanLobbyNotice(reason, true);
+  };
+
+  engine.onHumanMatchStarted = (snapshot) => {
+    activeHumanSnapshot = snapshot;
+    humanLobbyNotice = '';
+    humanLobbyNoticeIsError = false;
+    renderHumanLobbyPanel();
+  };
+
   engine.onLobbyConnectionChange = (statusText, connected, connState, humanCount) => {
+    const mode = engine.isRunningMatch
+      ? engine.currentConfig.mode
+      : getSelectedSessionMode();
+    if (isHumanOnlySessionMode(mode)) {
+      if (connStatusEl && !activeHumanSnapshot) {
+        connStatusEl.textContent = statusText;
+        connStatusEl.className =
+          connState === 'error'
+            ? 'room-status-tag err'
+            : connState === 'reconnecting' || connState === 'connecting'
+              ? 'room-status-tag warn'
+              : 'room-status-tag';
+      }
+      if (playerCountEl && !activeHumanSnapshot) {
+        playerCountEl.textContent = connected
+          ? `👥 ${humanCount} Humans Connected • 0 Bots`
+          : '👥 0 Humans Connected • 0 Bots';
+      }
+      renderHumanLobbyPanel();
+      return;
+    }
+
     if (connStatusEl) {
       connStatusEl.textContent = statusText;
       connStatusEl.className =
         connState === 'error'
           ? 'room-status-tag err'
           : connState === 'reconnecting' || connState === 'connecting'
-          ? 'room-status-tag warn'
-          : 'room-status-tag';
+            ? 'room-status-tag warn'
+            : 'room-status-tag';
     }
     if (playerCountEl) {
       const botCount = parseInt(botCountSelectEl?.value || '14', 10) || 14;
@@ -430,11 +1014,21 @@ window.addEventListener('DOMContentLoaded', () => {
     const diffSelect = document.getElementById('lobby-difficulty') as HTMLSelectElement;
     const skyDropCheck = document.getElementById('lobby-skydrop') as HTMLInputElement;
 
+    const requestedMode = modeSelect.value as SessionMode;
+    const mode: SessionMode =
+      requestedMode === 'online' ||
+      requestedMode === 'human_only_public' ||
+      requestedMode === 'human_only_private' ||
+      requestedMode === 'solo_bots'
+        ? requestedMode
+        : 'solo_bots';
+    const requestedBotCount = parseInt(botCountSelect.value, 10) || 14;
+
     return {
       playerName: nameInput.value || 'Commander_CI',
-      mode: modeSelect.value === 'online' ? 'online' : 'solo_bots',
-      roomCode: roomInput?.value || 'CICRAFT-1',
-      botCount: parseInt(botCountSelect.value, 10) || 14,
+      mode,
+      roomCode: (roomInput?.value || 'CICRAFT-1').trim().toUpperCase(),
+      botCount: effectiveBotCountForMode(mode, requestedBotCount),
       difficulty: (diffSelect.value as BotDifficulty) || 'medium',
       skyDrop: skyDropCheck.checked,
       starterLoadout: (loadoutSelect?.value as StarterLoadoutType) || 'balanced',
@@ -444,12 +1038,42 @@ window.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('btn-launch-match')?.addEventListener('click', () => {
     engine.sound.playUIClick();
-    engine.startMatch(readLobbyConfig());
+    const config = readLobbyConfig();
+    if (isHumanOnlySessionMode(config.mode)) {
+      if (
+        activeHumanSnapshot &&
+        (activeHumanSnapshot.phase === 'lobby' ||
+          activeHumanSnapshot.phase === 'countdown')
+      ) {
+        humanLobbyNotice = '';
+        humanLobbyNoticeIsError = false;
+        engine.requestHumanMatchStart();
+        renderHumanLobbyPanel();
+      } else if (!activeHumanSnapshot) {
+        const action =
+          config.mode === 'human_only_private' &&
+          (config.roomCode || '').startsWith('HUM-')
+            ? 'join'
+            : 'create';
+        void enterHumanLobby(action);
+      }
+      return;
+    }
+    engine.startMatch(config);
   });
 
   document.getElementById('btn-play-again')?.addEventListener('click', () => {
     engine.sound.playUIClick();
-    engine.startMatch(readLobbyConfig());
+    const config = readLobbyConfig();
+    if (isHumanOnlySessionMode(config.mode)) {
+      // Ended human rooms cannot be restarted into a partially reused roster.
+      // Return to the lobby and enter a fresh server-owned human room.
+      engine.returnToMainMenu();
+      activeHumanSnapshot = null;
+      void enterHumanLobby('create');
+      return;
+    }
+    engine.startMatch(config);
   });
 
   document.getElementById('btn-spectate-match')?.addEventListener('click', () => {

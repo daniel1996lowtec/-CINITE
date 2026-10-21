@@ -183,6 +183,9 @@ test('production server: HTTP APIs + authoritative two-client multiplayer over i
     assert.equal(typeof roomState.storm.damagePerSecond, 'number');
     const names = roomState.players.map((p) => p.name).sort();
     assert.deepEqual(names, ['Alpha_One', 'Bravo_Two']);
+    const bravoPublicId = roomState.players.find((p) => p.name === 'Bravo_Two')?.id;
+    assert.ok(bravoPublicId, 'Bravo_Two should have an opaque public player id');
+    assert.doesNotMatch(bravoPublicId, /sess_bravo/);
 
     // Authoritative combat: A hits B for 30 -> shield 50 absorbs, health stays 100.
     const hitEvent = waitForMessage(wsB, (m) => m.type === 'server_hit');
@@ -190,7 +193,7 @@ test('production server: HTTP APIs + authoritative two-client multiplayer over i
       JSON.stringify({
         type: 'combat_hit',
         hitId: 'hit_test_1',
-        targetId: 'net_sess_bravo',
+        targetId: bravoPublicId,
         damage: 30,
         weaponName: 'Pulse Rifle',
         hitPoint: { x: 5, y: 11, z: 5 },
@@ -212,7 +215,7 @@ test('production server: HTTP APIs + authoritative two-client multiplayer over i
       JSON.stringify({
         type: 'combat_hit',
         hitId: 'hit_test_1',
-        targetId: 'net_sess_bravo',
+        targetId: bravoPublicId,
         damage: 30,
         weaponName: 'Pulse Rifle',
         hitPoint: { x: 5, y: 11, z: 5 },

@@ -68,6 +68,12 @@
           <button id="btn-mode-online" class="nav-pill" type="button">
             🌐 PLAY ONLINE
           </button>
+          <button id="btn-mode-human-public" class="nav-pill" type="button">
+            👥 HUMAN PLAY
+          </button>
+          <button id="btn-mode-human-private" class="nav-pill" type="button">
+            🔐 PRIVATE HUMANS
+          </button>
           <button id="btn-open-locker" class="nav-pill" type="button">
             🎨 LOCKER
           </button>
@@ -182,6 +188,12 @@
               <select id="lobby-mode">
                 <option value="solo_bots" selected>Solo Battle Royale (+AI Bots)</option>
                 <option value="online">Online Multiplayer Room Sync (+AI Fill)</option>
+                <option value="human_only_public">
+                  Online Multiplayer — Human Players Only
+                </option>
+                <option value="human_only_private">
+                  Private Multiplayer Room — Human Players Only
+                </option>
               </select>
             </div>
 
@@ -224,6 +236,85 @@
               👥 1 Human + AI Fill
             </span>
           </div>
+
+          <!-- Human-only multiplayer lobby. The authoritative server owns
+               membership, readiness, countdown, and the zero-bot rule. -->
+          <section
+            id="human-lobby-panel"
+            class="human-lobby-panel hidden"
+            aria-label="Human players only multiplayer lobby"
+          >
+            <div class="human-lobby-banner">
+              <strong>👥 HUMAN PLAYERS ONLY — NO BOTS</strong>
+              <span id="human-lobby-room-type">PUBLIC HUMAN LOBBY</span>
+            </div>
+
+            <p id="human-lobby-status-message" class="human-lobby-message" aria-live="polite">
+              Waiting for players... Create or join a human-only room to begin.
+            </p>
+
+            <div class="human-lobby-stats" aria-label="Human lobby status">
+              <div class="human-lobby-stat">
+                <span>CONNECTED HUMANS</span>
+                <strong id="human-connected-count">0 / 20</strong>
+              </div>
+              <div class="human-lobby-stat">
+                <span>READY HUMANS</span>
+                <strong id="human-ready-count">0</strong>
+              </div>
+              <div class="human-lobby-stat">
+                <span>MATCH STATUS</span>
+                <strong id="human-match-status">NOT CONNECTED</strong>
+              </div>
+              <div class="human-lobby-stat">
+                <span>AI BOTS</span>
+                <strong id="human-bot-count">0</strong>
+              </div>
+            </div>
+
+            <div class="human-lobby-actions">
+              <button id="btn-human-create-room" class="human-lobby-btn" type="button">
+                🏠 CREATE ROOM
+              </button>
+              <button id="btn-human-join-room" class="human-lobby-btn" type="button">
+                ➡️ JOIN ROOM
+              </button>
+              <button
+                id="btn-human-ready"
+                class="human-lobby-btn ready"
+                type="button"
+                disabled
+              >
+                ✅ READY
+              </button>
+              <button
+                id="btn-human-start-match"
+                class="human-lobby-btn start"
+                type="button"
+                disabled
+              >
+                🚀 REQUEST START
+              </button>
+              <button
+                id="btn-human-leave-room"
+                class="human-lobby-btn danger"
+                type="button"
+                disabled
+              >
+                🚪 LEAVE ROOM
+              </button>
+            </div>
+
+            <div class="human-roster-header">
+              <span>CONNECTED HUMAN PLAYERS</span>
+              <span>SERVER VERIFIED • BOT COUNT: 0</span>
+            </div>
+            <div id="human-lobby-roster" class="human-lobby-roster" aria-live="polite">
+              <div class="human-roster-empty">
+                No connected humans yet. Waiting for players...
+              </div>
+            </div>
+          </section>
 
           <div class="form-row">
             <div class="form-group">

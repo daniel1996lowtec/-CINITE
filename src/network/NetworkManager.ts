@@ -6,13 +6,20 @@ import {
   LobbyConfig,
   LootItemState,
   MatchState,
+  MultiplayerRoomMode,
   PlayerInputPacket,
   PlayerProgressionState,
   PlayerState,
+  RoomPhase,
+  RoomPlayerSummary,
+  RoomSnapshot,
+  SessionMode,
   StarterLoadoutType,
   StormState,
   WeaponCategory,
   WeaponRarity,
+  isHumanOnlySessionMode,
+  roomModeForSessionMode,
 } from './schemas';
 import { createWeaponStats } from '../weapons/WeaponDefinitions';
 
@@ -21,7 +28,6 @@ export interface ServerHitEvent {
   attackerId: string;
   attackerName: string;
   victimId: string;
-  victimSessionToken: string;
   victimName: string;
   damage: number;
   victimHealth: number;
@@ -76,6 +82,114 @@ function lerpShortestAngle(a: number, b: number, t: number): number {
   return a + diff * t;
 }
 
+function normalizeRoomModeValue(
+  raw: unknown,
+  fallbackCode: string
+): MultiplayerRoomMode {
+  if (
+    raw === 'online_ai_fill' ||
+    raw === 'human_only_public' ||
+    raw === 'human_only_private'
+  ) {
+    return raw;
+  }
+  if (raw === 'online') return 'online_ai_fill';
+  if (fallbackCode.startsWith('HPLAY-')) return 'human_only_public';
+  if (fallbackCode.startsWith('HUM-')) return 'human_only_private';
+  return 'online_ai_fill';
+}
+
+function normalizeRoomSnapshot(
+  data: Record<string, unknown>,
+  fallbackCode: string,
+  previousPlayers: RoomPlayerSummary[] = []
+): RoomSnapshot {
+  const roomCode = String(data.roomCode || fallbackCode || 'CICRAFT-1');
+  const mode = normalizeRoomModeValue(data.roomMode ?? data.mode, roomCode);
+  const isHumanOnly =
+    mode === 'human_only_public' || mode === 'human_only_private';
+  const rawPhase = String(data.phase || data.matchStatus || '');
+  const phase: RoomPhase =
+    rawPhase === 'lobby' ||
+    rawPhase === 'countdown' ||
+    rawPhase === 'active' ||
+    rawPhase === 'ended'
+      ? rawPhase
+      : isHumanOnly
+        ? 'lobby'
+        : 'active';
+
+  const players = Array.isArray(data.players)
+    ? (data.players as Array<Record<string, unknown>>)
+        .filter((player) => player.isBot !== true)
+        .map(
+          (player): RoomPlayerSummary => ({
+            id: String(player.id || ''),
+            name: String(player.name || 'Commander_CI'),
+            participantType: 'human',
+            isBot: false,
+            isAuthenticated: Boolean(player.isAuthenticated),
+            isReady: Boolean(player.isReady),
+            isParticipant: Boolean(player.isParticipant),
+            isConnected: Boolean(player.isConnected),
+            alive: Boolean(player.alive ?? true),
+          })
+        )
+    : previousPlayers;
+
+  const connectedHumans = Number(
+    data.connectedHumans ?? data.connectedPlayers ??
+      players.filter((player) => player.isConnected).length
+  );
+  const readyHumans = Number(
+    data.readyHumans ?? data.readyPlayers ??
+      players.filter((player) => player.isConnected && player.isReady).length
+  );
+
+  return {
+    roomCode,
+    mode,
+    roomMode: mode,
+    visibility:
+      data.visibility === 'public' || data.visibility === 'private'
+        ? data.visibility
+        : mode === 'human_only_public'
+          ? 'public'
+          : mode === 'human_only_private'
+            ? 'private'
+            : 'room_code',
+    phase,
+    matchStatus: phase,
+    humanOnly: Boolean(data.humanOnly ?? isHumanOnly),
+    aiFillEnabled: Boolean(data.aiFillEnabled ?? mode === 'online_ai_fill'),
+    botCount: Math.max(0, Number(data.botCount || 0)),
+    connectedPlayers: connectedHumans,
+    connectedHumans,
+    authenticatedHumans: Number(
+      data.authenticatedHumans ??
+        players.filter((player) => player.isConnected && player.isAuthenticated)
+          .length
+    ),
+    readyPlayers: readyHumans,
+    readyHumans,
+    totalPlayers: Number(data.totalPlayers ?? players.length),
+    totalHumans: Number(data.totalHumans ?? data.totalPlayers ?? players.length),
+    aliveHumans: Number(
+      data.aliveHumans ?? players.filter((player) => player.alive).length
+    ),
+    maxPlayers: Math.max(1, Number(data.maxPlayers || 20)),
+    minPlayers: Math.max(1, Number(data.minPlayers || (isHumanOnly ? 2 : 1))),
+    matchParticipantCount: Number(data.matchParticipantCount || 0),
+    countdownEndsAt: Number(data.countdownEndsAt || 0),
+    canStart: Boolean(data.canStart),
+    winnerId: data.winnerId ? String(data.winnerId) : null,
+    winnerName: String(data.winnerName || ''),
+    stormPhase: Number(data.stormPhase || 1),
+    selfPlayerId: data.selfPlayerId ? String(data.selfPlayerId) : undefined,
+    players,
+  };
+}
+
 export class NetworkManager {
   public localPlayerId: string = 'player_local_1';
   public state: MatchState;
@@ -83,8 +197,15 @@ export class NetworkManager {
   public roomConnected: boolean = false;
   public connectionState: NetworkConnectionState = 'idle';
   public roomCode: string = 'CICRAFT-1';
+  public roomMode: MultiplayerRoomMode = 'online_ai_fill';
+  public roomSnapshot: RoomSnapshot | null = null;
+  public serverPlayerId: string = '';
+  public lastJoinRejection: { code: string; reason: string } | null = null;
   public connectedHumanCount: number = 1;
   private ws: WebSocket | null = null;
+  private activeRoomConfig: LobbyConfig | null = null;
+  private activeLocalPlayer: PlayerState | null = null;
+  private wantsRoomConnection: boolean = false;
   public sessionToken: string = '';
   public accountId: string = '';
   public accountToken: string = '';
@@ -145,6 +266,21 @@ export class NetworkManager {
     connState?: NetworkConnectionState,
     humanCount?: number
   ) => void;
+  public onRoomSnapshot?: (snapshot: RoomSnapshot | null) => void;
+  public onMatchStarted?: (snapshot: RoomSnapshot) => void;
+  public onMatchEnded?: (
+    snapshot: RoomSnapshot,
+    placements: Record<string, number>
+  ) => void;
+  public onJoinRejected?: (code: string, reason: string) => void;
+  public onRoomActionRejected?: (reason: string) => void;
+
+  public get isHumanOnlyRoom(): boolean {
+    return (
+      this.roomMode === 'human_only_public' ||
+      this.roomMode === 'human_only_private'
+    );
+  }
 
   constructor() {
     this.sessionToken = this.loadOrCreateSessionToken();
@@ -201,60 +337,48 @@ export class NetworkManager {
     return `${wsProtocol}//${window.location.host}/ws`;
   }
 
-  public async fetchRoomStatus(code: string): Promise<{
-    ok: boolean;
-    roomCode: string;
-    exists: boolean;
-    connectedPlayers: number;
-    totalPlayers: number;
-  }> {
+  public async fetchRoomStatus(
+    code: string
+  ): Promise<RoomSnapshot & { ok: boolean; exists: boolean }> {
     const cleanCode = (code || 'CICRAFT-1').trim().toUpperCase();
+    const fallback = normalizeRoomSnapshot({}, cleanCode);
     if (typeof fetch !== 'function') {
-      return {
-        ok: false,
-        roomCode: cleanCode,
-        exists: false,
-        connectedPlayers: 0,
-        totalPlayers: 0,
-      };
+      return { ...fallback, ok: false, exists: false };
     }
     try {
       const res = await fetch(
         `${this.resolveHttpBaseUrl()}/api/room?code=${encodeURIComponent(cleanCode)}`
       );
       if (!res.ok) throw new Error('Status check failed');
-      const data = await res.json();
+      const data = (await res.json()) as Record<string, unknown>;
       return {
+        ...normalizeRoomSnapshot(data, cleanCode),
         ok: true,
-        roomCode: String(data.roomCode || cleanCode),
         exists: Boolean(data.exists),
-        connectedPlayers: Number(data.connectedPlayers || 0),
-        totalPlayers: Number(data.totalPlayers || 0),
       };
     } catch {
-      return {
-        ok: false,
-        roomCode: cleanCode,
-        exists: false,
-        connectedPlayers: 0,
-        totalPlayers: 0,
-      };
+      return { ...fallback, ok: false, exists: false };
     }
   }
 
-  public async createPrivateRoom(): Promise<string> {
+  public async createPrivateRoom(
+    sessionMode: SessionMode = 'online'
+  ): Promise<string> {
+    const roomMode = roomModeForSessionMode(sessionMode);
     if (typeof fetch === 'function') {
       try {
         const res = await fetch(`${this.resolveHttpBaseUrl()}/api/room/create`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ roomMode }),
         });
         if (res.ok) {
           const data = await res.json();
           if (data && data.roomCode) return String(data.roomCode);
         }
       } catch {
-        // Fall through to client code generation
+        // Fall through to mode-prefixed client code generation. The server
+        // still validates/infer the mode from the reserved prefix on join.
       }
     }
     const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -262,7 +386,41 @@ export class NetworkManager {
     for (let i = 0; i < 4; i++) {
       suffix += chars[Math.floor(Math.random() * chars.length)];
     }
-    return `CI-${suffix}`;
+    const prefix =
+      roomMode === 'human_only_public'
+        ? 'HPLAY'
+        : roomMode === 'human_only_private'
+          ? 'HUM'
+          : 'CI';
+    return `${prefix}-${suffix}`;
+  }
+
+  public async matchmakeHumanRoom(): Promise<
+    RoomSnapshot & { ok: boolean; exists: boolean }
+  > {
+    const fallback = normalizeRoomSnapshot(
+      { roomMode: 'human_only_public' },
+      'HPLAY-AUTO'
+    );
+    if (typeof fetch !== 'function') {
+      return { ...fallback, ok: false, exists: false };
+    }
+    try {
+      const res = await fetch(`${this.resolveHttpBaseUrl()}/api/room/matchmake`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ roomMode: 'human_only_public' }),
+      });
+      if (!res.ok) throw new Error('Matchmaking failed');
+      const data = (await res.json()) as Record<string, unknown>;
+      return {
+        ...normalizeRoomSnapshot(data, 'HPLAY-AUTO'),
+        ok: Boolean(data.ok),
+        exists: Boolean(data.exists),
+      };
+    } catch {
+      return { ...fallback, ok: false, exists: false };
+    }
   }
 
   public createFreshMatchState(): MatchState {
@@ -291,17 +449,12 @@ export class NetworkManager {
     };
   }
 
-  public initializeMatch(
+  private createLocalPlayerState(
     config: LobbyConfig,
     spawnX: number,
     spawnY: number,
     spawnZ: number
   ): PlayerState {
-    this.state = this.createFreshMatchState();
-    this.state.phase = 'ACTIVE';
-    this.isOnlineRoom = config.mode === 'online';
-    this.roomCode = (config.roomCode || 'CICRAFT-1').trim().toUpperCase();
-
     const harvesterStats = createWeaponStats('harvester', 'rare');
     const loadoutInfo = this.getStarterLoadoutItems(config.starterLoadout);
     const primaryStats = createWeaponStats(loadoutInfo.primaryCat, loadoutInfo.primaryRarity);
@@ -348,10 +501,13 @@ export class NetworkManager {
       null,
     ];
 
-    const localPlayer: PlayerState = {
+    return {
       id: this.localPlayerId,
       name: config.playerName.trim() || 'Commander_CI',
       isBot: false,
+      participantType: 'human',
+      isReady: false,
+      isParticipant: false,
       isConnected: true,
       alive: true,
       position: { x: spawnX, y: spawnY, z: spawnZ },
@@ -386,7 +542,25 @@ export class NetworkManager {
       accentColor: config.cosmetics?.accentColor ?? 0x38bdf8,
       backAccessory: config.cosmetics?.backAccessory ?? 'jump_pack',
     };
+  }
 
+  public initializeMatch(
+    config: LobbyConfig,
+    spawnX: number,
+    spawnY: number,
+    spawnZ: number
+  ): PlayerState {
+    this.state = this.createFreshMatchState();
+    this.state.phase = 'ACTIVE';
+    this.isOnlineRoom = config.mode !== 'solo_bots';
+    this.roomMode = roomModeForSessionMode(config.mode);
+    this.roomCode = (config.roomCode || 'CICRAFT-1').trim().toUpperCase();
+    this.activeRoomConfig = config;
+
+    const localPlayer = this.createLocalPlayerState(config, spawnX, spawnY, spawnZ);
+    localPlayer.isParticipant = true;
+    localPlayer.isReady = true;
+    this.activeLocalPlayer = localPlayer;
     this.state.players.set(this.localPlayerId, localPlayer);
 
     if (this.isOnlineRoom) {
@@ -395,6 +569,8 @@ export class NetworkManager {
       this.disconnectMultiplayerRoom();
       this.connectionState = 'idle';
       this.connectedHumanCount = 1;
+      this.roomSnapshot = null;
+      this.serverPlayerId = '';
       this.onConnectionStatusChange?.(
         'LOCAL AUTHORITATIVE ENGINE',
         true,
@@ -402,6 +578,106 @@ export class NetworkManager {
         1
       );
     }
+
+    return localPlayer;
+  }
+
+  /**
+   * Join a human-only room in its lobby phase without starting the 3D match.
+   * The server alone emits match_started once its authenticated ready check
+   * passes; GameEngine then calls initializeStartedMatch().
+   */
+  public connectToLobbyRoom(config: LobbyConfig): PlayerState {
+    const requestedCode = (config.roomCode || 'CICRAFT-1').trim().toUpperCase();
+    const requestedMode = roomModeForSessionMode(config.mode);
+    if (
+      this.wantsRoomConnection &&
+      this.ws &&
+      this.roomCode === requestedCode &&
+      this.roomMode === requestedMode &&
+      this.activeLocalPlayer
+    ) {
+      this.activeRoomConfig = config;
+      return this.activeLocalPlayer;
+    }
+
+    this.state = this.createFreshMatchState();
+    this.state.phase = 'LOBBY';
+    this.isOnlineRoom = true;
+    this.roomMode = requestedMode;
+    this.roomCode = requestedCode;
+    this.roomSnapshot = null;
+    this.serverPlayerId = '';
+    this.lastJoinRejection = null;
+    this.activeRoomConfig = config;
+
+    const localPlayer = this.createLocalPlayerState(config, 0, 10, 0);
+    localPlayer.isReady = false;
+    localPlayer.isParticipant = false;
+    this.activeLocalPlayer = localPlayer;
+    this.state.players.set(this.localPlayerId, localPlayer);
+    this.connectToMultiplayerRoom(config, localPlayer, false, 'lobby');
+    return localPlayer;
+  }
+
+  /**
+   * Transition the already-connected human lobby socket into an active match
+   * after the authoritative server announces match_started. This preserves
+   * the same socket/session/player seat—no reconnect or duplicate join.
+   */
+  public initializeStartedMatch(
+    config: LobbyConfig,
+    spawnX: number,
+    spawnY: number,
+    spawnZ: number
+  ): PlayerState {
+    const previousSnapshot = this.roomSnapshot;
+    const previousServerPlayerId = this.serverPlayerId;
+
+    this.state = this.createFreshMatchState();
+    this.state.phase = 'ACTIVE';
+    this.isOnlineRoom = true;
+    this.roomMode = roomModeForSessionMode(config.mode);
+    this.roomCode = (config.roomCode || this.roomCode || 'CICRAFT-1')
+      .trim()
+      .toUpperCase();
+    this.roomSnapshot = previousSnapshot;
+    this.serverPlayerId = previousServerPlayerId;
+    this.activeRoomConfig = config;
+
+    const localPlayer = this.createLocalPlayerState(config, spawnX, spawnY, spawnZ);
+    localPlayer.isReady = true;
+    localPlayer.isParticipant = true;
+    this.activeLocalPlayer = localPlayer;
+    this.state.players.set(this.localPlayerId, localPlayer);
+
+    if (previousSnapshot) {
+      this.state.totalParticipants =
+        previousSnapshot.matchParticipantCount || previousSnapshot.connectedHumans || 1;
+      this.state.aliveCount =
+        previousSnapshot.aliveHumans || this.state.totalParticipants;
+    }
+
+    this.sendInput(
+      {
+        seq: 0,
+        dt: 0,
+        moveX: 0,
+        moveZ: 0,
+        yaw: 0,
+        pitch: 0,
+        jump: false,
+        sprint: false,
+        fire: false,
+        aim: false,
+        reload: false,
+        interact: false,
+        selectSlot: -1,
+        buildType: null,
+        cycleMaterial: false,
+      },
+      true
+    );
 
     return localPlayer;
   }
@@ -453,9 +729,14 @@ export class NetworkManager {
   public connectToMultiplayerRoom(
     config: LobbyConfig,
     localPlayer: PlayerState,
-    resetPlayer: boolean = false
+    resetPlayer: boolean = false,
+    purpose: 'match' | 'lobby' = 'match'
   ): void {
-    this.disconnectMultiplayerRoom();
+    this.closeSocketOnly();
+    this.wantsRoomConnection = true;
+    this.activeRoomConfig = config;
+    this.activeLocalPlayer = localPlayer;
+    this.roomMode = roomModeForSessionMode(config.mode);
 
     const wsUrl = this.resolveWebSocketUrl();
 
@@ -482,6 +763,8 @@ export class NetworkManager {
         this.sendPacket({
           type: 'join_room',
           roomCode: this.roomCode,
+          roomMode: this.roomMode,
+          purpose,
           sessionToken: this.sessionToken,
           accountId: this.accountId || undefined,
           accountToken: this.accountToken || undefined,
@@ -521,7 +804,13 @@ export class NetworkManager {
 
       this.ws.onclose = () => {
         this.roomConnected = false;
-        if (this.isOnlineRoom && this.state.phase === 'ACTIVE') {
+        const shouldReconnect =
+          this.wantsRoomConnection &&
+          this.isOnlineRoom &&
+          (this.state.phase === 'ACTIVE' ||
+            this.roomSnapshot?.phase === 'lobby' ||
+            this.roomSnapshot?.phase === 'countdown');
+        if (shouldReconnect) {
           this.connectionState = 'reconnecting';
           this.onConnectionStatusChange?.(
             `🔄 ROOM ${this.roomCode} • RECONNECTING...`,
@@ -530,9 +819,12 @@ export class NetworkManager {
             this.connectedHumanCount
           );
           this.reconnectTimer = window.setTimeout(() => {
-            const p = this.state.players.get(this.localPlayerId);
-            if (p && this.isOnlineRoom) {
-              this.connectToMultiplayerRoom(config, p, false);
+            const p =
+              this.state.players.get(this.localPlayerId) || this.activeLocalPlayer;
+            if (p && this.isOnlineRoom && this.wantsRoomConnection) {
+              const reconnectPurpose =
+                this.state.phase === 'ACTIVE' ? 'match' : 'lobby';
+              this.connectToMultiplayerRoom(config, p, false, reconnectPurpose);
             }
           }, 3500);
         }
@@ -560,22 +852,112 @@ export class NetworkManager {
     }
   }
 
-  public disconnectMultiplayerRoom(): void {
+  private closeSocketOnly(): void {
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
     if (this.ws) {
       this.ws.onclose = null;
+      this.ws.onerror = null;
+      this.ws.onmessage = null;
       this.ws.close();
       this.ws = null;
     }
     this.roomConnected = false;
   }
 
+  public disconnectMultiplayerRoom(): void {
+    this.wantsRoomConnection = false;
+    this.closeSocketOnly();
+    this.connectionState = 'idle';
+  }
+
+  /** Explicitly release the current room seat, unlike a temporary disconnect. */
+  public leaveRoom(): void {
+    const socketToClose = this.ws;
+    if (socketToClose && socketToClose.readyState === WebSocket.OPEN) {
+      try {
+        socketToClose.send(JSON.stringify({ type: 'leave_room' }));
+      } catch {
+        // Closing below still releases the connection.
+      }
+    }
+
+    this.wantsRoomConnection = false;
+    this.ws = null;
+    this.roomConnected = false;
+    this.connectionState = 'idle';
+    this.roomSnapshot = null;
+    this.serverPlayerId = '';
+    this.activeLocalPlayer = null;
+    this.onRoomSnapshot?.(null);
+    this.onConnectionStatusChange?.('🚪 LEFT ROOM', false, 'idle', 0);
+
+    if (socketToClose) {
+      socketToClose.onclose = null;
+      socketToClose.onerror = null;
+      socketToClose.onmessage = null;
+      window.setTimeout(() => {
+        try {
+          socketToClose.close();
+        } catch {
+          // Ignore
+        }
+      }, 75);
+    }
+  }
+
+  public setReady(ready: boolean): void {
+    if (!this.isOnlineRoom || !this.roomConnected) return;
+    const localPlayer = this.state.players.get(this.localPlayerId);
+    if (localPlayer) localPlayer.isReady = ready;
+    this.sendPacket({ type: 'set_ready', ready });
+  }
+
+  public requestMatchStart(): void {
+    if (!this.isOnlineRoom || !this.roomConnected) return;
+    this.sendPacket({ type: 'request_match_start' });
+  }
+
   private handleServerMessage(msg: Record<string, unknown>): void {
     switch (msg.type) {
       case 'room_state': {
+        const snapshot = normalizeRoomSnapshot(
+          msg,
+          this.roomCode,
+          this.roomSnapshot?.players || []
+        );
+        this.roomSnapshot = snapshot;
+        this.roomMode = snapshot.mode;
+        this.roomCode = snapshot.roomCode;
+        if (snapshot.selfPlayerId) {
+          this.serverPlayerId = snapshot.selfPlayerId;
+        }
+        this.state.phase =
+          snapshot.phase === 'active'
+            ? 'ACTIVE'
+            : snapshot.phase === 'ended'
+              ? 'ENDED'
+              : 'LOBBY';
+
+        if (
+          this.activeRoomConfig &&
+          isHumanOnlySessionMode(this.activeRoomConfig.mode) &&
+          (!snapshot.humanOnly || snapshot.aiFillEnabled || snapshot.botCount !== 0)
+        ) {
+          this.lastJoinRejection = {
+            code: 'room_mode_mismatch',
+            reason: 'The server room is not a verified human-only room.',
+          };
+          this.onJoinRejected?.(
+            this.lastJoinRejection.code,
+            this.lastJoinRejection.reason
+          );
+          this.leaveRoom();
+          break;
+        }
+
         // 1. Synchronize Authoritative Storm & Match Timer from Room Server
         if (msg.storm && typeof msg.storm === 'object') {
           const s = msg.storm as StormState;
@@ -596,7 +978,7 @@ export class NetworkManager {
 
         const players = msg.players as Array<Record<string, unknown>>;
         if (!Array.isArray(players)) break;
-        this.connectedHumanCount = players.filter((p) => p.isConnected).length;
+        this.connectedHumanCount = snapshot.connectedHumans;
         this.connectionState = 'connected';
         this.onConnectionStatusChange?.(
           `🟢 ROOM ${this.roomCode} • ${this.connectedHumanCount} ONLINE`,
@@ -605,9 +987,28 @@ export class NetworkManager {
           this.connectedHumanCount
         );
 
+        const snapshotPlayerIds = new Set(players.map((player) => String(player.id)));
+        for (const existingId of Array.from(this.state.players.keys())) {
+          if (
+            existingId.startsWith('net_') &&
+            existingId !== this.serverPlayerId &&
+            !snapshotPlayerIds.has(existingId)
+          ) {
+            this.state.players.delete(existingId);
+            this.remoteTargets.delete(existingId);
+          }
+        }
+
         for (const rp of players) {
+          if (rp.isBot === true) continue;
           const id = String(rp.id);
-          if (id === this.localPlayerId || rp.sessionToken === this.sessionToken) {
+          if (id === this.localPlayerId || id === this.serverPlayerId) {
+            const localPlayer = this.state.players.get(this.localPlayerId);
+            if (localPlayer) {
+              localPlayer.isReady = Boolean(rp.isReady);
+              localPlayer.isParticipant = Boolean(rp.isParticipant);
+              localPlayer.isConnected = Boolean(rp.isConnected ?? true);
+            }
             continue;
           }
 
@@ -632,6 +1033,9 @@ export class NetworkManager {
               id,
               name: String(rp.name || 'Remote_Player'),
               isBot: false,
+              participantType: 'human',
+              isReady: Boolean(rp.isReady),
+              isParticipant: Boolean(rp.isParticipant),
               isConnected: Boolean(rp.isConnected ?? true),
               alive: Boolean(rp.alive ?? true),
               position: {
@@ -789,6 +1193,8 @@ export class NetworkManager {
             existing.shield = Number(rp.shield ?? existing.shield);
             existing.eliminations = Number(rp.eliminations ?? existing.eliminations);
             existing.alive = Boolean(rp.alive ?? existing.alive);
+            existing.isReady = Boolean(rp.isReady);
+            existing.isParticipant = Boolean(rp.isParticipant);
             existing.isConnected = Boolean(rp.isConnected ?? true);
             existing.isAiming = Boolean(rp.isAiming);
             existing.isSprinting = Boolean(rp.isSprinting);
@@ -822,6 +1228,135 @@ export class NetworkManager {
             }
           }
         }
+
+        if (snapshot.humanOnly) {
+          if (snapshot.matchParticipantCount > 0) {
+            this.state.totalParticipants = snapshot.matchParticipantCount;
+          }
+          this.state.aliveCount = snapshot.aliveHumans;
+        }
+        this.onRoomSnapshot?.(snapshot);
+        break;
+      }
+
+      case 'room_joined': {
+        const snapshot = normalizeRoomSnapshot(
+          msg,
+          this.roomCode,
+          this.roomSnapshot?.players || []
+        );
+        this.roomSnapshot = snapshot;
+        this.roomMode = snapshot.mode;
+        this.roomCode = snapshot.roomCode;
+        if (snapshot.selfPlayerId) this.serverPlayerId = snapshot.selfPlayerId;
+        this.lastJoinRejection = null;
+        this.onRoomSnapshot?.(snapshot);
+        break;
+      }
+
+      case 'join_rejected': {
+        const code = String(msg.code || 'join_rejected');
+        const reason = String(msg.reason || 'The server rejected this room join.');
+        this.lastJoinRejection = { code, reason };
+        this.wantsRoomConnection = false;
+        this.roomConnected = false;
+        this.connectionState = 'error';
+        this.onJoinRejected?.(code, reason);
+        this.onConnectionStatusChange?.(`🚫 ${reason}`, false, 'error', 0);
+        this.closeSocketOnly();
+        break;
+      }
+
+      case 'ready_rejected':
+      case 'match_start_rejected':
+      case 'bot_rejected': {
+        const reason = String(msg.reason || 'Room action rejected by the server.');
+        if (msg.roomCode) {
+          this.roomSnapshot = normalizeRoomSnapshot(
+            msg,
+            this.roomCode,
+            this.roomSnapshot?.players || []
+          );
+          this.onRoomSnapshot?.(this.roomSnapshot);
+        }
+        this.onRoomActionRejected?.(reason);
+        this.onConnectionStatusChange?.(
+          `⚠️ ${reason}`,
+          this.roomConnected,
+          'error',
+          this.connectedHumanCount
+        );
+        break;
+      }
+
+      case 'match_started': {
+        const snapshot = normalizeRoomSnapshot(
+          msg,
+          this.roomCode,
+          this.roomSnapshot?.players || []
+        );
+        if (snapshot.selfPlayerId) {
+          this.serverPlayerId = snapshot.selfPlayerId;
+        } else if (this.serverPlayerId) {
+          snapshot.selfPlayerId = this.serverPlayerId;
+        }
+        this.roomSnapshot = snapshot;
+        this.roomMode = snapshot.mode;
+        this.state.phase = 'ACTIVE';
+        if (snapshot.matchParticipantCount > 0) {
+          this.state.totalParticipants = snapshot.matchParticipantCount;
+          this.state.aliveCount = snapshot.aliveHumans;
+        }
+        this.onRoomSnapshot?.(snapshot);
+        this.onMatchStarted?.(snapshot);
+        break;
+      }
+
+      case 'match_ended': {
+        const snapshot = normalizeRoomSnapshot(
+          msg,
+          this.roomCode,
+          this.roomSnapshot?.players || []
+        );
+        if (snapshot.selfPlayerId) {
+          this.serverPlayerId = snapshot.selfPlayerId;
+        } else if (this.serverPlayerId) {
+          snapshot.selfPlayerId = this.serverPlayerId;
+        }
+        this.roomSnapshot = snapshot;
+        this.roomMode = snapshot.mode;
+        this.state.phase = 'ENDED';
+        this.state.winnerName = snapshot.winnerName;
+        this.state.aliveCount = snapshot.aliveHumans;
+        this.onRoomSnapshot?.(snapshot);
+        const rawPlacements =
+          msg.placements && typeof msg.placements === 'object'
+            ? (msg.placements as Record<string, unknown>)
+            : {};
+        const placements: Record<string, number> = {};
+        for (const [playerId, placement] of Object.entries(rawPlacements)) {
+          placements[playerId] = Number(placement || 0);
+        }
+        this.onMatchEnded?.(snapshot, placements);
+        break;
+      }
+
+      case 'player_left': {
+        const leftId = String(msg.playerId || '');
+        if (leftId) {
+          this.state.players.delete(leftId);
+          this.remoteTargets.delete(leftId);
+        }
+        if (msg.roomCode) {
+          this.roomSnapshot = normalizeRoomSnapshot(
+            msg,
+            this.roomCode,
+            (this.roomSnapshot?.players || []).filter(
+              (player) => player.id !== leftId
+            )
+          );
+          this.onRoomSnapshot?.(this.roomSnapshot);
+        }
         break;
       }
 
@@ -836,7 +1371,7 @@ export class NetworkManager {
       }
 
       case 'build_placed': {
-        if (msg.sessionToken === this.sessionToken) break;
+        if (String(msg.ownerId || '') === this.serverPlayerId) break;
         this.onRemoteBuildPlaced?.(
           String(msg.buildId || `build_${Date.now()}`),
           String(msg.ownerId),
@@ -864,7 +1399,7 @@ export class NetworkManager {
       }
 
       case 'loot_collected': {
-        if (msg.sessionToken === this.sessionToken) break;
+        if (String(msg.collectorId || '') === this.serverPlayerId) break;
         this.onRemoteLootCollected?.(
           String(msg.collectorId || ''),
           String(msg.lootId || ''),
@@ -976,11 +1511,11 @@ export class NetworkManager {
     };
   }
 
-  public sendInput(input: PlayerInputPacket): void {
+  public sendInput(input: PlayerInputPacket, force: boolean = false): void {
     if (!this.isOnlineRoom || !this.roomConnected || !this.ws) return;
     const now = performance.now();
     const elapsed = now - this.lastSyncSentTime;
-    if (elapsed < 45) return;
+    if (!force && elapsed < 45) return;
 
     const p = this.state.players.get(this.localPlayerId);
     if (!p) return;
@@ -1009,6 +1544,7 @@ export class NetworkManager {
 
     // Delta-throttle completely stationary idle ticks to 150ms heartbeat while keeping 20Hz during movement/rotation
     if (
+      !force &&
       elapsed < 150 &&
       posDelta < 0.005 &&
       rotDelta < 0.003 &&

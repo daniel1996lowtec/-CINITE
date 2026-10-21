@@ -38,6 +38,21 @@ const MAX_WS_PAYLOAD_BYTES = 16 * 1024;
 const MAX_HTTP_BODY_BYTES = 32 * 1024;
 const SERVER_STARTED_AT = Date.now();
 
+// Authoritative room/matchmaking rules. These values are always computed by
+// the server from live authenticated socket sessions; any counts or bot/AI
+// fields supplied by a client are ignored.
+const ROOM_MODES = new Set([
+  'online_ai_fill',
+  'human_only_public',
+  'human_only_private',
+]);
+const ROOM_MAX_HUMANS = 20;
+const HUMAN_ONLY_MIN_PLAYERS = 2;
+const HUMAN_MATCH_COUNTDOWN_MS = Math.max(
+  250,
+  Math.min(10_000, Number(process.env.HUMAN_MATCH_COUNTDOWN_MS || 3000) || 3000)
+);
+
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
   .split(',')
   .map((s) => s.trim())
@@ -112,18 +127,79 @@ export function sanitizeRoomCode(rawCode) {
   return cleaned.length >= 3 ? cleaned : 'CICRAFT-1';
 }
 
-function generateUniqueRoomCode() {
+function normalizeRoomMode(rawMode) {
+  if (rawMode === undefined || rawMode === null || rawMode === '') return null;
+  const mode = String(rawMode).trim().toLowerCase();
+  if (mode === 'online' || mode === 'online_ai_fill') return 'online_ai_fill';
+  if (mode === 'human_only_public' || mode === 'human_only_private') return mode;
+  return 'invalid';
+}
+
+function isHumanOnlyMode(mode) {
+  return mode === 'human_only_public' || mode === 'human_only_private';
+}
+
+function roomVisibilityForMode(mode) {
+  if (mode === 'human_only_public') return 'public';
+  if (mode === 'human_only_private') return 'private';
+  return 'room_code';
+}
+
+function inferRoomModeForCode(code) {
+  const normalized = sanitizeRoomCode(code);
+  if (normalized.startsWith('HPLAY-')) return 'human_only_public';
+  if (normalized.startsWith('HUM-')) return 'human_only_private';
+  return null;
+}
+
+function resolveRequestedRoomMode(rawMode, code) {
+  const inferredMode = code ? inferRoomModeForCode(code) : null;
+  const normalized = normalizeRoomMode(rawMode);
+  if (normalized === 'invalid') {
+    return { mode: null, error: 'Invalid multiplayer room mode.' };
+  }
+  if (inferredMode && normalized && normalized !== inferredMode) {
+    return {
+      mode: null,
+      error: `Room code ${sanitizeRoomCode(code)} is reserved for ${inferredMode}.`,
+    };
+  }
+  return { mode: normalized || inferredMode || 'online_ai_fill', error: null };
+}
+
+function generateUniqueRoomCode(mode = 'online_ai_fill') {
   const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const prefix =
+    mode === 'human_only_public'
+      ? 'HPLAY'
+      : mode === 'human_only_private'
+        ? 'HUM'
+        : 'CI';
   for (let attempt = 0; attempt < 20; attempt++) {
     let suffix = '';
     const bytes = crypto.randomBytes(4);
     for (let i = 0; i < 4; i++) {
       suffix += chars[bytes[i] % chars.length];
     }
-    const candidate = `CI-${suffix}`;
+    const candidate = `${prefix}-${suffix}`;
     if (!rooms.has(candidate)) return candidate;
   }
-  return `CI-${Date.now().toString(36).slice(-4).toUpperCase()}`;
+  return `${prefix}-${Date.now().toString(36).slice(-4).toUpperCase()}`;
+}
+
+function generatePublicPlayerId(room) {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const candidate = `net_${crypto.randomBytes(6).toString('hex')}`;
+    let exists = false;
+    for (const player of room.players.values()) {
+      if (player.id === candidate) {
+        exists = true;
+        break;
+      }
+    }
+    if (!exists) return candidate;
+  }
+  return `net_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
 async function resolvePlayerProfile(accountId, sessionToken, callsign) {
@@ -208,11 +284,29 @@ function createInitialStorm() {
   };
 }
 
-function getOrCreateRoom(code) {
+function getOrCreateRoom(code, requestedMode = 'online_ai_fill') {
   const normalized = sanitizeRoomCode(code);
   if (!rooms.has(normalized)) {
+    const mode = inferRoomModeForCode(normalized) || requestedMode;
+    const humanOnly = isHumanOnlyMode(mode);
     rooms.set(normalized, {
       code: normalized,
+      mode,
+      visibility: roomVisibilityForMode(mode),
+      // Legacy online rooms preserve the existing instant-drop behavior.
+      // Human-only rooms start in a lobby and can only become active through
+      // the server-side ready check below.
+      phase: humanOnly ? 'lobby' : 'active',
+      maxPlayers: ROOM_MAX_HUMANS,
+      minPlayers: humanOnly ? HUMAN_ONLY_MIN_PLAYERS : 1,
+      countdownEndsAt: 0,
+      countdownTimer: null,
+      matchStartedAt: 0,
+      matchEndedAt: 0,
+      matchParticipantIds: new Set(),
+      placements: new Map(),
+      winnerId: null,
+      winnerName: '',
       createdAt: Date.now(),
       lastActivityAt: Date.now(),
       matchTimer: 0,
@@ -224,11 +318,380 @@ function getOrCreateRoom(code) {
       processedHitIds: new Set(),
       hitEventSeq: 0,
       matchSeq: 1,
+      lastStormDamageAt: 0,
+      stormDamageInProgress: false,
     });
   }
   const room = rooms.get(normalized);
   room.lastActivityAt = Date.now();
   return room;
+}
+
+function getRoomHumanPlayers(room) {
+  // Every server room entry is created only from a real WebSocket session.
+  // The server has no bot-spawn path; local AI in legacy modes remains a
+  // client-side simulation and is never represented as a room player here.
+  return Array.from(room.players.values()).filter(
+    (player) => player.participantType === 'human' && player.isBot === false
+  );
+}
+
+function getConnectedAuthenticatedHumans(room) {
+  return getRoomHumanPlayers(room).filter(
+    (player) => player.isConnected && player.isAuthenticated && player.accountId
+  );
+}
+
+function getRoomCounts(room) {
+  const humans = getRoomHumanPlayers(room);
+  const connectedHumansList = humans.filter((player) => player.isConnected);
+  const authenticatedConnected = getConnectedAuthenticatedHumans(room);
+  const readyHumansList = authenticatedConnected.filter((player) => player.isReady);
+  const aliveHumans = humans.filter(
+    (player) => player.alive && player.isParticipant
+  ).length;
+
+  return {
+    totalHumans: humans.length,
+    connectedHumans: connectedHumansList.length,
+    authenticatedHumans: authenticatedConnected.length,
+    readyHumans: readyHumansList.length,
+    aliveHumans,
+  };
+}
+
+function canStartHumanMatch(room) {
+  if (!isHumanOnlyMode(room.mode)) return false;
+  const connectedAuthenticated = getConnectedAuthenticatedHumans(room);
+  return (
+    connectedAuthenticated.length >= room.minPlayers &&
+    connectedAuthenticated.every((player) => player.isReady)
+  );
+}
+
+function buildRoomSummary(room) {
+  const counts = getRoomCounts(room);
+  const humanOnly = isHumanOnlyMode(room.mode);
+  return {
+    roomCode: room.code,
+    mode: room.mode,
+    roomMode: room.mode,
+    visibility: room.visibility,
+    phase: room.phase,
+    matchStatus: room.phase,
+    humanOnly,
+    aiFillEnabled: room.mode === 'online_ai_fill',
+    botCount: 0,
+    connectedPlayers: counts.connectedHumans,
+    connectedHumans: counts.connectedHumans,
+    authenticatedHumans: counts.authenticatedHumans,
+    readyPlayers: counts.readyHumans,
+    readyHumans: counts.readyHumans,
+    totalPlayers: counts.totalHumans,
+    totalHumans: counts.totalHumans,
+    aliveHumans: counts.aliveHumans,
+    maxPlayers: room.maxPlayers,
+    minPlayers: room.minPlayers,
+    matchParticipantCount: room.matchParticipantIds.size,
+    countdownEndsAt: room.countdownEndsAt || 0,
+    canStart: canStartHumanMatch(room),
+    winnerId: room.winnerId,
+    winnerName: room.winnerName,
+    stormPhase: room.storm.phase,
+  };
+}
+
+function sendToPlayer(player, payload) {
+  if (player?.socket && !player.socket.destroyed) {
+    try {
+      player.socket.write(encodeWsFrame(payload));
+    } catch {
+      // The close handler will reconcile disconnected state.
+    }
+  }
+}
+
+function cancelHumanCountdown(room) {
+  if (room.countdownTimer) {
+    clearTimeout(room.countdownTimer);
+    room.countdownTimer = null;
+  }
+  room.countdownEndsAt = 0;
+  if (room.phase === 'countdown') {
+    room.phase = 'lobby';
+  }
+}
+
+function evaluateHumanLobby(room) {
+  if (!isHumanOnlyMode(room.mode)) return;
+
+  if (room.phase === 'countdown' && !canStartHumanMatch(room)) {
+    cancelHumanCountdown(room);
+    broadcastRoomState(room);
+    return;
+  }
+
+  if (room.phase !== 'lobby' || !canStartHumanMatch(room)) return;
+
+  room.phase = 'countdown';
+  room.countdownEndsAt = Date.now() + HUMAN_MATCH_COUNTDOWN_MS;
+  room.countdownTimer = setTimeout(() => {
+    room.countdownTimer = null;
+    void startHumanMatch(room);
+  }, HUMAN_MATCH_COUNTDOWN_MS);
+  if (typeof room.countdownTimer.unref === 'function') {
+    room.countdownTimer.unref();
+  }
+  broadcastRoomState(room);
+}
+
+async function startHumanMatch(room) {
+  if (!isHumanOnlyMode(room.mode) || room.phase !== 'countdown') return;
+  if (!canStartHumanMatch(room)) {
+    cancelHumanCountdown(room);
+    broadcastRoomState(room);
+    return;
+  }
+
+  if (room.matchStartedAt > 0) {
+    room.matchSeq += 1;
+  }
+  room.countdownEndsAt = 0;
+  room.matchTimer = 0;
+  room.storm = createInitialStorm();
+  room.buildables.clear();
+  room.collectedLootIds.clear();
+  room.spawnedLootItems.clear();
+  room.processedHitIds.clear();
+  room.hitEventSeq = 0;
+  room.lastStormDamageAt = Date.now();
+  room.stormDamageInProgress = false;
+  room.matchParticipantIds.clear();
+  room.placements.clear();
+  room.winnerId = null;
+  room.winnerName = '';
+  room.matchEndedAt = 0;
+
+  const participants = getConnectedAuthenticatedHumans(room).filter(
+    (player) => player.isReady
+  );
+  for (const player of getRoomHumanPlayers(room)) {
+    const isParticipant = participants.includes(player);
+    player.isParticipant = isParticipant;
+    player.alive = isParticipant;
+    player.health = 100;
+    player.shield = 50;
+    player.eliminations = 0;
+    if (isParticipant) {
+      room.matchParticipantIds.add(player.id);
+    }
+  }
+
+  room.phase = 'active';
+  room.matchStartedAt = Date.now();
+  room.lastActivityAt = Date.now();
+
+  // Participation is awarded at the authoritative match start, not when a
+  // player merely enters/leaves a lobby.
+  await Promise.all(
+    participants.map(async (player) => {
+      const profile = await applyAuthoritativeProgression(player, {
+        eventId: `${room.code}_match_${room.matchSeq}_participation_${player.accountId}`,
+        roomCode: room.code,
+        eventType: 'match_participation',
+        matchesDelta: 1,
+        xpDelta: 50,
+      });
+      sendToPlayer(player, { type: 'server_progression', profile });
+    })
+  );
+
+  // Personalize match_started with each recipient's opaque public ID and the
+  // authoritative participant roster so clients can verify their own seat
+  // before transitioning from lobby to gameplay.
+  const summary = buildRoomSummary(room);
+  const players = buildRoomPlayersSnapshot(room);
+  for (const player of getRoomHumanPlayers(room)) {
+    if (!player.isConnected) continue;
+    sendToPlayer(player, {
+      type: 'match_started',
+      ...summary,
+      selfPlayerId: player.id,
+      players,
+    });
+  }
+  broadcastRoomState(room);
+}
+
+function finishHumanMatch(room, winner) {
+  if (!isHumanOnlyMode(room.mode) || room.phase === 'ended') return;
+  cancelHumanCountdown(room);
+  room.phase = 'ended';
+  room.matchEndedAt = Date.now();
+  room.winnerId = winner?.id || null;
+  room.winnerName = winner?.name || '';
+  if (winner) {
+    room.placements.set(winner.id, 1);
+  }
+  for (const player of getRoomHumanPlayers(room)) {
+    player.isReady = false;
+  }
+
+  const summary = buildRoomSummary(room);
+  const players = buildRoomPlayersSnapshot(room);
+  const placements = Object.fromEntries(room.placements.entries());
+  for (const player of getRoomHumanPlayers(room)) {
+    if (!player.isConnected) continue;
+    sendToPlayer(player, {
+      type: 'match_ended',
+      ...summary,
+      selfPlayerId: player.id,
+      players,
+      placements,
+    });
+  }
+  broadcastRoomState(room);
+}
+
+function evaluateHumanVictory(room) {
+  if (!isHumanOnlyMode(room.mode) || room.phase !== 'active') return null;
+  const participants = getRoomHumanPlayers(room).filter(
+    (player) => player.isParticipant
+  );
+  if (participants.length < room.minPlayers) return null;
+  const aliveParticipants = participants.filter((player) => player.alive);
+  return aliveParticipants.length === 1 ? aliveParticipants[0] : null;
+}
+
+async function awardHumanWinner(room, winner, eventSuffix) {
+  if (!winner?.accountId) return;
+  const profile = await applyAuthoritativeProgression(winner, {
+    eventId: `${room.code}_match_${room.matchSeq}_win_${eventSuffix}_${winner.accountId}`,
+    roomCode: room.code,
+    eventType: 'human_only_victory',
+    winsDelta: 1,
+    placement: 1,
+    xpDelta: 300,
+  });
+  sendToPlayer(winner, { type: 'server_progression', profile });
+}
+
+async function handleHumanForfeit(room, player, reason = 'left_room') {
+  if (!isHumanOnlyMode(room.mode) || room.phase !== 'active') return;
+  if (!player?.isParticipant || !player.alive) return;
+
+  const aliveBefore = getRoomHumanPlayers(room).filter(
+    (candidate) => candidate.isParticipant && candidate.alive
+  ).length;
+  player.alive = false;
+  const placement = Math.max(2, aliveBefore);
+  room.placements.set(player.id, placement);
+
+  if (player.accountId) {
+    const profile = await applyAuthoritativeProgression(player, {
+      eventId: `${room.code}_match_${room.matchSeq}_forfeit_${reason}_${player.accountId}`,
+      roomCode: room.code,
+      eventType: 'forfeit',
+      placement,
+      xpDelta: placement <= 3 ? 150 : placement <= 5 ? 75 : 0,
+    });
+    sendToPlayer(player, { type: 'server_progression', profile });
+  }
+
+  const winner = evaluateHumanVictory(room);
+  if (winner) {
+    await awardHumanWinner(room, winner, 'forfeit');
+    finishHumanMatch(room, winner);
+  }
+}
+
+async function applyHumanStormDamage(room) {
+  if (!isHumanOnlyMode(room.mode) || room.phase !== 'active') return;
+  if (room.stormDamageInProgress) return;
+
+  const now = Date.now();
+  if (now - room.lastStormDamageAt < 950) return;
+  room.lastStormDamageAt = now;
+  room.stormDamageInProgress = true;
+
+  try {
+    const storm = room.storm;
+    const damage = Math.max(
+      1,
+      Math.min(100, Math.round(Number(storm.damagePerSecond || 2)))
+    );
+    const candidates = getRoomHumanPlayers(room).filter((player) => {
+      if (!player.isParticipant || !player.alive || player.isGliding) {
+        return false;
+      }
+      const distance = Math.hypot(
+        Number(player.position?.x || 0) - Number(storm.currentCenterX || 0),
+        Number(player.position?.z || 0) - Number(storm.currentCenterZ || 0)
+      );
+      return distance > Number(storm.currentRadius || 0);
+    });
+
+    for (const victim of candidates) {
+      if (room.phase !== 'active' || !victim.alive) continue;
+
+      victim.health = Math.max(0, Number(victim.health || 0) - damage);
+      const eliminated = victim.health <= 0;
+      const eventId = `${room.code}_storm_${++room.hitEventSeq}`;
+
+      if (eliminated) {
+        const aliveBefore = getRoomHumanPlayers(room).filter(
+          (player) => player.isParticipant && player.alive
+        ).length;
+        victim.alive = false;
+        const placement = Math.max(2, aliveBefore);
+        room.placements.set(victim.id, placement);
+
+        if (victim.accountId) {
+          const profile = await applyAuthoritativeProgression(victim, {
+            eventId: `${eventId}_victim`,
+            roomCode: room.code,
+            eventType: 'storm_eliminated',
+            placement,
+            xpDelta: placement <= 3 ? 150 : placement <= 5 ? 75 : 0,
+          });
+          sendToPlayer(victim, { type: 'server_progression', profile });
+        }
+      }
+
+      broadcastToRoom(room, {
+        type: 'server_hit',
+        eventId,
+        attackerId: 'storm',
+        attackerName: 'The Storm',
+        victimId: victim.id,
+        victimName: victim.name,
+        damage,
+        victimHealth: victim.health,
+        victimShield: victim.shield,
+        isHeadshot: false,
+        isShieldHit: false,
+        isShieldBreak: false,
+        weaponName: 'The Storm',
+        hitPoint: victim.position,
+        eliminated,
+      });
+
+      if (eliminated) {
+        const winner = evaluateHumanVictory(room);
+        if (winner) {
+          await awardHumanWinner(room, winner, 'storm');
+          finishHumanMatch(room, winner);
+          break;
+        }
+      }
+    }
+
+    if (candidates.length > 0 && room.phase === 'active') {
+      broadcastRoomState(room);
+    }
+  } finally {
+    room.stormDamageInProgress = false;
+  }
 }
 
 function encodeWsFrame(jsonPayload) {
@@ -501,37 +964,133 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 7. Create Private Room with Unique Room Code (`POST /api/room/create`)
+  // 7. Create a room with a server-validated mode (`POST /api/room/create`)
   if (reqUrl.pathname === '/api/room/create' && req.method === 'POST') {
     if (!checkHttpRateLimit(clientIp, 'room_create', 15, 60000)) {
       sendJson(res, 429, { ok: false, error: 'Too many room creation requests.' });
       return;
     }
-    const code = generateUniqueRoomCode();
-    const room = getOrCreateRoom(code);
+    let body;
+    try {
+      body = await readJsonBody(req);
+    } catch {
+      sendJson(res, 400, { ok: false, error: 'Invalid room creation payload.' });
+      return;
+    }
+    const modeResolution = resolveRequestedRoomMode(
+      body.roomMode ?? body.mode,
+      null
+    );
+    if (!modeResolution.mode) {
+      sendJson(res, 400, { ok: false, error: modeResolution.error });
+      return;
+    }
+    const code = generateUniqueRoomCode(modeResolution.mode);
+    const room = getOrCreateRoom(code, modeResolution.mode);
     sendJson(res, 200, {
       ok: true,
-      roomCode: room.code,
-      connectedPlayers: 0,
-      totalPlayers: 0,
+      exists: true,
+      ...buildRoomSummary(room),
     });
     return;
   }
 
-  // 8. Query Room Status (`GET /api/room`)
+  // 8. Public human-only matchmaking (`POST /api/room/matchmake`)
+  if (reqUrl.pathname === '/api/room/matchmake' && req.method === 'POST') {
+    if (!checkHttpRateLimit(clientIp, 'room_matchmake', 30, 60000)) {
+      sendJson(res, 429, { ok: false, error: 'Too many matchmaking requests.' });
+      return;
+    }
+    let body;
+    try {
+      body = await readJsonBody(req);
+    } catch {
+      sendJson(res, 400, { ok: false, error: 'Invalid matchmaking payload.' });
+      return;
+    }
+    const requestedMode = normalizeRoomMode(body.roomMode ?? body.mode);
+    if (requestedMode && requestedMode !== 'human_only_public') {
+      sendJson(res, 400, {
+        ok: false,
+        error: 'Public matchmaking is available only for human_only_public rooms.',
+      });
+      return;
+    }
+
+    let room = Array.from(rooms.values())
+      .filter(
+        (candidate) =>
+          candidate.mode === 'human_only_public' &&
+          candidate.phase === 'lobby' &&
+          candidate.players.size < candidate.maxPlayers
+      )
+      .sort((a, b) => {
+        const countsA = getRoomCounts(a);
+        const countsB = getRoomCounts(b);
+        return (
+          countsB.connectedHumans - countsA.connectedHumans ||
+          a.createdAt - b.createdAt
+        );
+      })[0];
+
+    if (!room) {
+      room = getOrCreateRoom(
+        generateUniqueRoomCode('human_only_public'),
+        'human_only_public'
+      );
+    }
+
+    sendJson(res, 200, {
+      ok: true,
+      exists: true,
+      ...buildRoomSummary(room),
+    });
+    return;
+  }
+
+  // 9. Query room status (`GET /api/room`). This summary intentionally
+  // contains public room metadata only: no account/session tokens.
   if (reqUrl.pathname === '/api/room' && req.method === 'GET') {
     const code = sanitizeRoomCode(reqUrl.searchParams.get('code') || 'CICRAFT-1');
     const room = rooms.get(code);
-    const connectedCount = room
-      ? Array.from(room.players.values()).filter((p) => p.isConnected).length
-      : 0;
+    if (room) {
+      sendJson(res, 200, {
+        ok: true,
+        exists: true,
+        ...buildRoomSummary(room),
+      });
+      return;
+    }
+
+    const inferredMode = inferRoomModeForCode(code) || 'online_ai_fill';
     sendJson(res, 200, {
       ok: true,
+      exists: false,
       roomCode: code,
-      exists: Boolean(room),
-      connectedPlayers: connectedCount,
-      totalPlayers: room ? room.players.size : 0,
-      stormPhase: room ? room.storm.phase : 1,
+      mode: inferredMode,
+      roomMode: inferredMode,
+      visibility: roomVisibilityForMode(inferredMode),
+      phase: isHumanOnlyMode(inferredMode) ? 'lobby' : 'active',
+      matchStatus: isHumanOnlyMode(inferredMode) ? 'lobby' : 'active',
+      humanOnly: isHumanOnlyMode(inferredMode),
+      aiFillEnabled: inferredMode === 'online_ai_fill',
+      botCount: 0,
+      connectedPlayers: 0,
+      connectedHumans: 0,
+      authenticatedHumans: 0,
+      readyPlayers: 0,
+      readyHumans: 0,
+      totalPlayers: 0,
+      totalHumans: 0,
+      aliveHumans: 0,
+      maxPlayers: ROOM_MAX_HUMANS,
+      minPlayers: isHumanOnlyMode(inferredMode) ? HUMAN_ONLY_MIN_PLAYERS : 1,
+      matchParticipantCount: 0,
+      countdownEndsAt: 0,
+      canStart: false,
+      winnerId: null,
+      winnerName: '',
+      stormPhase: 1,
     });
     return;
   }
@@ -667,64 +1226,158 @@ server.on('upgrade', (req, socket) => {
 
         if (msg.type === 'join_room') {
           const roomCode = sanitizeRoomCode(msg.roomCode);
-          const room = getOrCreateRoom(roomCode);
-          currentRoom = room;
-          currentSessionToken = String(msg.sessionToken || `sess_${crypto.randomBytes(6).toString('hex')}`).slice(0, 48);
+          const requestedSessionToken = String(
+            msg.sessionToken || `sess_${crypto.randomBytes(6).toString('hex')}`
+          ).slice(0, 48);
+          const rejectJoin = (code, reason) => {
+            socket.write(
+              encodeWsFrame({
+                type: 'join_rejected',
+                ok: false,
+                code,
+                reason,
+                roomCode,
+              })
+            );
+          };
 
-          // Authenticate or auto-provision persistent player account
+          const modeResolution = resolveRequestedRoomMode(
+            msg.roomMode ?? msg.mode,
+            roomCode
+          );
+          if (!modeResolution.mode) {
+            rejectJoin('invalid_room_mode', modeResolution.error);
+            continue;
+          }
+
+          let room = rooms.get(roomCode);
+          if (room && room.mode !== modeResolution.mode) {
+            rejectJoin(
+              'room_mode_mismatch',
+              `Room ${roomCode} is a ${room.mode} room and cannot accept ${modeResolution.mode} sessions.`
+            );
+            continue;
+          }
+          if (!room) {
+            room = getOrCreateRoom(roomCode, modeResolution.mode);
+          }
+
+          const humanOnlyRoom = isHumanOnlyMode(room.mode);
+
+          // Verify an existing persistent account without auto-provisioning a
+          // replacement. Human-only rooms require this verification; legacy
+          // online rooms retain their existing guest-session behavior.
+          let verifiedProfile = null;
           let verifiedAccountId = null;
           if (msg.accountId && msg.accountToken) {
-            const authRes = await db.createOrVerifyAccount({
-              accountId: String(msg.accountId),
-              accountToken: String(msg.accountToken),
-              callsign: msg.playerName,
-              cosmetics: {
-                outfitId: msg.outfitId,
-                skinColor: msg.skinColor,
-                accentColor: msg.accentColor,
-                backAccessory: msg.backAccessory,
-              },
-            });
-            if (!authRes.isNew && authRes.accountId === msg.accountId) {
-              verifiedAccountId = authRes.accountId;
+            try {
+              verifiedProfile = await db.verifyAccountCredentials({
+                accountId: String(msg.accountId),
+                accountToken: String(msg.accountToken),
+                callsign: msg.playerName,
+              });
+              verifiedAccountId = verifiedProfile?.accountId || null;
+            } catch {
+              verifiedProfile = null;
+              verifiedAccountId = null;
             }
           }
 
-          // Prevent duplicate player identities in the same room:
-          // If the same verified accountId is already in the room under a previous sessionToken,
-          // supersede the old entry cleanly.
+          if (humanOnlyRoom && !verifiedAccountId) {
+            rejectJoin(
+              'authentication_required',
+              'Human-only rooms require a verified CI Craft account session.'
+            );
+            continue;
+          }
+
+          let player = room.players.get(requestedSessionToken) || null;
+          let existingByAccount = null;
           if (verifiedAccountId) {
-            for (const [oldTok, existingP] of room.players.entries()) {
-              if (
-                existingP.accountId === verifiedAccountId &&
-                oldTok !== currentSessionToken
-              ) {
-                if (
-                  existingP.socket &&
-                  existingP.socket !== socket &&
-                  !existingP.socket.destroyed
-                ) {
-                  try {
-                    existingP.socket.end();
-                  } catch {
-                    // Ignore
-                  }
-                }
-                room.players.delete(oldTok);
+            for (const candidate of room.players.values()) {
+              if (candidate.accountId === verifiedAccountId) {
+                existingByAccount = candidate;
+                break;
               }
             }
           }
 
+          if (
+            player &&
+            verifiedAccountId &&
+            player.accountId &&
+            player.accountId !== verifiedAccountId
+          ) {
+            rejectJoin(
+              'session_in_use',
+              'This session token is already bound to a different account in the room.'
+            );
+            continue;
+          }
+
+          // A reconnect with the same verified account but a new browser
+          // session transfers the existing seat instead of deleting it or
+          // creating a duplicate. Combat/identity state is preserved.
+          if (existingByAccount && existingByAccount !== player) {
+            if (player) {
+              rejectJoin(
+                'session_in_use',
+                'This session token is already in use by another room session.'
+              );
+              continue;
+            }
+            if (
+              existingByAccount.socket &&
+              existingByAccount.socket !== socket &&
+              !existingByAccount.socket.destroyed
+            ) {
+              try {
+                existingByAccount.socket.end();
+              } catch {
+                // Ignore
+              }
+            }
+            room.players.delete(existingByAccount.sessionToken);
+            existingByAccount.sessionToken = requestedSessionToken;
+            room.players.set(requestedSessionToken, existingByAccount);
+            player = existingByAccount;
+          }
+
+          const isExistingPlayer = Boolean(player);
+          const wasConnected = Boolean(player?.isConnected);
+          if (!isExistingPlayer) {
+            if (room.players.size >= room.maxPlayers) {
+              rejectJoin('room_full', `Room ${roomCode} is full.`);
+              continue;
+            }
+            if (humanOnlyRoom && room.phase !== 'lobby') {
+              rejectJoin(
+                'match_in_progress',
+                'This human-only match has already started. Wait for the next lobby or find another room.'
+              );
+              continue;
+            }
+          }
+
+          currentRoom = room;
+          currentSessionToken = requestedSessionToken;
+
           const cleanCallsign = sanitizeCallsign(msg.playerName);
-          let player = room.players.get(currentSessionToken);
           let isFreshJoinOrReset = false;
 
           if (!player) {
             isFreshJoinOrReset = true;
             player = {
-              id: `net_${currentSessionToken}`,
+              // Public IDs are opaque and unrelated to the private session
+              // token. Session/account tokens are never broadcast.
+              id: generatePublicPlayerId(room),
               sessionToken: currentSessionToken,
               accountId: verifiedAccountId,
+              isAuthenticated: Boolean(verifiedAccountId),
+              participantType: 'human',
+              isBot: false,
+              isReady: !humanOnlyRoom,
+              isParticipant: !humanOnlyRoom,
               name: cleanCallsign,
               position: sanitizePosition(msg.position, { x: 0, y: 10, z: 0 }),
               velocity: { x: 0, y: 0, z: 0 },
@@ -737,6 +1390,7 @@ server.on('upgrade', (req, socket) => {
               alive: true,
               isConnected: true,
               disconnectedAt: 0,
+              joinedAt: Date.now(),
               isAiming: false,
               isSprinting: false,
               isGrounded: !msg.isGliding,
@@ -761,11 +1415,19 @@ server.on('upgrade', (req, socket) => {
             player.isConnected = true;
             player.disconnectedAt = 0;
             player.accountId = verifiedAccountId || player.accountId;
+            player.isAuthenticated = Boolean(player.accountId && verifiedAccountId);
+            player.participantType = 'human';
+            player.isBot = false;
             player.name = cleanCallsign;
+            if (humanOnlyRoom && !wasConnected) {
+              // A reconnect must explicitly ready-up again before a lobby or
+              // countdown can start. The existing seat is not duplicated.
+              player.isReady = false;
+            }
             if (msg.skinColor !== undefined) player.skinColor = Number(msg.skinColor);
             if (msg.accentColor !== undefined) player.accentColor = Number(msg.accentColor);
             if (msg.backAccessory) player.backAccessory = String(msg.backAccessory);
-            if (msg.resetPlayer) {
+            if (msg.resetPlayer && !humanOnlyRoom) {
               isFreshJoinOrReset = true;
               room.matchSeq += 1;
               player.health = 100;
@@ -773,12 +1435,23 @@ server.on('upgrade', (req, socket) => {
               player.alive = true;
               player.eliminations = 0;
               player.position = sanitizePosition(msg.position, player.position);
+            } else if (msg.resetPlayer && humanOnlyRoom && room.phase === 'lobby') {
+              player.health = 100;
+              player.shield = 50;
+              player.alive = true;
+              player.eliminations = 0;
+              player.isParticipant = false;
+              player.position = sanitizePosition(msg.position, player.position);
             }
+            // In an active human-only match, resetPlayer is intentionally
+            // ignored: a client cannot revive/reset itself by reconnecting.
             player.socket = socket;
           }
 
           let profile;
-          if (isFreshJoinOrReset) {
+          if (humanOnlyRoom) {
+            profile = verifiedProfile;
+          } else if (isFreshJoinOrReset) {
             profile = await applyAuthoritativeProgression(player, {
               eventId: `${room.code}_join_${player.accountId || currentSessionToken}_${room.matchSeq}`,
               roomCode: room.code,
@@ -793,6 +1466,15 @@ server.on('upgrade', (req, socket) => {
               player.name
             );
           }
+
+          socket.write(
+            encodeWsFrame({
+              type: 'room_joined',
+              ok: true,
+              selfPlayerId: player.id,
+              ...buildRoomSummary(room),
+            })
+          );
 
           // Send authoritative progression snapshot to the client
           socket.write(
@@ -818,10 +1500,126 @@ server.on('upgrade', (req, socket) => {
             );
           }
 
+          evaluateHumanLobby(room);
           broadcastRoomState(room);
+        } else if (msg.type === 'set_ready' && currentRoom && currentSessionToken) {
+          const player = currentRoom.players.get(currentSessionToken);
+          if (!player) continue;
+          if (!isHumanOnlyMode(currentRoom.mode)) {
+            socket.write(
+              encodeWsFrame({
+                type: 'ready_rejected',
+                reason: 'Ready state is only used by human-only lobbies.',
+              })
+            );
+            continue;
+          }
+          if (
+            currentRoom.phase !== 'lobby' &&
+            currentRoom.phase !== 'countdown'
+          ) {
+            socket.write(
+              encodeWsFrame({
+                type: 'ready_rejected',
+                reason: 'Ready state cannot be changed after the match starts.',
+              })
+            );
+            continue;
+          }
+          if (!player.isConnected || !player.isAuthenticated || !player.accountId) {
+            socket.write(
+              encodeWsFrame({
+                type: 'ready_rejected',
+                reason: 'Only authenticated connected humans can ready up.',
+              })
+            );
+            continue;
+          }
+
+          // Only this socket's own boolean is accepted. Connected/ready
+          // totals are always recomputed from server-owned room entries.
+          player.isReady = Boolean(msg.ready);
+          currentRoom.lastActivityAt = Date.now();
+          evaluateHumanLobby(currentRoom);
+          broadcastRoomState(currentRoom);
+        } else if (
+          msg.type === 'request_match_start' &&
+          currentRoom &&
+          currentSessionToken
+        ) {
+          if (!isHumanOnlyMode(currentRoom.mode)) {
+            socket.write(
+              encodeWsFrame({
+                type: 'match_start_rejected',
+                reason: 'This room does not use human-only matchmaking.',
+              })
+            );
+            continue;
+          }
+          if (canStartHumanMatch(currentRoom)) {
+            evaluateHumanLobby(currentRoom);
+          } else {
+            const counts = getRoomCounts(currentRoom);
+            socket.write(
+              encodeWsFrame({
+                type: 'match_start_rejected',
+                reason: `Waiting for at least ${currentRoom.minPlayers} connected authenticated humans, with every connected human ready. Currently ${counts.readyHumans}/${counts.authenticatedHumans} ready.`,
+                ...buildRoomSummary(currentRoom),
+              })
+            );
+          }
+        } else if (
+          msg.type === 'spawn_bot' ||
+          msg.type === 'join_bot' ||
+          msg.type === 'add_ai'
+        ) {
+          // There is deliberately no server endpoint or message that can add
+          // a bot participant. Reject explicitly rather than silently
+          // treating a claimed bot as a human.
+          socket.write(
+            encodeWsFrame({
+              type: 'bot_rejected',
+              reason: 'Bots cannot be injected into server rooms.',
+              ...(currentRoom ? buildRoomSummary(currentRoom) : {}),
+            })
+          );
+        } else if (msg.type === 'leave_room' && currentRoom && currentSessionToken) {
+          const room = currentRoom;
+          const player = room.players.get(currentSessionToken);
+          if (player) {
+            player.isReady = false;
+            player.isConnected = false;
+            player.disconnectedAt = Date.now();
+
+            if (isHumanOnlyMode(room.mode) && room.phase === 'active') {
+              await handleHumanForfeit(room, player, 'left_room');
+            }
+
+            // Explicit leave releases the seat entirely. A temporary socket
+            // disconnect also releases a pre-start human-only lobby seat;
+            // active participants retain theirs until reconnect timeout.
+            room.players.delete(currentSessionToken);
+            broadcastToRoom(room, {
+              type: 'player_left',
+              playerId: player.id,
+              playerName: player.name,
+              ...buildRoomSummary(room),
+            });
+            evaluateHumanLobby(room);
+            broadcastRoomState(room);
+          }
+          currentRoom = null;
+          currentSessionToken = null;
         } else if (msg.type === 'player_sync' && currentRoom && currentSessionToken) {
           currentRoom.lastActivityAt = Date.now();
           const p = currentRoom.players.get(currentSessionToken);
+          if (
+            p &&
+            isHumanOnlyMode(currentRoom.mode) &&
+            (currentRoom.phase !== 'active' || !p.isParticipant)
+          ) {
+            continue;
+          }
           if (p) {
             p.position = sanitizePosition(msg.position, p.position);
             p.velocity = sanitizeVelocity(msg.velocity, p.velocity);
@@ -849,17 +1647,32 @@ server.on('upgrade', (req, socket) => {
           }
         } else if (msg.type === 'heal_sync' && currentRoom && currentSessionToken) {
           const p = currentRoom.players.get(currentSessionToken);
+          if (
+            p &&
+            isHumanOnlyMode(currentRoom.mode) &&
+            (currentRoom.phase !== 'active' || !p.isParticipant)
+          ) {
+            continue;
+          }
           if (p && p.alive) {
             p.health = clampFinite(msg.health, 0, 100, p.health);
             p.shield = clampFinite(msg.shield, 0, 100, p.shield);
           }
         } else if (msg.type === 'fire_weapon' && currentRoom && currentSessionToken) {
+          const shooter = currentRoom.players.get(currentSessionToken);
+          if (!shooter || !shooter.alive) continue;
+          if (
+            isHumanOnlyMode(currentRoom.mode) &&
+            (currentRoom.phase !== 'active' || !shooter.isParticipant)
+          ) {
+            continue;
+          }
           currentRoom.lastActivityAt = Date.now();
           broadcastToRoom(
             currentRoom,
             {
               type: 'remote_weapon_fired',
-              shooterId: `net_${currentSessionToken}`,
+              shooterId: shooter.id,
               category: String(msg.category || 'assault_rifle').slice(0, 24),
               muzzlePos: sanitizePosition(msg.muzzlePos, { x: 0, y: 1, z: 0 }),
               hitPoint: sanitizePosition(msg.hitPoint, { x: 0, y: 1, z: -10 }),
@@ -870,6 +1683,12 @@ server.on('upgrade', (req, socket) => {
           currentRoom.lastActivityAt = Date.now();
           const attacker = currentRoom.players.get(currentSessionToken);
           if (!attacker || !attacker.alive) continue;
+          if (
+            isHumanOnlyMode(currentRoom.mode) &&
+            (currentRoom.phase !== 'active' || !attacker.isParticipant)
+          ) {
+            continue;
+          }
 
           // Authoritative hitId deduplication to prevent duplicate damage events
           if (msg.hitId) {
@@ -892,6 +1711,7 @@ server.on('upgrade', (req, socket) => {
             }
           }
           if (!victim || !victim.alive) continue;
+          if (isHumanOnlyMode(currentRoom.mode) && !victim.isParticipant) continue;
 
           // Server-authoritative distance sanity check (max sniper range = 360m)
           const dist = Math.hypot(
@@ -920,17 +1740,20 @@ server.on('upgrade', (req, socket) => {
           let eliminated = false;
           let winsDelta = 0;
           let attackerPlacement = 0;
+          let matchWinner = null;
 
           if (victim.health <= 0 && victim.alive) {
             victim.alive = false;
             eliminated = true;
             attacker.eliminations = (attacker.eliminations || 0) + 1;
 
-            // Check if attacker is the last surviving human player in the room
-            const alivePlayers = Array.from(currentRoom.players.values()).filter(
-              (p) => p.alive
+            const alivePlayers = getRoomHumanPlayers(currentRoom).filter(
+              (p) =>
+                p.alive &&
+                (!isHumanOnlyMode(currentRoom.mode) || p.isParticipant)
             );
             const victimPlacement = Math.max(2, alivePlayers.length + 1);
+            currentRoom.placements.set(victim.id, victimPlacement);
 
             const victimProfile = await applyAuthoritativeProgression(victim, {
               eventId: `${eventId}_victim`,
@@ -949,7 +1772,19 @@ server.on('upgrade', (req, socket) => {
               );
             }
 
-            if (alivePlayers.length === 1 && alivePlayers[0].id === attacker.id) {
+            if (isHumanOnlyMode(currentRoom.mode)) {
+              // Human-only victory is evaluated only from authenticated
+              // human match participants. No bot participant can exist in
+              // this room, and local AI settings have no effect here.
+              matchWinner = evaluateHumanVictory(currentRoom);
+              if (matchWinner?.id === attacker.id) {
+                winsDelta = 1;
+                attackerPlacement = 1;
+              }
+            } else if (
+              alivePlayers.length === 1 &&
+              alivePlayers[0].id === attacker.id
+            ) {
               winsDelta = 1;
               attackerPlacement = 1;
             }
@@ -986,7 +1821,6 @@ server.on('upgrade', (req, socket) => {
             attackerId: attacker.id,
             attackerName: attacker.name,
             victimId: victim.id,
-            victimSessionToken: victim.sessionToken,
             victimName: victim.name,
             damage: rawDamage,
             victimHealth: victim.health,
@@ -998,10 +1832,27 @@ server.on('upgrade', (req, socket) => {
             hitPoint: sanitizePosition(msg.hitPoint, victim.position),
             eliminated,
           });
+
+          if (matchWinner) {
+            finishHumanMatch(currentRoom, matchWinner);
+          }
         } else if (msg.type === 'collect_loot' && currentRoom && currentSessionToken) {
           currentRoom.lastActivityAt = Date.now();
           const collector = currentRoom.players.get(currentSessionToken);
           if (!collector || !collector.alive) continue;
+          if (
+            isHumanOnlyMode(currentRoom.mode) &&
+            (currentRoom.phase !== 'active' || !collector.isParticipant)
+          ) {
+            socket.write(
+              encodeWsFrame({
+                type: 'loot_collect_rejected',
+                lootId: String(msg.lootId || '').slice(0, 64),
+                reason: 'The human-only match has not started.',
+              })
+            );
+            continue;
+          }
 
           const lootId = String(msg.lootId || '').slice(0, 64);
           if (!lootId) continue;
@@ -1063,7 +1914,6 @@ server.on('upgrade', (req, socket) => {
 
           broadcastToRoom(currentRoom, {
             type: 'loot_collected',
-            sessionToken: currentSessionToken,
             collectorId: collector.id,
             lootId,
             itemType,
@@ -1071,15 +1921,22 @@ server.on('upgrade', (req, socket) => {
             swappedDrop,
           });
         } else if (msg.type === 'place_build' && currentRoom && currentSessionToken) {
+          const builder = currentRoom.players.get(currentSessionToken);
+          if (!builder || !builder.alive) continue;
+          if (
+            isHumanOnlyMode(currentRoom.mode) &&
+            (currentRoom.phase !== 'active' || !builder.isParticipant)
+          ) {
+            continue;
+          }
           currentRoom.lastActivityAt = Date.now();
           const mat = String(msg.material || 'wood');
           const safeMat = mat === 'stone' || mat === 'metal' ? mat : 'wood';
           const maxHp = safeMat === 'wood' ? 150 : safeMat === 'stone' ? 220 : 300;
           const buildPacket = {
             type: 'build_placed',
-            sessionToken: currentSessionToken,
             buildId: String(msg.buildId || `build_${Date.now()}`).slice(0, 64),
-            ownerId: `net_${currentSessionToken}`,
+            ownerId: builder.id,
             pieceType: String(msg.pieceType || 'wall').slice(0, 16),
             x: clampFinite(msg.x, -450, 450, 0),
             y: clampFinite(msg.y, -20, 250, 0),
@@ -1092,7 +1949,15 @@ server.on('upgrade', (req, socket) => {
             currentRoom.buildables.set(buildPacket.buildId, buildPacket);
           }
           broadcastToRoom(currentRoom, buildPacket, currentSessionToken);
-        } else if (msg.type === 'damage_build' && currentRoom) {
+        } else if (msg.type === 'damage_build' && currentRoom && currentSessionToken) {
+          const damager = currentRoom.players.get(currentSessionToken);
+          if (!damager || !damager.alive) continue;
+          if (
+            isHumanOnlyMode(currentRoom.mode) &&
+            (currentRoom.phase !== 'active' || !damager.isParticipant)
+          ) {
+            continue;
+          }
           currentRoom.lastActivityAt = Date.now();
           const buildId = String(msg.destructibleId || '').slice(0, 64);
           const dmg = clampFinite(msg.damage, 1, 250, 25);
@@ -1122,10 +1987,31 @@ server.on('upgrade', (req, socket) => {
   socket.on('close', () => {
     if (currentRoom && currentSessionToken) {
       const p = currentRoom.players.get(currentSessionToken);
+      let removedLobbyPlayer = null;
       if (p && p.socket === socket) {
         p.isConnected = false;
         p.disconnectedAt = Date.now();
+        if (
+          isHumanOnlyMode(currentRoom.mode) &&
+          (currentRoom.phase === 'lobby' || currentRoom.phase === 'countdown')
+        ) {
+          // A pre-start disconnect removes the human from the lobby entirely.
+          // If the same authenticated account reconnects, it receives one
+          // fresh, unready seat rather than a duplicate roster entry.
+          p.isReady = false;
+          currentRoom.players.delete(currentSessionToken);
+          removedLobbyPlayer = p;
+        }
       }
+      if (removedLobbyPlayer) {
+        broadcastToRoom(currentRoom, {
+          type: 'player_left',
+          playerId: removedLobbyPlayer.id,
+          playerName: removedLobbyPlayer.name,
+          ...buildRoomSummary(currentRoom),
+        });
+      }
+      evaluateHumanLobby(currentRoom);
       broadcastRoomState(currentRoom);
     }
   });
@@ -1200,15 +2086,18 @@ function q3(n) {
   return Math.round((Number(n) || 0) * 1000) / 1000;
 }
 
-function broadcastRoomState(room) {
-  const playersSnapshot = [];
-  for (const p of room.players.values()) {
+function buildRoomPlayersSnapshot(room) {
+  return getRoomHumanPlayers(room).map((p) => {
     const pos = p.position || { x: 0, y: 6, z: 0 };
     const vel = p.velocity || { x: 0, y: 0, z: 0 };
-    playersSnapshot.push({
+    return {
       id: p.id,
-      sessionToken: p.sessionToken,
       name: p.name,
+      participantType: 'human',
+      isBot: false,
+      isAuthenticated: Boolean(p.isAuthenticated && p.accountId),
+      isReady: Boolean(p.isReady),
+      isParticipant: Boolean(p.isParticipant),
       position: { x: q2(pos.x), y: q2(pos.y), z: q2(pos.z) },
       velocity: { x: q2(vel.x), y: q2(vel.y), z: q2(vel.z) },
       yaw: q3(p.yaw),
@@ -1231,31 +2120,44 @@ function broadcastRoomState(room) {
       skinColor: p.skinColor ?? 0x0284c7,
       accentColor: p.accentColor ?? 0x38bdf8,
       backAccessory: p.backAccessory || 'jump_pack',
-    });
-  }
-
-  const s = room.storm;
-  broadcastToRoom(room, {
-    type: 'room_state',
-    roomCode: room.code,
-    matchTimer: q2(room.matchTimer),
-    storm: {
-      phase: s.phase,
-      currentCenterX: q2(s.currentCenterX),
-      currentCenterZ: q2(s.currentCenterZ),
-      currentRadius: q2(s.currentRadius),
-      targetCenterX: q2(s.targetCenterX),
-      targetCenterZ: q2(s.targetCenterZ),
-      targetRadius: q2(s.targetRadius),
-      phaseTimer: q2(s.phaseTimer),
-      isShrinking: s.isShrinking,
-      damagePerSecond: s.damagePerSecond,
-    },
-    players: playersSnapshot,
+    };
   });
 }
 
-// 20Hz authoritative room state tick for active rooms
+function broadcastRoomState(room) {
+  const playersSnapshot = buildRoomPlayersSnapshot(room);
+
+  const s = room.storm;
+  const summary = buildRoomSummary(room);
+  // Personalized only by the recipient's opaque public player ID. Neither
+  // account tokens nor private session tokens are included in snapshots.
+  for (const recipient of getRoomHumanPlayers(room)) {
+    if (!recipient.isConnected) continue;
+    sendToPlayer(recipient, {
+      type: 'room_state',
+      ...summary,
+      selfPlayerId: recipient.id,
+      matchTimer: q2(room.matchTimer),
+      storm: {
+        phase: s.phase,
+        currentCenterX: q2(s.currentCenterX),
+        currentCenterZ: q2(s.currentCenterZ),
+        currentRadius: q2(s.currentRadius),
+        targetCenterX: q2(s.targetCenterX),
+        targetCenterZ: q2(s.targetCenterZ),
+        targetRadius: q2(s.targetRadius),
+        phaseTimer: q2(s.phaseTimer),
+        isShrinking: s.isShrinking,
+        damagePerSecond: s.damagePerSecond,
+      },
+      players: playersSnapshot,
+    });
+  }
+}
+
+// 20Hz authoritative room state tick. Human-only storm/match timers advance
+// only after the server has started the match; lobby snapshots still flow so
+// every client sees authoritative connected/ready counts.
 const roomTickInterval = setInterval(() => {
   for (const room of rooms.values()) {
     let hasConnected = false;
@@ -1266,7 +2168,14 @@ const roomTickInterval = setInterval(() => {
       }
     }
     if (hasConnected) {
-      updateRoomStorm(room, 0.05);
+      if (room.phase === 'active') {
+        updateRoomStorm(room, 0.05);
+        if (isHumanOnlyMode(room.mode)) {
+          void applyHumanStormDamage(room).catch(() => {
+            // Progression/database failures must not stop the room tick.
+          });
+        }
+      }
       broadcastRoomState(room);
     }
   }
@@ -1281,14 +2190,29 @@ const cleanupInterval = setInterval(() => {
 
   for (const [code, room] of rooms.entries()) {
     let connectedCount = 0;
+    let removedPlayer = false;
     for (const [tok, p] of room.players.entries()) {
       if (p.isConnected) {
         connectedCount++;
       } else if (p.disconnectedAt > 0 && now - p.disconnectedAt > 120_000) {
+        if (
+          isHumanOnlyMode(room.mode) &&
+          room.phase === 'active' &&
+          p.isParticipant &&
+          p.alive
+        ) {
+          void handleHumanForfeit(room, p, 'reconnect_timeout');
+        }
         room.players.delete(tok);
+        removedPlayer = true;
       }
     }
+    if (removedPlayer) {
+      evaluateHumanLobby(room);
+      if (connectedCount > 0) broadcastRoomState(room);
+    }
     if (connectedCount === 0 && now - room.lastActivityAt > 180_000) {
+      cancelHumanCountdown(room);
       rooms.delete(code);
     }
   }
@@ -1303,6 +2227,7 @@ async function gracefulShutdown(signal) {
   clearInterval(cleanupInterval);
 
   for (const room of rooms.values()) {
+    cancelHumanCountdown(room);
     broadcastToRoom(room, {
       type: 'server_restarting',
       retryMs: 2000,

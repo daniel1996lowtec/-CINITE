@@ -1198,7 +1198,7 @@ kbd {
 
 .lobby-nav-pills {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 8px;
   margin-bottom: 12px;
 }
@@ -1354,6 +1354,229 @@ kbd {
 
 .room-players-tag {
   color: #bae6fd;
+}
+
+/* Human-only multiplayer lobby */
+.human-lobby-panel {
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid rgba(74, 222, 128, 0.55);
+  border-radius: 12px;
+  background:
+    linear-gradient(135deg, rgba(22, 101, 52, 0.22), rgba(2, 6, 23, 0.78)),
+    rgba(2, 6, 23, 0.78);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03), 0 10px 26px rgba(0, 0, 0, 0.28);
+}
+
+.human-lobby-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.human-lobby-banner strong {
+  color: #bbf7d0;
+  font-size: 0.98rem;
+  font-weight: 1000;
+  letter-spacing: 0.05em;
+  text-shadow: 0 0 16px rgba(74, 222, 128, 0.35);
+}
+
+.human-lobby-banner span {
+  padding: 4px 8px;
+  border: 1px solid rgba(74, 222, 128, 0.45);
+  border-radius: 999px;
+  color: #dcfce7;
+  font-size: 0.66rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+}
+
+.human-lobby-message {
+  margin: 9px 0 10px;
+  color: #dbeafe;
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.human-lobby-message.err {
+  color: #fecaca;
+}
+
+.human-lobby-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.human-lobby-stat {
+  padding: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 9px;
+  background: rgba(15, 23, 42, 0.76);
+  text-align: center;
+}
+
+.human-lobby-stat span {
+  display: block;
+  color: #94a3b8;
+  font-size: 0.58rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+}
+
+.human-lobby-stat strong {
+  display: block;
+  margin-top: 3px;
+  color: #f8fafc;
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
+.human-lobby-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.human-lobby-btn {
+  flex: 1 1 118px;
+  padding: 9px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  border-radius: 9px;
+  background: rgba(30, 41, 59, 0.95);
+  color: #f8fafc;
+  font-size: 0.74rem;
+  font-weight: 950;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, transform 0.12s;
+}
+
+.human-lobby-btn:hover:not(:disabled) {
+  border-color: #4ade80;
+  background: rgba(51, 65, 85, 0.98);
+  transform: translateY(-1px);
+}
+
+.human-lobby-btn.ready {
+  border-color: rgba(74, 222, 128, 0.65);
+}
+
+.human-lobby-btn.start {
+  border-color: rgba(250, 204, 21, 0.7);
+  color: #fef9c3;
+}
+
+.human-lobby-btn.danger:hover:not(:disabled) {
+  border-color: #f87171;
+  color: #fecaca;
+}
+
+.human-lobby-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.human-roster-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 12px;
+  color: #94a3b8;
+  font-size: 0.62rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+}
+
+.human-lobby-roster {
+  display: grid;
+  gap: 6px;
+  max-height: 172px;
+  margin-top: 6px;
+  overflow-y: auto;
+}
+
+.human-roster-empty {
+  padding: 9px;
+  border: 1px dashed rgba(148, 163, 184, 0.35);
+  border-radius: 9px;
+  color: #cbd5e1;
+  font-size: 0.78rem;
+  text-align: center;
+}
+
+.human-roster-player {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 9px;
+  background: rgba(15, 23, 42, 0.82);
+  color: #e2e8f0;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.human-roster-player .roster-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.human-roster-player .roster-status {
+  flex: 0 0 auto;
+  color: #fde68a;
+  font-size: 0.66rem;
+  font-weight: 950;
+  letter-spacing: 0.06em;
+}
+
+.human-roster-player.ready .roster-status {
+  color: #86efac;
+}
+
+.human-roster-player.disconnected {
+  opacity: 0.62;
+}
+
+select:disabled,
+input:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.primary-launch-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+  transform: none;
+}
+
+@media (max-width: 700px) {
+  .lobby-nav-pills {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .human-lobby-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .human-lobby-actions {
+    flex-direction: column;
+  }
+
+  .human-lobby-btn {
+    flex-basis: auto;
+    width: 100%;
+  }
+
+  .human-roster-header {
+    flex-direction: column;
+  }
 }
 
 /* Right-Side 3D Preview Stage Dock */

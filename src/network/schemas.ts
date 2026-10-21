@@ -120,6 +120,9 @@ export interface PlayerState {
   id: string;
   name: string;
   isBot: boolean;
+  participantType?: 'human' | 'bot';
+  isReady?: boolean;
+  isParticipant?: boolean;
   isConnected?: boolean;
   aiState?: BotAIState;
   skinColor: number;
@@ -223,9 +226,85 @@ export interface PlayerInputPacket {
   cycleMaterial: boolean;
 }
 
+export type MultiplayerRoomMode =
+  | 'online_ai_fill'
+  | 'human_only_public'
+  | 'human_only_private';
+
+export type HumanOnlySessionMode = 'human_only_public' | 'human_only_private';
+
+export type SessionMode = 'solo_bots' | 'online' | HumanOnlySessionMode;
+
+export type RoomPhase = 'lobby' | 'countdown' | 'active' | 'ended';
+
+export function isHumanOnlySessionMode(
+  mode: SessionMode
+): mode is HumanOnlySessionMode {
+  return mode === 'human_only_public' || mode === 'human_only_private';
+}
+
+export function roomModeForSessionMode(mode: SessionMode): MultiplayerRoomMode {
+  if (mode === 'human_only_public' || mode === 'human_only_private') return mode;
+  return 'online_ai_fill';
+}
+
+/**
+ * The authoritative client-side bot gate: human-only modes always resolve to
+ * zero bot spawns regardless of the (disabled) AI-combatant selector.
+ */
+export function effectiveBotCountForMode(
+  mode: SessionMode,
+  requestedBotCount: number
+): number {
+  if (isHumanOnlySessionMode(mode)) return 0;
+  return Math.max(0, Math.floor(Number(requestedBotCount) || 0));
+}
+
+export interface RoomPlayerSummary {
+  id: string;
+  name: string;
+  participantType: 'human';
+  isBot: false;
+  isAuthenticated: boolean;
+  isReady: boolean;
+  isParticipant: boolean;
+  isConnected: boolean;
+  alive: boolean;
+}
+
+export interface RoomSnapshot {
+  roomCode: string;
+  mode: MultiplayerRoomMode;
+  roomMode: MultiplayerRoomMode;
+  visibility: 'public' | 'private' | 'room_code';
+  phase: RoomPhase;
+  matchStatus: RoomPhase;
+  humanOnly: boolean;
+  aiFillEnabled: boolean;
+  botCount: number;
+  connectedPlayers: number;
+  connectedHumans: number;
+  authenticatedHumans: number;
+  readyPlayers: number;
+  readyHumans: number;
+  totalPlayers: number;
+  totalHumans: number;
+  aliveHumans: number;
+  maxPlayers: number;
+  minPlayers: number;
+  matchParticipantCount: number;
+  countdownEndsAt: number;
+  canStart: boolean;
+  winnerId: string | null;
+  winnerName: string;
+  stormPhase: number;
+  selfPlayerId?: string;
+  players: RoomPlayerSummary[];
+}
+
 export interface LobbyConfig {
   playerName: string;
-  mode: 'solo_bots' | 'online';
+  mode: SessionMode;
   roomCode?: string;
   botCount: number;
   difficulty: BotDifficulty;
