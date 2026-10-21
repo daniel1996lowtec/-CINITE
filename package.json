@@ -11,9 +11,9 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 0.0.0.0 --port 4173",
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/database.test.mjs tests/multiplayer.integration.test.mjs tests/humanOnly.integration.test.mjs",
+    "test": "node --test tests/database.test.mjs tests/botMode.test.mjs tests/multiplayer.integration.test.mjs tests/humanOnly.integration.test.mjs",
     "test:db": "node --test tests/database.test.mjs",
-    "test:multiplayer": "node --test tests/multiplayer.integration.test.mjs tests/humanOnly.integration.test.mjs"
+    "test:multiplayer": "node --test tests/botMode.test.mjs tests/multiplayer.integration.test.mjs tests/humanOnly.integration.test.mjs"
   },
   "engines": {
     "node": "22.14.0"
