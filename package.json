@@ -10,10 +10,13 @@
     "db:migrate": "node server/migrate.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 0.0.0.0 --port 4173",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/database.test.mjs tests/multiplayer.integration.test.mjs",
+    "test:db": "node --test tests/database.test.mjs",
+    "test:multiplayer": "node --test tests/multiplayer.integration.test.mjs"
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": "22.14.0"
   },
   "dependencies": {
     "pg": "^8.23.1",

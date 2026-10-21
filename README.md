@@ -74,10 +74,13 @@ npm run dev
 # (Optional) Start Authoritative Multiplayer Room Server on 0.0.0.0:2567
 npm run server
 
-# Start Production HTTP + WebSocket Server + Static Frontend on 0.0.0.0:2567
+# Start Production HTTP + WebSocket Server + Static Frontend on 0.0.0.0:$PORT (fallback 2567)
+# Database migrations run automatically and idempotently during server startup.
 npm run build
-npm run db:migrate
 npm run start
+
+# Run database migration + multiplayer integration tests
+npm test
 
 # Run TypeScript check and production build
 npm run typecheck
