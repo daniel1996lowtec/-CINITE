@@ -477,6 +477,20 @@ test('legendary tower: exact centre, climbable floors/decks, solid walls, and sa
   assert.ok(scene.getObjectByName('LegendaryTowerVaultParticles'), 'vault particles missing');
   assert.ok(scene.getObjectByName('LegendaryTowerVaultLight'), 'vault light missing');
 
+  // The golden beacon is a map-wide landmark, not a short-range effect: a
+  // tall column, exempt from distance fog and frustum culling on all tiers.
+  const beaconBeam = scene.getObjectByName('LegendaryTowerBeaconBeam');
+  assert.ok(beaconBeam, 'golden beacon beam missing');
+  assert.ok(
+    beaconBeam.geometry.parameters.height >= 60,
+    `beacon beam should rise at least 60m above the roof, got ${beaconBeam.geometry.parameters.height}`
+  );
+  assert.equal(beaconBeam.material.fog, false, 'beacon beam must ignore distance fog');
+  assert.equal(beaconBeam.frustumCulled, false, 'beacon beam must not be frustum-culled');
+  const energyBeam = scene.getObjectByName('LegendaryTowerEnergyBeam');
+  assert.equal(energyBeam.material.fog, false, 'energy beam must ignore distance fog');
+  assert.equal(energyBeam.frustumCulled, false, 'energy beam must not be frustum-culled');
+
   const floorY = (level) =>
     getLegendaryTowerFloorHeight(world.legendaryTowerBaseY, level);
   const floorSamples = [
@@ -603,6 +617,70 @@ test('legendary tower: exact centre, climbable floors/decks, solid walls, and sa
     `exterior climb roof dais: got ${exterior.y.toFixed(2)} (${exterior.checkpoints.join(' | ')})`
   );
   assert.ok(exterior.maxDrop < 1.0, `exterior climb contains a ${exterior.maxDrop.toFixed(2)}m support drop (${exterior.maxDropAt})`);
+
+  // Explicit skybridges join the level-1 south balcony to both original
+  // southern plaza rooftops. The south-east route is bidirectional from
+  // that house roof through the south balcony door; the south-west bridge
+  // midpoint is continuously supported above the plaza.
+  const southeastRoofY = world.terrain.getTerrainHeight(18, 16) + 4.92;
+  const southwestRoofY = world.terrain.getTerrainHeight(-18, 16) + 4.72;
+  approx(
+    world.getGroundHeightAt(9.525, floorY(1) + 1, 13),
+    (southeastRoofY + floorY(1)) / 2,
+    0.08,
+    'south-east skybridge midpoint'
+  );
+  approx(
+    world.getGroundHeightAt(-9.775, floorY(1) + 1, 13),
+    (southwestRoofY + floorY(1)) / 2,
+    0.08,
+    'south-west skybridge midpoint'
+  );
+  const skybridge = walkPath(
+    [
+      [18, 16],
+      [12.3, 13],
+      [6.7, 13],
+      [0, 12.85],
+      [0, 8],
+    ],
+    southeastRoofY
+  );
+  assert.ok(
+    Math.hypot(skybridge.x, skybridge.z - 8) < 0.9,
+    `south-east skybridge did not reach the tower balcony door (${skybridge.checkpoints.join(' | ')})`
+  );
+  approx(skybridge.y, floorY(1), 0.12, 'south-east skybridge tower floor');
+  assert.ok(
+    skybridge.maxDrop < 1.0,
+    `south-east skybridge contains a ${skybridge.maxDrop.toFixed(2)}m support drop (${skybridge.maxDropAt})`
+  );
+  const southwestBridge = walkPath(
+    [
+      [-12.5, 13],
+      [-6.7, 13],
+      [0, 12.85],
+    ],
+    world.getGroundHeightAt(-12.5, floorY(1) + 1, 13)
+  );
+  approx(southwestBridge.y, floorY(1), 0.12, 'south-west skybridge tower deck');
+  assert.ok(
+    southwestBridge.maxDrop < 1.0,
+    `south-west skybridge contains a ${southwestBridge.maxDrop.toFixed(2)}m support drop (${southwestBridge.maxDropAt})`
+  );
+  for (const supportX of [9.525, -9.775]) {
+    const sampleX = supportX + 0.18;
+    const resolved = world.resolveHorizontalCollision(
+      sampleX,
+      world.terrain.getTerrainHeight(supportX, 13),
+      13,
+      0.48
+    );
+    assert.ok(
+      Math.hypot(resolved.x - sampleX, resolved.z - 13) > 0.3,
+      `skybridge support at ${supportX},13 is not solid`
+    );
+  }
 
   // Balcony/deck and skydiver-canopy support samples.
   approx(world.getGroundHeightAt(0, floorY(1) + 1, 12.85), floorY(1), 0.08, 'south L1 deck');

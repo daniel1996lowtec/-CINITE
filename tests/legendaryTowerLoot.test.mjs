@@ -149,6 +149,29 @@ test('legendary tower client loot: pickup waits for server confirmation and swap
   assert.equal(player.inventory[1].rarity, 'legendary');
   assert.equal(state.lootItems.get(predictedSwap.id).weaponCategory, 'pistol');
   assert.equal(localCollections, 0);
+
+  // If the server accepts a vault claim but does not accept/broadcast a
+  // swapped drop, the collector must not invent an invisible local copy of
+  // the replaced weapon. Only the earlier server-broadcast pistol remains.
+  const assaultRifle = towerItem({
+    id: 'legendary_tower_assault_rifle',
+    weaponCategory: 'assault_rifle',
+    name: 'Legendary Pulse Rifle',
+    position: { x: -3, y: 51.73, z: 2.8 },
+  });
+  loot.spawnFromItemState(state, assaultRifle, false);
+  assert.equal(state.lootItems.size, 2);
+  loot.applyAuthoritativeLootCollected(state, player, assaultRifle, particles, sound);
+  assert.equal(player.inventory[1].category, 'assault_rifle');
+  assert.equal(state.lootItems.size, 1, 'server-omitted swap must not spawn locally');
+  assert.equal(state.lootItems.get(predictedSwap.id).weaponCategory, 'pistol');
+  assert.ok(
+    ![...state.lootItems.values()].some(
+      (item) => item.weaponCategory === 'shotgun' && item.rarity === 'legendary'
+    ),
+    'replaced legendary shotgun must not reappear as an unsynchronized local drop'
+  );
+  assert.equal(localCollections, 0);
 });
 
 test('legendary tower client loot: authoritative ammo auto-pickup, pending timeout, and bot exclusion', async () => {

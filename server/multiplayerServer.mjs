@@ -138,6 +138,50 @@ function resetLegendaryTowerLoot(room) {
   }
 }
 
+/**
+ * The server does not model full client inventories, but it can remember
+ * which unique vault weapon categories it has personally awarded to a
+ * player. That narrow ownership ledger lets an honest full-inventory swap
+ * broadcast the tower weapon being dropped exactly once, while a client
+ * that never claimed (or never picked up a registered swap of) that weapon
+ * still cannot mint it for the room. The ledger is per room player object,
+ * is never serialized to clients, and is cleared at match (re)start.
+ */
+function getLegendaryTowerWeaponOwnership(player) {
+  if (!player || typeof player !== 'object') return new Set();
+  if (!(player.legendaryTowerWeaponCategories instanceof Set)) {
+    player.legendaryTowerWeaponCategories = new Set();
+  }
+  return player.legendaryTowerWeaponCategories;
+}
+
+function isLegendaryTowerWeaponItem(item) {
+  return Boolean(
+    item &&
+      item.rarity === 'legendary' &&
+      LEGENDARY_TOWER_VAULT_WEAPON_CATEGORIES.has(item.weaponCategory)
+  );
+}
+
+function clearLegendaryTowerWeaponOwnership(player) {
+  getLegendaryTowerWeaponOwnership(player).clear();
+}
+
+/**
+ * Server-only provenance for broadcast swap drops. A generic client chest
+ * drop can look like a legendary rifle/sniper/shotgun in the legacy loot
+ * protocol, so its item fields alone must not create tower ownership. Only
+ * IDs inserted here when the server sanitizes an ownership-proven swap can
+ * transfer that ownership to the next collector.
+ */
+function getLegendaryTowerSwapDrops(room) {
+  if (!room || typeof room !== 'object') return new Map();
+  if (!(room.legendaryTowerSwapDrops instanceof Map)) {
+    room.legendaryTowerSwapDrops = new Map();
+  }
+  return room.legendaryTowerSwapDrops;
+}
+
 function isLegendaryTowerLootId(lootId) {
   return (
     typeof lootId === 'string' &&
@@ -162,7 +206,9 @@ function serverWeaponDisplayName(category, rarity) {
 /**
  * A pickup swap is the only client-proposed drop accepted beside a vault
  * claim. Rebuild it from validated fields and never let it mint one of the
- * three unique vault weapons for other clients.
+ * three unique vault weapons unless the server's ownership ledger proves
+ * this collector previously received that category from the vault (or from
+ * a registered, server-broadcast swap drop).
  */
 function sanitizeLootSwappedDrop(rawDrop, collector) {
   if (!rawDrop || typeof rawDrop !== 'object') return undefined;
@@ -175,7 +221,8 @@ function sanitizeLootSwappedDrop(rawDrop, collector) {
   }
   if (
     rarity === 'legendary' &&
-    LEGENDARY_TOWER_VAULT_WEAPON_CATEGORIES.has(category)
+    LEGENDARY_TOWER_VAULT_WEAPON_CATEGORIES.has(category) &&
+    !getLegendaryTowerWeaponOwnership(collector).has(category)
   ) {
     return undefined;
   }
@@ -780,6 +827,7 @@ function getOrCreateRoom(
       buildables: new Map(),
     collectedLootIds: new Set(),
     spawnedLootItems: createLegendaryTowerLootMap(),
+    legendaryTowerSwapDrops: new Map(),
       processedHitIds: new Set(),
       hitEventSeq: 0,
       matchSeq: 1,
@@ -1246,6 +1294,7 @@ async function startLobbyMatch(room) {
   room.buildables.clear();
   room.collectedLootIds.clear();
   room.spawnedLootItems.clear();
+  getLegendaryTowerSwapDrops(room).clear();
   resetLegendaryTowerLoot(room);
   room.processedHitIds.clear();
   room.hitEventSeq = 0;
@@ -1268,6 +1317,7 @@ async function startLobbyMatch(room) {
     player.health = 100;
     player.shield = 50;
     player.eliminations = 0;
+    clearLegendaryTowerWeaponOwnership(player);
     if (isParticipant) {
       room.matchParticipantIds.add(player.id);
     }
@@ -2555,6 +2605,7 @@ server.on('upgrade', (req, socket) => {
               isReloading: false,
               equippedCategory: 'assault_rifle',
               equippedRarity: 'uncommon',
+              legendaryTowerWeaponCategories: new Set(),
               skinColor: Number(msg.skinColor ?? 0x0284c7),
               accentColor: Number(msg.accentColor ?? 0x38bdf8),
               backAccessory: String(msg.backAccessory || 'jump_pack'),
@@ -2591,12 +2642,14 @@ server.on('upgrade', (req, socket) => {
               player.shield = 50;
               player.alive = true;
               player.eliminations = 0;
+              clearLegendaryTowerWeaponOwnership(player);
               player.position = sanitizePosition(msg.position, player.position);
             } else if (msg.resetPlayer && lobbyManagedRoom && room.phase === 'lobby') {
               player.health = 100;
               player.shield = 50;
               player.alive = true;
               player.eliminations = 0;
+              clearLegendaryTowerWeaponOwnership(player);
               player.isParticipant = false;
               player.position = sanitizePosition(msg.position, player.position);
             }
@@ -3135,11 +3188,22 @@ server.on('upgrade', (req, socket) => {
           }
 
           const towerTemplate = LEGENDARY_TOWER_LOOT_BY_ID.get(lootId);
+          // Capture any server-registered dynamic drop before it is removed
+          // below. Tower ownership transfers only when the separate
+          // server-only provenance map also identifies this ID as a swap
+          // the server itself broadcast for a proven vault owner.
+          const registeredLootItem = currentRoom.spawnedLootItems.get(lootId);
+          const collectedTowerSwapCategory =
+            !towerTemplate &&
+            isLegendaryTowerWeaponItem(registeredLootItem) &&
+            getLegendaryTowerSwapDrops(currentRoom).get(lootId) ===
+              registeredLootItem.weaponCategory
+              ? registeredLootItem.weaponCategory
+              : undefined;
           let authoritativeItem;
           let towerSwappedDrop;
           if (towerTemplate) {
-            const registeredItem = currentRoom.spawnedLootItems.get(lootId);
-            if (!registeredItem) {
+            if (!registeredLootItem) {
               socket.write(
                 encodeWsFrame({
                   type: 'loot_collect_rejected',
@@ -3184,6 +3248,7 @@ server.on('upgrade', (req, socket) => {
 
           currentRoom.collectedLootIds.add(lootId);
           currentRoom.spawnedLootItems.delete(lootId);
+          getLegendaryTowerSwapDrops(currentRoom).delete(lootId);
 
           const itemType = towerTemplate
             ? towerTemplate.itemType
@@ -3195,6 +3260,22 @@ server.on('upgrade', (req, socket) => {
           const swappedDrop = towerTemplate
             ? towerSwappedDrop
             : sanitizeLootSwappedDrop(msg.swappedDrop, collector);
+
+          // Transfer the unique-weapon ledger exactly once for this
+          // accepted collection: dropping a proven tower weapon consumes
+          // the old entry, while claiming a vault item or registered swap
+          // drop grants the new one. Rejected/forged claims never reach
+          // this point, and a consumed entry cannot authorize a second
+          // broadcast of the same category.
+          const towerWeaponOwnership = getLegendaryTowerWeaponOwnership(collector);
+          if (isLegendaryTowerWeaponItem(swappedDrop)) {
+            towerWeaponOwnership.delete(swappedDrop.weaponCategory);
+          }
+          if (isLegendaryTowerWeaponItem(towerTemplate)) {
+            towerWeaponOwnership.add(towerTemplate.weaponCategory);
+          } else if (collectedTowerSwapCategory) {
+            towerWeaponOwnership.add(collectedTowerSwapCategory);
+          }
 
           if (spawnedDrops) {
             for (const drop of spawnedDrops) {
@@ -3209,6 +3290,12 @@ server.on('upgrade', (req, socket) => {
             !currentRoom.collectedLootIds.has(String(swappedDrop.id))
           ) {
             currentRoom.spawnedLootItems.set(String(swappedDrop.id), swappedDrop);
+            if (isLegendaryTowerWeaponItem(swappedDrop)) {
+              getLegendaryTowerSwapDrops(currentRoom).set(
+                String(swappedDrop.id),
+                swappedDrop.weaponCategory
+              );
+            }
           }
 
           broadcastToRoom(currentRoom, {
