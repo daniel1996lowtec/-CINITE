@@ -1,0 +1,6 @@
+node_modules
+dist
+.git
+.env
+data/*.sqlite*
+data/.server_secret
