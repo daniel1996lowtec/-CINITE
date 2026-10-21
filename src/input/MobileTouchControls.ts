@@ -195,6 +195,21 @@ export class MobileTouchControls {
     }
   }
 
+  private isPointInsideElement(
+    element: HTMLElement,
+    clientX: number,
+    clientY: number,
+    tolerance: number = 4
+  ): boolean {
+    const rect = element.getBoundingClientRect();
+    return (
+      clientX >= rect.left - tolerance &&
+      clientX <= rect.right + tolerance &&
+      clientY >= rect.top - tolerance &&
+      clientY <= rect.bottom + tolerance
+    );
+  }
+
   private preventContextMenu(element: HTMLElement): void {
     this.listen(element, 'contextmenu', (event) => event.preventDefault());
   }
@@ -453,6 +468,23 @@ export class MobileTouchControls {
         element.classList.add('is-held');
         onHeldChange(true);
       });
+      this.listen(element, 'pointermove', (event) => {
+        const pointerEvent = event as PointerEvent;
+        if (pointerEvent.pointerId !== activePointerId) return;
+        // Pointer capture intentionally lets us observe the finger leaving
+        // the button. Stop hold-to-fire immediately instead of continuing
+        // until pointerup; sliding back in does not resume without a new
+        // deliberate press.
+        if (
+          !this.isPointInsideElement(
+            element,
+            pointerEvent.clientX,
+            pointerEvent.clientY
+          )
+        ) {
+          release();
+        }
+      });
       const end = (event: Event): void => {
         if ((event as PointerEvent).pointerId === activePointerId) release();
       };
@@ -476,6 +508,23 @@ export class MobileTouchControls {
         onHeldChange(true);
       },
       { passive: false }
+    );
+    this.listen(
+      element,
+      'touchmove',
+      (event) => {
+        const touchEvent = event as TouchEvent;
+        for (let i = 0; i < touchEvent.changedTouches.length; i++) {
+          const touch = touchEvent.changedTouches[i];
+          if (
+            touch.identifier === activePointerId &&
+            !this.isPointInsideElement(element, touch.clientX, touch.clientY)
+          ) {
+            release();
+          }
+        }
+      },
+      { passive: true }
     );
     const endTouch = (event: Event): void => {
       const touchEvent = event as TouchEvent;

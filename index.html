@@ -4,8 +4,12 @@
     <meta charset="UTF-8" />
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>CI Craft — 3D Battle Royale</title>
   </head>
   <body>
@@ -39,6 +43,40 @@
       </div>
     </div>
 
+    <!-- Mobile Portrait / Landscape Prompt -->
+    <div
+      id="mobile-rotate-overlay"
+      class="mobile-rotate-overlay hidden"
+      role="dialog"
+      aria-modal="true"
+      aria-hidden="true"
+      aria-labelledby="mobile-rotate-title"
+      aria-describedby="mobile-rotate-description"
+    >
+      <div class="mobile-rotate-card">
+        <div class="mobile-rotate-icon" aria-hidden="true">📱↻</div>
+        <div class="brand-badge">LANDSCAPE RECOMMENDED</div>
+        <h2 id="mobile-rotate-title">Rotate your phone</h2>
+        <p id="mobile-rotate-description">
+          CI Craft is designed for two-thumb landscape play: move on the left,
+          aim and fire on the right, with your health, ammo, and inventory in view.
+        </p>
+        <button id="btn-mobile-landscape" class="primary-launch-btn" type="button">
+          ⛶ ENTER FULLSCREEN LANDSCAPE
+        </button>
+        <button
+          id="btn-mobile-portrait-continue"
+          class="secondary-action-btn"
+          type="button"
+        >
+          Continue in portrait
+        </button>
+        <p id="mobile-rotate-status" class="mobile-rotate-status" aria-live="polite">
+          If automatic rotation is unavailable, turn your phone sideways.
+        </p>
+      </div>
+    </div>
+
     <!-- Main Menu / Lobby Overlay -->
     <div id="lobby-overlay" class="overlay-screen lobby-split-screen">
       <div class="lobby-card">
@@ -48,6 +86,7 @@
             id="btn-lobby-fullscreen"
             class="mini-util-btn"
             type="button"
+            data-fullscreen-toggle
             title="Toggle Fullscreen"
           >
             🖥️ FULLSCREEN
@@ -708,6 +747,16 @@
           <button id="hud-pause-btn" class="hud-icon-btn" title="Pause / Settings (ESC)">
             ⚙️
           </button>
+          <button
+            id="hud-fullscreen-btn"
+            class="hud-icon-btn mobile-fullscreen-btn"
+            type="button"
+            data-fullscreen-toggle
+            title="Toggle fullscreen landscape"
+            aria-label="Toggle fullscreen landscape"
+          >
+            ⛶
+          </button>
         </div>
         <div id="hud-killfeed" class="killfeed-list"></div>
       </div>
@@ -861,7 +910,7 @@
             ✋ LOOT
           </button>
           <button id="touch-reload-btn" class="touch-btn" type="button" aria-label="Reload weapon">
-            ↻ LOAD
+            ↻ RELOAD
           </button>
           <button id="touch-weapon-btn" class="touch-btn" type="button" aria-label="Switch weapon">
             🔫 SWAP
@@ -1036,9 +1085,10 @@
               <strong>Jump/Glide:</strong> <kbd>Space</kbd> • <strong>Loot/Chest:</strong>
               <kbd>F</kbd> • <strong>Reload:</strong> <kbd>R</kbd> • <strong>Mute:</strong>
               <kbd>M</kbd> • <strong>Switch Material:</strong> <kbd>G</kbd>. On mobile/tablet,
-              move with the bottom-left joystick (push to the gold outer ring to sprint),
-              drag the right side of the screen to look, and use the FIRE, ADS, JUMP,
-              LOOT, LOAD, SWAP, MAT, and build buttons or tap a weapon hotbar slot.
+              rotate to landscape, move with the bottom-left joystick (push to the gold
+              outer ring to sprint), drag the right side of the screen to look, and use
+              the FIRE, ADS, JUMP, LOOT, RELOAD, SWAP, MAT, and build buttons or tap a
+              weapon hotbar slot.
             </p>
           </div>
         </div>
@@ -1150,7 +1200,12 @@
 
           <div class="form-row">
             <div class="form-group">
-              <button id="btn-toggle-fullscreen" class="secondary-action-btn" type="button">
+              <button
+                id="btn-toggle-fullscreen"
+                class="secondary-action-btn"
+                type="button"
+                data-fullscreen-toggle
+              >
                 🖥️ TOGGLE FULLSCREEN
               </button>
             </div>

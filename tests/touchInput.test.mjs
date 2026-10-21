@@ -313,6 +313,17 @@ test('MobileTouchControls: simultaneous pointers, cancellation, buttons, inactiv
   elements.fireButton.dispatchPointer('pointercancel', 33, 700, 500);
   assert.deepEqual(calls.fire, [true, false]);
 
+  // Sliding the fire finger outside the button stops hold-to-fire at once;
+  // sliding back in cannot resume it without a fresh deliberate press.
+  elements.fireButton.dispatchPointer('pointerdown', 35, 728, 528);
+  elements.fireButton.dispatchPointer('pointermove', 35, 750, 540);
+  assert.deepEqual(calls.fire, [true, false, true]);
+  elements.fireButton.dispatchPointer('pointermove', 35, 790, 528);
+  assert.deepEqual(calls.fire, [true, false, true, false]);
+  elements.fireButton.dispatchPointer('pointermove', 35, 728, 528);
+  elements.fireButton.dispatchPointer('pointerup', 35, 728, 528);
+  assert.deepEqual(calls.fire, [true, false, true, false]);
+
   // Toggle ADS stays active after finger release until toggled/reset.
   elements.aimButton.dispatchPointer('pointerdown', 44, 700, 500);
   elements.aimButton.dispatchPointer('pointerup', 44, 700, 500);
@@ -388,15 +399,17 @@ test('MobileTouchControls: legacy Touch Events fallback tracks identifiers indep
   const joystickZone = new FakeElement(120, 120, 100, 200);
   const joystickKnob = new FakeElement(44, 44, 138, 238);
   const lookSurface = new FakeElement(500, 500, 300, 0);
+  const fireButton = new FakeElement(56, 56, 100, 200);
   const moves = [];
   const looks = [];
+  const fire = [];
 
   const controls = new MobileTouchControls(
     {
       joystickZone,
       joystickKnob,
       lookSurface,
-      fireButton: new FakeElement(56, 56),
+      fireButton,
       aimButton: new FakeElement(56, 56),
       jumpButton: new FakeElement(56, 56),
       lootButton: new FakeElement(56, 56),
@@ -413,7 +426,7 @@ test('MobileTouchControls: legacy Touch Events fallback tracks identifiers indep
       isGameplayActive: () => true,
       onMove: (moveX, moveZ, sprint) => moves.push({ moveX, moveZ, sprint }),
       onLook: (deltaX, deltaY) => looks.push({ deltaX, deltaY }),
-      setFireHeld: () => {},
+      setFireHeld: (held) => fire.push(held),
       onAimToggle: () => false,
       setAimHeld: () => {},
       onJump: () => {},
@@ -451,5 +464,13 @@ test('MobileTouchControls: legacy Touch Events fallback tracks identifiers indep
   lookSurface.dispatchTouch('touchmove', [touch(202, 470, 350)]);
   assert.deepEqual(looks.at(-1), { deltaX: -10, deltaY: 20 });
   lookSurface.dispatchTouch('touchend', [touch(202, 470, 350)]);
+
+  // The legacy fallback also stops FIRE as soon as that touch leaves the
+  // button, rather than waiting for touchend/touchcancel.
+  fireButton.dispatchTouch('touchstart', [touch(303, 128, 228)]);
+  fireButton.dispatchTouch('touchmove', [touch(303, 180, 228)]);
+  assert.deepEqual(fire, [true, false]);
+  fireButton.dispatchTouch('touchend', [touch(303, 180, 228)]);
+  assert.deepEqual(fire, [true, false]);
   controls.destroy();
 });

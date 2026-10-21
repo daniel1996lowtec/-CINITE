@@ -206,6 +206,16 @@ export class GameEngine {
 
     window.addEventListener('resize', () => this.onWindowResize());
     window.visualViewport?.addEventListener('resize', () => this.onWindowResize());
+    // Some mobile browsers report orientation/fullscreen transitions before
+    // the final visual viewport is available. A frame-delayed resize keeps
+    // the WebGL canvas and camera aspect matched to the settled landscape
+    // size without changing the existing render loop.
+    const resizeAfterViewportSettles = (): void => {
+      requestAnimationFrame(() => this.onWindowResize());
+    };
+    window.addEventListener('orientationchange', resizeAfterViewportSettles);
+    window.screen?.orientation?.addEventListener?.('change', resizeAfterViewportSettles);
+    document.addEventListener('fullscreenchange', resizeAfterViewportSettles);
     requestAnimationFrame((t) => this.animate(t));
   }
 

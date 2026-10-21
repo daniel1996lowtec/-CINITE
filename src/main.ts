@@ -21,6 +21,7 @@ import {
   OUTFIT_PRESETS,
 } from './systems/ProgressionSystem';
 import { MobileTouchControls } from './input/MobileTouchControls';
+import { MobileLandscapeManager } from './input/MobileLandscapeManager';
 import { LobbyBrowserClient } from './network/LobbyBrowserClient';
 import { getLobbyJoinBlock, parseLobbyInviteCode } from './network/lobbyBrowserUtils';
 import { LobbyBrowserUI } from './ui/LobbyBrowser';
@@ -1034,21 +1035,10 @@ window.addEventListener('DOMContentLoaded', () => {
     document.getElementById('settings-overlay')?.classList.add('hidden');
   });
 
-  // Fullscreen Toggle
-  const toggleFullscreen = () => {
-    engine.sound.playUIClick();
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen?.().catch(() => {});
-    } else {
-      document.exitFullscreen?.().catch(() => {});
-    }
-  };
-  document
-    .getElementById('btn-toggle-fullscreen')
-    ?.addEventListener('click', toggleFullscreen);
-  document
-    .getElementById('btn-lobby-fullscreen')
-    ?.addEventListener('click', toggleFullscreen);
+  // Fullscreen buttons are bound by MobileLandscapeManager below. It keeps
+  // the existing lobby/settings/HUD buttons, hides them when fullscreen is
+  // unsupported, and makes a best-effort landscape orientation request after
+  // entering fullscreen. Browsers that reject either API keep working.
 
   // Settings Inputs Live Binding
   const sensInput = document.getElementById('setting-sensitivity') as HTMLInputElement;
@@ -1265,10 +1255,38 @@ window.addEventListener('DOMContentLoaded', () => {
     },
   });
 
+  // Landscape/fullscreen chrome is deliberately separate from gameplay
+  // input. The manager only shows the portrait prompt, attempts supported
+  // fullscreen/orientation APIs, and blurs stale lobby text fields so the
+  // software keyboard cannot cover the HUD after a match starts. Showing
+  // the prompt resets held touch state; it never changes server movement,
+  // weapons, building, bot counts, or match balance.
+  let mobileLandscape: MobileLandscapeManager | null = null;
+  mobileLandscape = MobileLandscapeManager.fromDocument(document, {
+    isGameplayActive: () => engine.isRunningMatch && !engine.isPaused,
+    onPromptVisibilityChange: (visible) => {
+      if (visible) mobileTouchControls?.resetAll();
+      mobileLandscape?.blurActiveTextEntry();
+    },
+    onUserGesture: () => {
+      engine.sound.playUIClick();
+    },
+  });
+
   // Keep the touch UI's pointer/ADS-toggle state in sync whenever the
   // engine clears held input (pause, match start/end, return to menu).
+  // Match start is also the point where any focused lobby/account field is
+  // blurred, guaranteeing no virtual keyboard during normal gameplay.
   engine.onTransientInputCleared = () => {
     mobileTouchControls?.resetAll();
+    mobileLandscape?.blurActiveTextEntry();
+    mobileLandscape?.refresh();
+    // startMatch clears transient input just before isRunningMatch flips
+    // true. Re-check next frame for server-started lobby matches where the
+    // player may not have tapped a button to move focus away from a field.
+    window.requestAnimationFrame(() => {
+      mobileLandscape?.blurActiveTextEntry();
+    });
   };
 
   // Suppress compatibility mouse events for touch/pen taps that land on
