@@ -18,6 +18,7 @@ import {
   ARMOR_COLOR_SWATCHES,
   OUTFIT_PRESETS,
 } from './systems/ProgressionSystem';
+import { MobileTouchControls } from './input/MobileTouchControls';
 
 window.addEventListener('DOMContentLoaded', () => {
   const container = document.getElementById('game-canvas-container')!;
@@ -1159,6 +1160,16 @@ window.addEventListener('DOMContentLoaded', () => {
     engine.applySettings({ mouseSensitivity: v });
   });
 
+  const touchSensInput = document.getElementById(
+    'setting-touch-sensitivity'
+  ) as HTMLInputElement | null;
+  const touchSensVal = document.getElementById('val-touch-sensitivity');
+  touchSensInput?.addEventListener('input', () => {
+    const v = parseFloat(touchSensInput.value);
+    if (touchSensVal) touchSensVal.textContent = `${v.toFixed(1)}x`;
+    engine.applySettings({ touchSensitivity: v });
+  });
+
   const volInput = document.getElementById('setting-volume') as HTMLInputElement;
   const volVal = document.getElementById('val-volume')!;
   volInput?.addEventListener('input', () => {
@@ -1302,69 +1313,82 @@ window.addEventListener('DOMContentLoaded', () => {
   });
 
   // Mobile Touch Controls
-  const joyZone = document.getElementById('touch-joystick-zone');
-  const joyKnob = document.getElementById('touch-joystick-knob');
-  if (joyZone && joyKnob) {
-    let joyOriginX = 0;
-    let joyOriginY = 0;
+  //
+  // MobileTouchControls owns only browser pointer/touch bookkeeping. Every
+  // callback below writes the same GameEngine fields consumed by the shared
+  // PlayerInputPacket -> PlayerController -> ThirdPersonCamera pipeline used
+  // by WASD/mouse, so solo, legacy online, and human-only multiplayer all
+  // receive identical movement/combat/build behaviour.
+  const mobileTouchControls = MobileTouchControls.fromDocument(document, {
+    isGameplayActive: () => engine.isRunningMatch && !engine.isPaused,
+    onMove: (moveX, moveZ, sprint) => {
+      engine.mobileMoveX = moveX;
+      engine.mobileMoveZ = moveZ;
+      engine.mobileSprint = sprint;
+    },
+    onLook: (deltaX, deltaY) => {
+      // Desktop pointer lock remains authoritative when it is engaged.
+      if (!engine.isPointerLocked) {
+        engine.handleTouchLook(deltaX, deltaY);
+      }
+    },
+    setFireHeld: (held) => {
+      engine.touchFireHeld = held;
+    },
+    onAimToggle: () => {
+      engine.touchAimHeld = !engine.touchAimHeld;
+      return engine.touchAimHeld;
+    },
+    setAimHeld: (held) => {
+      engine.touchAimHeld = held;
+    },
+    onJump: () => {
+      engine.mobileJump = true;
+    },
+    onReload: () => {
+      engine.pendingReload = true;
+    },
+    onInteract: () => {
+      engine.pendingInteract = true;
+    },
+    onCycleWeapon: () => {
+      // Existing PlayerController convention: -2 cycles to the next slot.
+      engine.pendingSlotSelect = -2;
+    },
+    onSelectSlot: (slotIndex) => {
+      engine.pendingSlotSelect = slotIndex;
+    },
+    onBuildPiece: (piece) => {
+      toggleBuildPiece(piece);
+    },
+    onCycleMaterial: () => {
+      engine.pendingCycleMaterial = true;
+    },
+  });
 
-    joyZone.addEventListener('touchstart', (e) => {
-      const rect = joyZone.getBoundingClientRect();
-      joyOriginX = rect.left + rect.width / 2;
-      joyOriginY = rect.top + rect.height / 2;
-      e.preventDefault();
-    });
+  // Keep the touch UI's pointer/ADS-toggle state in sync whenever the
+  // engine clears held input (pause, match start/end, return to menu).
+  engine.onTransientInputCleared = () => {
+    mobileTouchControls?.resetAll();
+  };
 
-    joyZone.addEventListener('touchmove', (e) => {
-      const t = e.touches[0];
-      const dx = Math.max(-40, Math.min(40, t.clientX - joyOriginX));
-      const dy = Math.max(-40, Math.min(40, t.clientY - joyOriginY));
-      joyKnob.style.transform = `translate(${dx}px, ${dy}px)`;
-      engine.mobileMoveX = dx / 40;
-      engine.mobileMoveZ = dy / 40;
-      e.preventDefault();
-    });
+  // Suppress compatibility mouse events for touch/pen taps that land on
+  // bare canvas outside the dedicated touch surfaces, so a stray tap can
+  // never synthesize a desktop mouse-fire. Real mouse input is untouched.
+  container.addEventListener(
+    'pointerdown',
+    (e: PointerEvent) => {
+      if (e.pointerType !== 'mouse') {
+        e.preventDefault();
+      }
+    },
+    { passive: false }
+  );
 
-    joyZone.addEventListener('touchend', () => {
-      joyKnob.style.transform = `translate(0px, 0px)`;
-      engine.mobileMoveX = 0;
-      engine.mobileMoveZ = 0;
-    });
-  }
-
-  document.getElementById('touch-fire-btn')?.addEventListener('touchstart', (e) => {
-    engine.mouseFireHeld = true;
-    e.preventDefault();
-  });
-  document.getElementById('touch-fire-btn')?.addEventListener('touchend', () => {
-    engine.mouseFireHeld = false;
-  });
-  document.getElementById('touch-aim-btn')?.addEventListener('touchstart', (e) => {
-    engine.mouseAimHeld = !engine.mouseAimHeld;
-    e.preventDefault();
-  });
-  document.getElementById('touch-jump-btn')?.addEventListener('touchstart', (e) => {
-    engine.mobileJump = true;
-    e.preventDefault();
-  });
-  document.getElementById('touch-loot-btn')?.addEventListener('touchstart', (e) => {
-    engine.pendingInteract = true;
-    e.preventDefault();
-  });
-  document.getElementById('touch-wall-btn')?.addEventListener('touchstart', (e) => {
-    engine.pendingBuild = 'wall';
-    e.preventDefault();
-  });
-  document.getElementById('touch-ramp-btn')?.addEventListener('touchstart', (e) => {
-    engine.pendingBuild = 'ramp';
-    e.preventDefault();
-  });
-  document.getElementById('touch-floor-btn')?.addEventListener('touchstart', (e) => {
-    engine.pendingBuild = 'floor';
-    e.preventDefault();
-  });
-  document.getElementById('touch-roof-btn')?.addEventListener('touchstart', (e) => {
-    engine.pendingBuild = 'roof';
-    e.preventDefault();
+  // Release held touch state if the page is hidden/unloaded. The controller
+  // also exposes destroy() for complete listener removal if this UI is ever
+  // mounted/unmounted dynamically.
+  window.addEventListener('pagehide', () => {
+    mobileTouchControls?.resetAll();
   });
 });

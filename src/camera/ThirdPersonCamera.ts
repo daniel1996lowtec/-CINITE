@@ -2,12 +2,14 @@ import * as THREE from 'three';
 import { PlayerState, WeaponCategory } from '../network/schemas';
 import { createWeaponStats } from '../weapons/WeaponDefinitions';
 import { IslandWorld } from '../world/IslandWorld';
+import { applyTouchLookDelta } from '../input/touchInputMath';
 
 export class ThirdPersonCamera {
   public camera: THREE.PerspectiveCamera;
   public yaw: number = 0;
   public pitch: number = 0.08;
   public sensitivity: number = 1.0;
+  public touchSensitivity: number = 1.0;
 
   private currentPos = new THREE.Vector3(0, 12, 12);
   private currentLookAt = new THREE.Vector3(0, 2, 0);
@@ -49,6 +51,27 @@ export class ThirdPersonCamera {
       -1.15,
       1.15
     );
+  }
+
+  /**
+   * Applies one incremental touch-drag delta. The caller owns pointer-id
+   * tracking and last-position bookkeeping; this method only changes the
+   * same yaw/pitch used by desktop pointer-lock mouse look.
+   */
+  public handleTouchLook(
+    deltaX: number,
+    deltaY: number,
+    sensitivityScale: number = 1
+  ): void {
+    const next = applyTouchLookDelta(
+      this.yaw,
+      this.pitch,
+      deltaX,
+      deltaY,
+      this.touchSensitivity * sensitivityScale
+    );
+    this.yaw = next.yaw;
+    this.pitch = next.pitch;
   }
 
   /**

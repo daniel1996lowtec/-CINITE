@@ -21,6 +21,7 @@ import {
 import { IslandWorld } from '../world/IslandWorld';
 import { CharacterMesh } from '../entities/CharacterMesh';
 import { ThirdPersonCamera } from '../camera/ThirdPersonCamera';
+import { clampNumber, combineMoveInput } from '../input/touchInputMath';
 import { PlayerController } from '../entities/PlayerController';
 import { BotAIController } from '../entities/BotAIController';
 import { LootSystem } from '../systems/LootSystem';
@@ -71,6 +72,8 @@ export class GameEngine {
   public onHumanLobbyJoinRejected?: (code: string, reason: string) => void;
   public onHumanRoomActionRejected?: (reason: string) => void;
   public onHumanMatchStarted?: (snapshot: RoomSnapshot) => void;
+  /** Notified after held input is cleared so touch UI state can resync. */
+  public onTransientInputCleared?: () => void;
 
   private characterMeshes: Map<string, CharacterMesh> = new Map();
   private lastTime = performance.now();
@@ -107,6 +110,7 @@ export class GameEngine {
 
   public settings: GameSettings = {
     mouseSensitivity: 1.0,
+    touchSensitivity: 1.0,
     audioVolume: 0.8,
     sfxVolume: 0.9,
     graphicsQuality: 'high',
@@ -126,6 +130,9 @@ export class GameEngine {
   public mobileMoveX = 0;
   public mobileMoveZ = 0;
   public mobileJump = false;
+  public mobileSprint = false;
+  public touchFireHeld = false;
+  public touchAimHeld = false;
 
   private fpsFrames = 0;
   private fpsTimer = 0;
@@ -137,12 +144,13 @@ export class GameEngine {
   constructor(container: HTMLElement) {
     this.container = container;
     this.basePixelRatio = Math.min(window.devicePixelRatio || 1, 1.5);
+    const initialViewport = this.getViewportSize();
 
     this.renderer = new THREE.WebGLRenderer({
       antialias: true,
       powerPreference: 'high-performance',
     });
-    this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.renderer.setSize(initialViewport.width, initialViewport.height);
     this.renderer.setPixelRatio(this.basePixelRatio);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -156,7 +164,9 @@ export class GameEngine {
 
     this.setupLighting();
 
-    this.tpCamera = new ThirdPersonCamera(window.innerWidth / window.innerHeight);
+    this.tpCamera = new ThirdPersonCamera(
+      initialViewport.width / initialViewport.height
+    );
     this.network = new NetworkManager();
     this.world = new IslandWorld(this.scene);
     this.world.generate();
@@ -190,6 +200,7 @@ export class GameEngine {
     });
 
     window.addEventListener('resize', () => this.onWindowResize());
+    window.visualViewport?.addEventListener('resize', () => this.onWindowResize());
     requestAnimationFrame((t) => this.animate(t));
   }
 
@@ -715,7 +726,18 @@ export class GameEngine {
 
   public applySettings(newSettings: Partial<GameSettings>): void {
     Object.assign(this.settings, newSettings);
+    this.settings.mouseSensitivity = clampNumber(
+      this.settings.mouseSensitivity,
+      0.3,
+      2.5
+    );
+    this.settings.touchSensitivity = clampNumber(
+      this.settings.touchSensitivity ?? 1,
+      0.3,
+      2.5
+    );
     this.tpCamera.sensitivity = this.settings.mouseSensitivity;
+    this.tpCamera.touchSensitivity = this.settings.touchSensitivity;
     this.sound.setVolume(this.settings.audioVolume);
     if (this.settings.sfxVolume !== undefined) {
       this.sound.setSfxVolume(this.settings.sfxVolume);
@@ -943,6 +965,7 @@ export class GameEngine {
     };
     this.sound.resume();
     this.isPaused = false;
+    this.clearTransientInput();
     this.activeBuildPreview = null;
     this.spectatedPlayerId = null;
     this.countdownTimer = 2.6;
@@ -1031,11 +1054,30 @@ export class GameEngine {
     this.requestPointerLock();
   }
 
+  /** Clears held/one-shot controls so pause/end transitions cannot leak input. */
+  public clearTransientInput(): void {
+    this.mouseFireHeld = false;
+    this.mouseAimHeld = false;
+    this.touchFireHeld = false;
+    this.touchAimHeld = false;
+    this.mobileMoveX = 0;
+    this.mobileMoveZ = 0;
+    this.mobileJump = false;
+    this.mobileSprint = false;
+    this.pendingSlotSelect = -1;
+    this.pendingInteract = false;
+    this.pendingReload = false;
+    this.pendingCycleMaterial = false;
+    this.pendingBuild = null;
+    this.onTransientInputCleared?.();
+  }
+
   public togglePauseMenu(forceState?: boolean): void {
     if (!this.isRunningMatch) return;
     this.isPaused = forceState !== undefined ? forceState : !this.isPaused;
     const pauseEl = document.getElementById('pause-overlay');
     if (this.isPaused) {
+      this.clearTransientInput();
       pauseEl?.classList.remove('hidden');
       if (document.pointerLockElement) {
         document.exitPointerLock();
@@ -1051,6 +1093,7 @@ export class GameEngine {
   public returnToMainMenu(): void {
     this.isRunningMatch = false;
     this.isPaused = false;
+    this.clearTransientInput();
     this.activeBuildPreview = null;
     this.spectatedPlayerId = null;
     if (
@@ -1122,8 +1165,14 @@ export class GameEngine {
   }
 
   public requestPointerLock(): void {
-    const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-    if (!isTouch && this.renderer.domElement.requestPointerLock) {
+    // Touch-only phones/tablets do not use pointer lock, but hybrid laptops
+    // with both a touchscreen and a fine mouse pointer should retain the
+    // existing desktop pointer-lock experience.
+    const touchOnly =
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(hover: none) and (pointer: coarse)').matches &&
+      !window.matchMedia('(pointer: fine)').matches;
+    if (!touchOnly && this.renderer.domElement.requestPointerLock) {
       this.renderer.domElement.requestPointerLock();
     }
   }
@@ -1294,24 +1343,28 @@ export class GameEngine {
       state.matchTimer += dt;
     }
 
-    let moveX =
+    const keyboardMoveX =
       (this.keys.has('KeyD') || this.keys.has('ArrowRight') ? 1 : 0) -
       (this.keys.has('KeyA') || this.keys.has('ArrowLeft') ? 1 : 0);
-    let moveZ =
+    const keyboardMoveZ =
       (this.keys.has('KeyS') || this.keys.has('ArrowDown') ? 1 : 0) -
       (this.keys.has('KeyW') || this.keys.has('ArrowUp') ? 1 : 0);
+    const { moveX, moveZ } = combineMoveInput(
+      keyboardMoveX,
+      keyboardMoveZ,
+      this.mobileMoveX,
+      this.mobileMoveZ
+    );
 
-    if (Math.abs(this.mobileMoveX) > 0.05 || Math.abs(this.mobileMoveZ) > 0.05) {
-      moveX = this.mobileMoveX;
-      moveZ = this.mobileMoveZ;
-    }
-
+    let fireHeld = this.mouseFireHeld || this.touchFireHeld;
     let buildTypeToPlace: BuildPieceType | null = this.pendingBuild;
-    if (this.activeBuildPreview && this.mouseFireHeld) {
+    if (this.activeBuildPreview && fireHeld) {
       buildTypeToPlace = this.activeBuildPreview;
       this.activeBuildPreview = null;
       this.hud.updateBuildModeIndicator(null);
       this.mouseFireHeld = false;
+      this.touchFireHeld = false;
+      fireHeld = false;
     }
 
     const inputPacket: PlayerInputPacket = {
@@ -1320,9 +1373,12 @@ export class GameEngine {
       moveX,
       moveZ,
       jump: this.keys.has('Space') || this.mobileJump,
-      sprint: this.keys.has('ShiftLeft') || this.keys.has('ShiftRight'),
-      aim: this.mouseAimHeld,
-      fire: this.mouseFireHeld && !this.activeBuildPreview,
+      sprint:
+        this.keys.has('ShiftLeft') ||
+        this.keys.has('ShiftRight') ||
+        this.mobileSprint,
+      aim: this.mouseAimHeld || this.touchAimHeld,
+      fire: fireHeld && !this.activeBuildPreview,
       reload: this.pendingReload,
       interact: this.pendingInteract,
       buildType: buildTypeToPlace,
@@ -1705,6 +1761,7 @@ export class GameEngine {
     localPlayer: PlayerState,
     eliminatedBy: string
   ): void {
+    this.clearTransientInput();
     if (document.pointerLockElement) {
       document.exitPointerLock();
     }
@@ -1782,12 +1839,27 @@ export class GameEngine {
     endOverlay.classList.remove('hidden');
   }
 
+  private getViewportSize(): { width: number; height: number } {
+    const visualViewport = window.visualViewport;
+    return {
+      width: Math.max(1, Math.round(visualViewport?.width ?? window.innerWidth)),
+      height: Math.max(1, Math.round(visualViewport?.height ?? window.innerHeight)),
+    };
+  }
+
   private onWindowResize(): void {
-    this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.tpCamera.resize(window.innerWidth / window.innerHeight);
+    const { width, height } = this.getViewportSize();
+    this.renderer.setSize(width, height);
+    this.tpCamera.resize(width / height);
   }
 
   public handleMouseMove(movementX: number, movementY: number): void {
     this.tpCamera.handleMouseMove(movementX, movementY);
+  }
+
+  public handleTouchLook(deltaX: number, deltaY: number): void {
+    const localPlayer = this.network.state.players.get(this.network.localPlayerId);
+    const precisionScale = localPlayer?.isAiming ? 0.62 : 1;
+    this.tpCamera.handleTouchLook(deltaX, deltaY, precisionScale);
   }
 }

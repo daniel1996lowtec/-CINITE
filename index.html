@@ -469,7 +469,7 @@
           </div>
         </div>
         <div id="hud-pickup-prompt" class="pickup-prompt hidden">
-          Press <kbd>F</kbd> to Pick Up
+          Press <kbd>F</kbd> / Tap <strong>LOOT</strong> to Pick Up
         </div>
         <div id="hud-loot-toast" class="loot-toast hidden"></div>
       </div>
@@ -529,35 +529,35 @@
         </div>
 
         <div class="hotbar-row">
-          <div id="hotbar-slot-0" class="hotbar-slot">
+          <div id="hotbar-slot-0" class="hotbar-slot" data-touch-slot="0" role="button" aria-label="Select weapon slot 1">
             <span class="slot-key">1</span>
             <span class="slot-icon">⛏️</span>
             <span class="slot-name">Harvester</span>
             <span class="slot-ammo">MELEE</span>
             <div class="slot-rarity-bar"></div>
           </div>
-          <div id="hotbar-slot-1" class="hotbar-slot active">
+          <div id="hotbar-slot-1" class="hotbar-slot active" data-touch-slot="1" role="button" aria-label="Select weapon slot 2">
             <span class="slot-key">2</span>
             <span class="slot-icon">🎯</span>
             <span class="slot-name">Pulse Rifle</span>
             <span class="slot-ammo">30/30</span>
             <div class="slot-rarity-bar"></div>
           </div>
-          <div id="hotbar-slot-2" class="hotbar-slot">
+          <div id="hotbar-slot-2" class="hotbar-slot" data-touch-slot="2" role="button" aria-label="Select weapon slot 3">
             <span class="slot-key">3</span>
             <span class="slot-icon">🔫</span>
             <span class="slot-name">Cyber Pistol</span>
             <span class="slot-ammo">15/15</span>
             <div class="slot-rarity-bar"></div>
           </div>
-          <div id="hotbar-slot-3" class="hotbar-slot">
+          <div id="hotbar-slot-3" class="hotbar-slot" data-touch-slot="3" role="button" aria-label="Select weapon slot 4">
             <span class="slot-key">4</span>
             <span class="slot-icon">·</span>
             <span class="slot-name">Empty</span>
             <span class="slot-ammo"></span>
             <div class="slot-rarity-bar"></div>
           </div>
-          <div id="hotbar-slot-4" class="hotbar-slot">
+          <div id="hotbar-slot-4" class="hotbar-slot" data-touch-slot="4" role="button" aria-label="Select weapon slot 5">
             <span class="slot-key">5</span>
             <span class="slot-icon">·</span>
             <span class="slot-name">Empty</span>
@@ -569,18 +569,57 @@
 
       <!-- Mobile / Touch Virtual Controls -->
       <div id="mobile-touch-controls" class="mobile-controls">
-        <div id="touch-joystick-zone" class="joystick-zone">
+        <div
+          id="touch-look-surface"
+          class="touch-look-surface"
+          aria-label="Drag to look around"
+        >
+          <span class="touch-look-hint">DRAG TO LOOK</span>
+        </div>
+
+        <div
+          id="touch-joystick-zone"
+          class="joystick-zone"
+          role="application"
+          aria-label="Virtual movement joystick. Push to the outer ring to sprint."
+        >
           <div id="touch-joystick-knob" class="joystick-knob"></div>
         </div>
-        <div class="touch-action-buttons">
-          <button id="touch-fire-btn" class="touch-btn fire">FIRE</button>
-          <button id="touch-aim-btn" class="touch-btn">ADS</button>
-          <button id="touch-jump-btn" class="touch-btn">JUMP</button>
-          <button id="touch-loot-btn" class="touch-btn">LOOT</button>
-          <button id="touch-wall-btn" class="touch-btn">WALL</button>
-          <button id="touch-ramp-btn" class="touch-btn">RAMP</button>
-          <button id="touch-floor-btn" class="touch-btn">FLOOR</button>
-          <button id="touch-roof-btn" class="touch-btn">ROOF</button>
+
+        <div class="touch-action-buttons" aria-label="Touch action controls">
+          <button id="touch-fire-btn" class="touch-btn fire" type="button" aria-label="Fire or place selected build piece">
+            🔥 FIRE
+          </button>
+          <button id="touch-aim-btn" class="touch-btn" type="button" aria-label="Toggle aim down sights">
+            🎯 ADS
+          </button>
+          <button id="touch-jump-btn" class="touch-btn" type="button" aria-label="Jump or glide">
+            ⤴️ JUMP
+          </button>
+          <button id="touch-loot-btn" class="touch-btn" type="button" aria-label="Interact or collect loot">
+            ✋ LOOT
+          </button>
+          <button id="touch-reload-btn" class="touch-btn" type="button" aria-label="Reload weapon">
+            ↻ LOAD
+          </button>
+          <button id="touch-weapon-btn" class="touch-btn" type="button" aria-label="Switch weapon">
+            🔫 SWAP
+          </button>
+          <button id="touch-material-btn" class="touch-btn" type="button" aria-label="Cycle building material">
+            🧱 MAT
+          </button>
+          <button id="touch-wall-btn" class="touch-btn build" type="button" aria-label="Select wall build preview">
+            WALL
+          </button>
+          <button id="touch-ramp-btn" class="touch-btn build" type="button" aria-label="Select ramp build preview">
+            RAMP
+          </button>
+          <button id="touch-floor-btn" class="touch-btn build" type="button" aria-label="Select floor build preview">
+            FLOOR
+          </button>
+          <button id="touch-roof-btn" class="touch-btn build" type="button" aria-label="Select roof build preview">
+            ROOF
+          </button>
         </div>
       </div>
     </div>
@@ -736,7 +775,9 @@
               <strong>Jump/Glide:</strong> <kbd>Space</kbd> • <strong>Loot/Chest:</strong>
               <kbd>F</kbd> • <strong>Reload:</strong> <kbd>R</kbd> • <strong>Mute:</strong>
               <kbd>M</kbd> • <strong>Switch Material:</strong> <kbd>G</kbd>. On mobile/tablet,
-              use the on-screen virtual joystick and touch action buttons.
+              move with the bottom-left joystick (push to the gold outer ring to sprint),
+              drag the right side of the screen to look, and use the FIRE, ADS, JUMP,
+              LOOT, LOAD, SWAP, MAT, and build buttons or tap a weapon hotbar slot.
             </p>
           </div>
         </div>
@@ -759,6 +800,20 @@
             <input
               type="range"
               id="setting-sensitivity"
+              min="0.3"
+              max="2.5"
+              step="0.1"
+              value="1.0"
+            />
+          </div>
+
+          <div class="form-group">
+            <label for="setting-touch-sensitivity">
+              Touch Camera Sensitivity: <span id="val-touch-sensitivity">1.0x</span>
+            </label>
+            <input
+              type="range"
+              id="setting-touch-sensitivity"
               min="0.3"
               max="2.5"
               step="0.1"

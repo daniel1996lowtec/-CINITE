@@ -315,6 +315,7 @@ export interface LobbyConfig {
 
 export interface GameSettings {
   mouseSensitivity: number;
+  touchSensitivity?: number;
   audioVolume: number;
   sfxVolume?: number;
   graphicsQuality: 'low' | 'medium' | 'high';
