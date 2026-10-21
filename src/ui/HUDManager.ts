@@ -10,6 +10,7 @@ import {
 import { RARITY_COLORS } from '../weapons/WeaponDefinitions';
 import { ISLAND_POIS } from '../world/TerrainGenerator';
 import { ISLAND_SETTLEMENTS } from '../world/WorldLayout';
+import { getStormStatusLabel, isFinalStormPhase } from '../systems/StormConfig';
 
 interface FloatingDamageNumber {
   el: HTMLDivElement;
@@ -23,8 +24,12 @@ interface FloatingDamageNumber {
 const WEAPON_ICONS: Record<WeaponCategory, string> = {
   harvester: '⛏️',
   pistol: '🔫',
+  heavy_pistol: '🦏',
   assault_rifle: '🎯',
+  burst_rifle: '⋮⋮⋮',
+  dmr: '◎',
   shotgun: '💥',
+  tactical_shotgun: '✦',
   smg: '⚡',
   sniper: '🔭',
   medkit: '🩹',
@@ -536,6 +541,7 @@ export class HUDManager {
         this.currentPoiName = poi.name;
         if (this.poiToastEl) {
           this.poiToastEl.textContent = `📍 ENTERING ${poi.name.toUpperCase()}`;
+          this.poiToastEl.style.setProperty('--poi-accent', poi.color);
           this.poiToastEl.classList.remove('hidden');
           this.poiToastTimer = 2.8;
         }
@@ -582,12 +588,17 @@ export class HUDManager {
     this.aliveCountEl.textContent = `${match.aliveCount}`;
     this.killCountEl.textContent = `${player.eliminations}`;
 
-    // Storm Status
-    this.stormPhaseEl.textContent = `STORM PHASE ${match.storm.phase}`;
+    // Storm Status: phaseTimer is preparation time while waiting and
+    // remaining movement time while shrinking; label that distinction so
+    // players can plan rotations through tall districts.
+    const displayPhase = Math.min(8, Math.max(1, match.storm.phase));
+    this.stormPhaseEl.textContent = `PHASE ${displayPhase} · ${getStormStatusLabel(match.storm)}`;
     const sec = Math.max(0, Math.ceil(match.storm.phaseTimer));
     const m = Math.floor(sec / 60);
     const s = sec % 60;
-    this.stormTimerEl.textContent = `${m}:${s < 10 ? '0' : ''}${s}`;
+    this.stormTimerEl.textContent = isFinalStormPhase(match.storm)
+      ? 'CLOSED'
+      : `${m}:${s < 10 ? '0' : ''}${s}`;
     this.stormVignette.classList.toggle('active', isOutsideStorm);
 
     // Materials & Selected Material Highlight

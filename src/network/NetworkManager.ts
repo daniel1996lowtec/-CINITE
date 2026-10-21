@@ -27,6 +27,7 @@ import {
   roomModeForSessionMode,
 } from './schemas';
 import { createWeaponStats } from '../weapons/WeaponDefinitions';
+import { createInitialStormState } from '../systems/StormConfig';
 
 export interface ServerHitEvent {
   eventId?: string;
@@ -596,18 +597,7 @@ export class NetworkManager {
       players: new Map(),
       lootItems: new Map(),
       buildables: new Map(),
-      storm: {
-        phase: 1,
-        currentCenterX: 0,
-        currentCenterZ: 0,
-        currentRadius: 255,
-        targetCenterX: 0,
-        targetCenterZ: 0,
-        targetRadius: 145,
-        phaseTimer: 40,
-        isShrinking: false,
-        damagePerSecond: 2,
-      },
+      storm: createInitialStormState(),
     };
   }
 
@@ -870,7 +860,7 @@ export class NetworkManager {
     switch (loadout) {
       case 'close_quarters':
         return {
-          primaryCat: 'shotgun',
+          primaryCat: 'tactical_shotgun',
           primaryRarity: 'uncommon',
           secondaryCat: 'smg',
           secondaryRarity: 'common',
@@ -878,17 +868,17 @@ export class NetworkManager {
         };
       case 'sharpshooter':
         return {
-          primaryCat: 'sniper',
+          primaryCat: 'dmr',
           primaryRarity: 'rare',
-          secondaryCat: 'pistol',
+          secondaryCat: 'heavy_pistol',
           secondaryRarity: 'uncommon',
           materials: { wood: 80, stone: 60, metal: 30 },
         };
       case 'demolition':
         return {
-          primaryCat: 'smg',
+          primaryCat: 'burst_rifle',
           primaryRarity: 'uncommon',
-          secondaryCat: 'pistol',
+          secondaryCat: 'tactical_shotgun',
           secondaryRarity: 'rare',
           materials: { wood: 200, stone: 150, metal: 100 },
         };
@@ -1261,6 +1251,11 @@ export class NetworkManager {
           this.state.storm.phaseTimer = Number(s.phaseTimer ?? 40);
           this.state.storm.isShrinking = Boolean(s.isShrinking);
           this.state.storm.damagePerSecond = Number(s.damagePerSecond ?? 2);
+          // Mark interpolation as server-owned. If this client later falls
+          // back to offline storm simulation, StormConfig reconstructs the
+          // remaining linear movement from this snapshot.
+          this.state.storm.shrinkDuration = 0;
+          this.state.storm.shrinkElapsed = 0;
         }
         if (typeof msg.matchTimer === 'number') {
           this.state.matchTimer = msg.matchTimer;
@@ -1898,13 +1893,15 @@ export class NetworkManager {
   public sendWeaponFired(
     category: string,
     muzzlePos: { x: number; y: number; z: number },
-    hitPoint: { x: number; y: number; z: number }
+    hitPoint: { x: number; y: number; z: number },
+    rarity?: WeaponRarity
   ): void {
     if (!this.isOnlineRoom || !this.roomConnected) return;
     this.sendPacket({
       type: 'fire_weapon',
       sessionToken: this.sessionToken,
       category,
+      rarity,
       muzzlePos,
       hitPoint,
     });
@@ -1915,7 +1912,9 @@ export class NetworkManager {
     damage: number,
     isHeadshot: boolean,
     weaponName: string,
-    hitPoint: { x: number; y: number; z: number }
+    hitPoint: { x: number; y: number; z: number },
+    weaponCategory?: WeaponCategory,
+    weaponRarity?: WeaponRarity
   ): void {
     if (!this.isOnlineRoom || !this.roomConnected) return;
     this.sendPacket({
@@ -1923,9 +1922,13 @@ export class NetworkManager {
       hitId: `hit_${++this.hitCounter}`,
       sessionToken: this.sessionToken,
       targetId,
+      // Retained for protocol compatibility; the server recomputes damage
+      // from its mirrored catalog and does not trust this value.
       damage,
       isHeadshot,
       weaponName,
+      weaponCategory,
+      weaponRarity,
       hitPoint,
     });
   }

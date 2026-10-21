@@ -268,7 +268,20 @@ export class SoundManager {
 
   public playWeaponFire(category: WeaponCategory, distanceFactor: number = 1.0): void {
     if (distanceFactor <= 0.02) return;
-    const minGap = category === 'smg' ? 38 : category === 'assault_rifle' ? 55 : 70;
+    const minGap =
+      category === 'smg'
+        ? 38
+        : category === 'burst_rifle'
+          ? 34
+          : category === 'assault_rifle'
+            ? 55
+            : category === 'tactical_shotgun'
+              ? 85
+              : category === 'dmr'
+                ? 95
+                : category === 'heavy_pistol'
+                  ? 105
+                  : 70;
     if (!this.canPlay(`fire_${category}`, minGap)) return;
 
     const ctx = this.ensureContext();
@@ -296,13 +309,21 @@ export class SoundManager {
     const duration =
       category === 'shotgun'
         ? 0.26
-        : category === 'sniper'
-        ? 0.38
-        : category === 'smg'
-        ? 0.075
-        : category === 'pistol'
-        ? 0.105
-        : 0.135;
+        : category === 'tactical_shotgun'
+          ? 0.21
+          : category === 'sniper'
+            ? 0.38
+            : category === 'dmr'
+              ? 0.24
+              : category === 'heavy_pistol'
+                ? 0.2
+                : category === 'burst_rifle'
+                  ? 0.095
+                  : category === 'smg'
+                    ? 0.075
+                    : category === 'pistol'
+                      ? 0.105
+                      : 0.135;
 
     const bufferSize = Math.floor(ctx.sampleRate * duration);
     const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
@@ -319,13 +340,21 @@ export class SoundManager {
     filter.frequency.setValueAtTime(
       category === 'shotgun'
         ? 580
-        : category === 'sniper'
-        ? 1350
-        : category === 'smg'
-        ? 1950
-        : category === 'pistol'
-        ? 1520
-        : 1080,
+        : category === 'tactical_shotgun'
+          ? 760
+          : category === 'sniper'
+            ? 1350
+            : category === 'dmr'
+              ? 1180
+              : category === 'burst_rifle'
+                ? 1650
+                : category === 'heavy_pistol'
+                  ? 920
+                  : category === 'smg'
+                    ? 1950
+                    : category === 'pistol'
+                      ? 1520
+                      : 1080,
       now
     );
 
@@ -341,21 +370,29 @@ export class SoundManager {
     const osc = ctx.createOscillator();
     const oscGain = ctx.createGain();
     osc.type =
-      category === 'sniper'
+      category === 'sniper' || category === 'dmr'
         ? 'sawtooth'
-        : category === 'shotgun'
-        ? 'square'
-        : 'triangle';
+        : category === 'shotgun' || category === 'tactical_shotgun' || category === 'heavy_pistol'
+          ? 'square'
+          : 'triangle';
     const startFreq =
       category === 'shotgun'
         ? 138
-        : category === 'sniper'
-        ? 295
-        : category === 'smg'
-        ? 340
-        : category === 'pistol'
-        ? 285
-        : 215;
+        : category === 'tactical_shotgun'
+          ? 168
+          : category === 'heavy_pistol'
+            ? 185
+            : category === 'sniper'
+              ? 295
+              : category === 'dmr'
+                ? 255
+                : category === 'burst_rifle'
+                  ? 310
+                  : category === 'smg'
+                    ? 340
+                    : category === 'pistol'
+                      ? 285
+                      : 215;
     osc.frequency.setValueAtTime(startFreq, now);
     osc.frequency.exponentialRampToValueAtTime(38, now + duration * 0.85);
 
@@ -426,11 +463,15 @@ export class SoundManager {
     const now = ctx.currentTime;
 
     const freqs =
-      category === 'shotgun'
+      category === 'shotgun' || category === 'tactical_shotgun'
         ? [340, 480, 620]
-        : category === 'sniper'
-        ? [310, 520, 740]
-        : [420, 620, 510];
+        : category === 'sniper' || category === 'dmr'
+          ? [310, 520, 740]
+          : category === 'heavy_pistol'
+            ? [280, 390, 560]
+            : category === 'burst_rifle'
+              ? [460, 680, 540]
+              : [420, 620, 510];
 
     freqs.forEach((freq, idx) => {
       const osc = ctx.createOscillator();

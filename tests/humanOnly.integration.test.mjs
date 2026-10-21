@@ -662,7 +662,8 @@ test('human-only rooms: authenticated lobby, ready gate, reconnect dedupe, zero 
     wsLateC.close();
 
     // Human-only combat/victory considers only the two human participants.
-    // One server-capped 240-damage hit eliminates shield + health.
+    // A catalogued Legendary Rail Sniper headshot is 226 server-derived
+    // damage, regardless of the client's forged damage/name fields.
     const serverHitB = waitForMessage(
       wsB,
       (msg) => msg.type === 'server_hit' && msg.victimId === bravoPublicId,
@@ -676,18 +677,30 @@ test('human-only rooms: authenticated lobby, ready gate, reconnect dedupe, zero 
       'human-only match_ended'
     );
     sendJson(wsA, {
+      type: 'fire_weapon',
+      category: 'sniper',
+      rarity: 'legendary',
+      muzzlePos: { x: 0, y: 11, z: 0 },
+      hitPoint: { x: 5, y: 11.7, z: 5 },
+    });
+    sendJson(wsA, {
       type: 'combat_hit',
       hitId: 'human_only_final_hit',
       targetId: bravoPublicId,
-      damage: 240,
-      weaponName: 'Pulse Rifle',
-      hitPoint: { x: 5, y: 11, z: 5 },
+      damage: 1,
+      isHeadshot: true,
+      weaponName: 'Forged Weapon',
+      weaponCategory: 'sniper',
+      weaponRarity: 'legendary',
+      hitPoint: { x: 5, y: 11.7, z: 5 },
       // Spoofed claims must not alter authoritative elimination/victory logic.
       victimIsBot: true,
       aliveHumans: 20,
       winnerId: bravoPublicId,
     });
     const hit = await serverHitB;
+    assert.equal(hit.damage, 226);
+    assert.equal(hit.weaponName, 'Legendary Rail Sniper');
     assert.equal(hit.eliminated, true);
     assert.equal(hit.victimHealth, 0);
     assert.equal(hit.victimShield, 0);
@@ -837,21 +850,53 @@ test('human-only rooms: authenticated lobby, ready gate, reconnect dedupe, zero 
       (player) => player.name === 'Human_Bravo'
     ).id;
 
-    const nonLethalHit = waitForMessage(
-      wsStormB,
-      (msg) => msg.type === 'server_hit' && msg.victimId === stormBravoId,
-      6000,
-      'storm-test non-lethal hit'
+    const sendCatalogHit = async (hitId, category, rarity) => {
+      const hitEvent = waitForMessage(
+        wsStormB,
+        (msg) =>
+          msg.type === 'server_hit' &&
+          msg.victimId === stormBravoId &&
+          msg.weaponCategory === category &&
+          msg.weaponRarity === rarity,
+        6000,
+        `storm-test ${hitId}`
+      );
+      sendJson(wsStormA, {
+        type: 'fire_weapon',
+        category,
+        rarity,
+        muzzlePos: { x: 0, y: 11, z: 0 },
+        hitPoint: { x: 5, y: 11, z: 5 },
+      });
+      sendJson(wsStormA, {
+        type: 'combat_hit',
+        hitId,
+        targetId: stormBravoId,
+        damage: 999,
+        weaponName: 'Forged Weapon',
+        weaponCategory: category,
+        weaponRarity: rarity,
+        hitPoint: { x: 5, y: 11, z: 5 },
+      });
+      return hitEvent;
+    };
+
+    // 97 + 28 + 24 catalog body damage leaves exactly 1 health for the
+    // server's phase-1 storm tick to eliminate.
+    const sniperSetup = await sendCatalogHit('storm_setup_sniper', 'sniper', 'rare');
+    assert.equal(sniperSetup.damage, 97);
+    const rifleSetup = await sendCatalogHit(
+      'storm_setup_rare_rifle',
+      'assault_rifle',
+      'rare'
     );
-    sendJson(wsStormA, {
-      type: 'combat_hit',
-      hitId: 'storm_setup_hit',
-      targetId: stormBravoId,
-      damage: 149,
-      weaponName: 'Pulse Rifle',
-      hitPoint: { x: 5, y: 11, z: 5 },
-    });
-    const setupHit = await nonLethalHit;
+    assert.equal(rifleSetup.damage, 28);
+    const setupHit = await sendCatalogHit(
+      'storm_setup_common_rifle',
+      'assault_rifle',
+      'common'
+    );
+    assert.equal(setupHit.damage, 24);
     assert.equal(setupHit.victimHealth, 1);
     assert.equal(setupHit.victimShield, 0);
     assert.equal(setupHit.eliminated, false);

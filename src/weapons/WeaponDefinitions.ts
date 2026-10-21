@@ -1,11 +1,19 @@
 import * as THREE from 'three';
 import { AmmoType, WeaponCategory, WeaponRarity } from '../network/schemas';
 
+export type WeaponFireMode = 'melee' | 'semi' | 'auto' | 'burst' | 'consumable';
+
 export interface WeaponStats {
   id: string;
   name: string;
   category: WeaponCategory;
   rarity: WeaponRarity;
+  fireMode: WeaponFireMode;
+  /** Number of individual shots in one burst trigger pull. */
+  burstCount?: number;
+  /** Delay between shots inside a burst; fireRate is bursts per second. */
+  burstIntervalSeconds?: number;
+  tracerColor: number;
   baseDamage: number;
   headshotMultiplier: number;
   fireRate: number;
@@ -37,6 +45,23 @@ export const RARITY_COLORS: Record<
   legendary: { hex: '#fbbf24', int: 0xfbbf24, label: 'Legendary', damageMult: 1.35 },
 };
 
+export const FIREARM_CATEGORIES = [
+  'pistol',
+  'heavy_pistol',
+  'assault_rifle',
+  'burst_rifle',
+  'dmr',
+  'shotgun',
+  'tactical_shotgun',
+  'smg',
+  'sniper',
+] as const satisfies readonly WeaponCategory[];
+
+/** Per-pellet damage used by both the local simulation and mirrored by the server catalog. */
+export function calculateWeaponDamage(stats: WeaponStats, isHeadshot: boolean): number {
+  return Math.round(stats.baseDamage * (isHeadshot ? stats.headshotMultiplier : 1));
+}
+
 export function createWeaponStats(
   category: WeaponCategory,
   rarity: WeaponRarity = 'common'
@@ -51,6 +76,8 @@ export function createWeaponStats(
         name: 'CI Harvester',
         category: 'harvester',
         rarity: 'rare',
+        fireMode: 'melee',
+        tracerColor: 0x38bdf8,
         baseDamage: 35,
         headshotMultiplier: 1.2,
         fireRate: 1.9,
@@ -74,6 +101,8 @@ export function createWeaponStats(
         name: `${rarityPrefix} Cyber Pistol`,
         category: 'pistol',
         rarity,
+        fireMode: 'semi',
+        tracerColor: 0xfef08a,
         baseDamage: Math.round(22 * mult),
         headshotMultiplier: 1.75,
         fireRate: 6.2,
@@ -97,6 +126,8 @@ export function createWeaponStats(
         name: `${rarityPrefix} Pulse Rifle`,
         category: 'assault_rifle',
         rarity,
+        fireMode: 'auto',
+        tracerColor: 0xfef08a,
         baseDamage: Math.round(24 * mult),
         headshotMultiplier: 1.6,
         fireRate: 5.8,
@@ -120,6 +151,8 @@ export function createWeaponStats(
         name: `${rarityPrefix} Scatter Pump`,
         category: 'shotgun',
         rarity,
+        fireMode: 'semi',
+        tracerColor: 0xfb923c,
         baseDamage: Math.round(11 * mult),
         headshotMultiplier: 1.5,
         fireRate: 1.25,
@@ -143,6 +176,8 @@ export function createWeaponStats(
         name: `${rarityPrefix} Hyper SMG`,
         category: 'smg',
         rarity,
+        fireMode: 'auto',
+        tracerColor: 0xfde68a,
         baseDamage: Math.round(16 * mult),
         headshotMultiplier: 1.5,
         fireRate: 10.5,
@@ -166,6 +201,8 @@ export function createWeaponStats(
         name: `${rarityPrefix} Rail Sniper`,
         category: 'sniper',
         rarity,
+        fireMode: 'semi',
+        tracerColor: 0x38bdf8,
         baseDamage: Math.round(84 * mult),
         headshotMultiplier: 2.0,
         fireRate: 0.75,
@@ -183,12 +220,118 @@ export function createWeaponStats(
         isConsumable: false,
       };
 
+    case 'heavy_pistol':
+      return {
+        id: `heavy_pistol_${rarity}`,
+        name: `${rarityPrefix} Rhino Hand Cannon`,
+        category: 'heavy_pistol',
+        rarity,
+        fireMode: 'semi',
+        tracerColor: 0xfda4af,
+        baseDamage: Math.round(40 * mult),
+        headshotMultiplier: 2.0,
+        fireRate: 2.2,
+        clipSize: 7,
+        reloadTime: Math.max(1.35, 1.85 - (mult - 1) * 1.0),
+        ammoType: 'heavy',
+        pellets: 1,
+        spreadRad: 0.012,
+        adsSpreadMultiplier: 0.22,
+        adsFov: 48,
+        recoilPitch: 0.034,
+        recoilYaw: 0.01,
+        range: 145,
+        isAutomatic: false,
+        isConsumable: false,
+      };
+
+    case 'burst_rifle':
+      return {
+        id: `burst_rifle_${rarity}`,
+        name: `${rarityPrefix} Triad Burst Rifle`,
+        category: 'burst_rifle',
+        rarity,
+        fireMode: 'burst',
+        burstCount: 3,
+        burstIntervalSeconds: 0.075,
+        tracerColor: 0xa5f3fc,
+        baseDamage: Math.round(24 * mult),
+        headshotMultiplier: 1.65,
+        // Bursts per second. PlayerController schedules the three shots
+        // inside each burst at burstIntervalSeconds.
+        fireRate: 1.65,
+        clipSize: 36,
+        reloadTime: Math.max(1.7, 2.25 - (mult - 1) * 1.1),
+        ammoType: 'medium',
+        pellets: 1,
+        spreadRad: 0.017,
+        adsSpreadMultiplier: 0.24,
+        adsFov: 42,
+        recoilPitch: 0.012,
+        recoilYaw: 0.004,
+        range: 205,
+        isAutomatic: false,
+        isConsumable: false,
+      };
+
+    case 'dmr':
+      return {
+        id: `dmr_${rarity}`,
+        name: `${rarityPrefix} Longbow DMR`,
+        category: 'dmr',
+        rarity,
+        fireMode: 'semi',
+        tracerColor: 0x93c5fd,
+        baseDamage: Math.round(42 * mult),
+        headshotMultiplier: 1.85,
+        fireRate: 2.4,
+        clipSize: 12,
+        reloadTime: Math.max(1.8, 2.35 - (mult - 1) * 1.0),
+        ammoType: 'medium',
+        pellets: 1,
+        spreadRad: 0.009,
+        adsSpreadMultiplier: 0.08,
+        adsFov: 32,
+        recoilPitch: 0.028,
+        recoilYaw: 0.006,
+        range: 275,
+        isAutomatic: false,
+        isConsumable: false,
+      };
+
+    case 'tactical_shotgun':
+      return {
+        id: `tactical_shotgun_${rarity}`,
+        name: `${rarityPrefix} Vector Tactical Shotgun`,
+        category: 'tactical_shotgun',
+        rarity,
+        fireMode: 'auto',
+        tracerColor: 0xfdba74,
+        baseDamage: Math.round(8 * mult),
+        headshotMultiplier: 1.45,
+        fireRate: 2.1,
+        clipSize: 10,
+        reloadTime: Math.max(2.0, 2.7 - (mult - 1) * 1.2),
+        ammoType: 'shells',
+        pellets: 8,
+        spreadRad: 0.05,
+        adsSpreadMultiplier: 0.52,
+        adsFov: 50,
+        recoilPitch: 0.03,
+        recoilYaw: 0.01,
+        range: 52,
+        isAutomatic: true,
+        isConsumable: false,
+      };
+
     case 'shield_potion':
       return {
         id: 'shield_potion_rare',
         name: 'Shield Potion (+50)',
         category: 'shield_potion',
         rarity: 'rare',
+        fireMode: 'consumable',
+        tracerColor: 0x38bdf8,
         baseDamage: 0,
         headshotMultiplier: 1,
         fireRate: 1,
@@ -214,6 +357,8 @@ export function createWeaponStats(
         name: 'Nano Medkit (+50)',
         category: 'medkit',
         rarity: 'uncommon',
+        fireMode: 'consumable',
+        tracerColor: 0x4ade80,
         baseDamage: 0,
         headshotMultiplier: 1,
         fireRate: 1,
@@ -238,14 +383,14 @@ export function createWeaponStats(
 const weaponTemplateCache = new Map<string, THREE.Group>();
 const SHARED_WEAPON_DARK_MAT = new THREE.MeshStandardMaterial({
   color: 0x1e293b,
-  roughness: 0.45,
-  metalness: 0.45,
+  roughness: 0.38,
+  metalness: 0.55,
   flatShading: true,
 });
 const SHARED_WEAPON_GUNMETAL_MAT = new THREE.MeshStandardMaterial({
   color: 0x475569,
-  roughness: 0.35,
-  metalness: 0.6,
+  roughness: 0.27,
+  metalness: 0.72,
   flatShading: true,
 });
 
@@ -268,7 +413,8 @@ export function createWeaponMesh(
     color: rarityColor,
     emissive: rarityColor,
     emissiveIntensity: 0.3,
-    roughness: 0.3,
+    roughness: 0.22,
+    metalness: 0.28,
     flatShading: true,
   });
 
@@ -332,8 +478,8 @@ export function createWeaponMesh(
     return group.clone(true);
   }
 
-  if (category === 'pistol') {
-    // Compact Cyber Sidearm Pistol
+  if (category === 'pistol' || category === 'heavy_pistol') {
+    // Compact Cyber Sidearm / Rhino Hand Cannon
     const slide = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.11, 0.36), gunmetalMat);
     slide.position.set(0, 0.08, -0.16);
     slide.userData.baseZ = -0.16;
@@ -350,20 +496,46 @@ export function createWeaponMesh(
     const muzzleAnchor = new THREE.Object3D();
     muzzleAnchor.name = 'muzzle_tip';
     muzzleAnchor.position.set(0, 0.08, -0.36);
+    if (category === 'heavy_pistol') {
+      slide.scale.set(1.28, 1.32, 1.42);
+      stripe.scale.set(1.18, 1.2, 1.42);
+      grip.scale.set(1.18, 1.12, 1.18);
+      pistolMag.visible = false;
+      const heavyBarrel = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.043, 0.043, 0.34, 10),
+        gunmetalMat
+      );
+      heavyBarrel.rotation.x = Math.PI / 2;
+      heavyBarrel.position.set(0, 0.085, -0.42);
+      const cylinder = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.082, 0.082, 0.15, 12),
+        accentMat
+      );
+      cylinder.rotation.x = Math.PI / 2;
+      cylinder.position.set(0, 0.045, -0.16);
+      const topRib = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.035, 0.48), accentMat);
+      topRib.position.set(0, 0.17, -0.29);
+      muzzleAnchor.position.set(0, 0.085, -0.6);
+      group.add(heavyBarrel, cylinder, topRib);
+    }
     group.add(slide, stripe, grip, pistolMag, muzzleAnchor);
     weaponTemplateCache.set(cacheKey, group);
     return group.clone(true);
   }
 
-  // Long Firearms (Assault Rifle, Shotgun, SMG, Sniper)
+  // Long firearms share receiver/barrel construction, then diverge below.
   const length =
     category === 'sniper'
       ? 1.18
-      : category === 'assault_rifle'
-      ? 0.86
-      : category === 'shotgun'
-      ? 0.82
-      : 0.58;
+      : category === 'dmr'
+        ? 1.04
+        : category === 'burst_rifle'
+          ? 0.92
+          : category === 'assault_rifle'
+            ? 0.86
+            : category === 'shotgun' || category === 'tactical_shotgun'
+              ? 0.82
+              : 0.58;
 
   const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.15, length * 0.65), darkMat);
   receiver.position.set(0, 0.05, -length * 0.28);
@@ -432,6 +604,52 @@ export function createWeaponMesh(
     pistolGrip.position.set(0, -0.06, -0.1);
     pistolGrip.rotation.x = -0.25;
     group.add(holoFrame, holoLens, handguard, pistolGrip);
+  } else if (category === 'burst_rifle') {
+    const triRail = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.055, 0.42), gunmetalMat);
+    triRail.position.set(0, 0.145, -0.46);
+    const burstSight = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.09, 0.09), accentMat);
+    burstSight.position.set(0, 0.2, -0.28);
+    const triMuzzle = new THREE.Mesh(new THREE.CylinderGeometry(0.052, 0.052, 0.16, 6), accentMat);
+    triMuzzle.rotation.x = Math.PI / 2;
+    triMuzzle.position.set(0, 0.065, -length * 0.93);
+    for (const side of [-1, 1]) {
+      const vent = new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.045, 0.3), accentMat);
+      vent.position.set(side * 0.066, 0.07, -0.48);
+      group.add(vent);
+    }
+    group.add(triRail, burstSight, triMuzzle);
+  } else if (category === 'dmr') {
+    const dmrScope = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.042, 0.038, 0.34, 10),
+      gunmetalMat
+    );
+    dmrScope.rotation.x = Math.PI / 2;
+    dmrScope.position.set(0, 0.19, -0.34);
+    const dmrLens = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.034, 0.034, 0.018, 10),
+      accentMat
+    );
+    dmrLens.rotation.x = Math.PI / 2;
+    dmrLens.position.set(0, 0.19, -0.52);
+    const longHandguard = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.1, 0.48), darkMat);
+    longHandguard.position.set(0, 0.055, -0.62);
+    const cheekRiser = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.06, 0.22), accentMat);
+    cheekRiser.position.set(0, 0.12, 0.05);
+    group.add(dmrScope, dmrLens, longHandguard, cheekRiser);
+  } else if (category === 'tactical_shotgun') {
+    const heatShield = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.055, 0.055, 0.44, 8),
+      gunmetalMat
+    );
+    heatShield.rotation.x = Math.PI / 2;
+    heatShield.position.set(0, 0.065, -length * 0.68);
+    mag.scale.set(1.2, 0.95, 1.65);
+    mag.position.set(0, -0.1, -0.3);
+    const tacSight = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.065, 0.1), accentMat);
+    tacSight.position.set(0, 0.17, -0.24);
+    const sideSaddle = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.09, 0.3), accentMat);
+    sideSaddle.position.set(-0.068, 0.06, -0.26);
+    group.add(heatShield, tacSight, sideSaddle);
   } else if (category === 'smg') {
     const drumMag = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 0.09, 10), accentMat);
     drumMag.rotation.z = Math.PI / 2;

@@ -110,14 +110,168 @@ const LEGENDARY_TOWER_VAULT_WEAPON_CATEGORIES = new Set([
 ]);
 const LOOT_WEAPON_CATEGORIES = new Set([
   'pistol',
+  'heavy_pistol',
   'assault_rifle',
+  'burst_rifle',
+  'dmr',
   'shotgun',
+  'tactical_shotgun',
   'smg',
   'sniper',
   'medkit',
   'shield_potion',
 ]);
 const LOOT_RARITIES = new Set(['common', 'uncommon', 'rare', 'epic', 'legendary']);
+
+// Server mirror of src/weapons/WeaponDefinitions.ts. Online combat recomputes
+// damage from this catalog, validates the category-specific range, and only
+// accepts pellet hits backed by a recent cadence-valid fire_weapon event.
+// The legacy client-submitted `damage` field is retained in packets for
+// compatibility but is never trusted for health/shield or progression.
+const SERVER_RARITY_DAMAGE_MULT = {
+  common: 1.0,
+  uncommon: 1.08,
+  rare: 1.16,
+  epic: 1.25,
+  legendary: 1.35,
+};
+const SERVER_WEAPON_CATALOG = {
+  harvester: { baseDamage: 35, headshotMultiplier: 1.2, fireRate: 1.9, pellets: 1, range: 4.6 },
+  pistol: { baseDamage: 22, headshotMultiplier: 1.75, fireRate: 6.2, pellets: 1, range: 125 },
+  heavy_pistol: { baseDamage: 40, headshotMultiplier: 2.0, fireRate: 2.2, pellets: 1, range: 145 },
+  assault_rifle: { baseDamage: 24, headshotMultiplier: 1.6, fireRate: 5.8, pellets: 1, range: 190 },
+  burst_rifle: {
+    baseDamage: 24,
+    headshotMultiplier: 1.65,
+    fireRate: 1.65,
+    pellets: 1,
+    range: 205,
+    burstCount: 3,
+    burstIntervalMs: 75,
+  },
+  dmr: { baseDamage: 42, headshotMultiplier: 1.85, fireRate: 2.4, pellets: 1, range: 275 },
+  shotgun: { baseDamage: 11, headshotMultiplier: 1.5, fireRate: 1.25, pellets: 8, range: 46 },
+  tactical_shotgun: {
+    baseDamage: 8,
+    headshotMultiplier: 1.45,
+    fireRate: 2.1,
+    pellets: 8,
+    range: 52,
+  },
+  smg: { baseDamage: 16, headshotMultiplier: 1.5, fireRate: 10.5, pellets: 1, range: 95 },
+  sniper: { baseDamage: 84, headshotMultiplier: 2.0, fireRate: 0.75, pellets: 1, range: 340 },
+};
+
+function getServerWeaponStats(category, rarity) {
+  const entry = SERVER_WEAPON_CATALOG[String(category || '')];
+  const safeRarity = String(rarity || '');
+  if (!entry || !LOOT_RARITIES.has(safeRarity)) return null;
+  const baseDamage =
+    category === 'harvester'
+      ? entry.baseDamage
+      : Math.round(entry.baseDamage * SERVER_RARITY_DAMAGE_MULT[safeRarity]);
+  return { ...entry, category: String(category), rarity: safeRarity, baseDamage };
+}
+
+function getServerWeaponDamage(stats, isHeadshot) {
+  if (!stats) return 0;
+  return Math.round(
+    stats.baseDamage * (isHeadshot ? stats.headshotMultiplier : 1)
+  );
+}
+
+function resetServerCombatState(player) {
+  if (!player || typeof player !== 'object') return;
+  player.lastServerShotAt = 0;
+  player.serverShotTokens = 3;
+  player.serverShotTokenUpdatedAt = Date.now();
+  player.serverShotCredit = null;
+  player.serverBurstShotsRemaining = 0;
+  player.serverBurstCategory = '';
+  player.serverBurstRarity = '';
+  player.serverNextShotAt = 0;
+}
+
+function consumeServerShot(player, stats, now = Date.now()) {
+  if (!player || !stats) return false;
+  if (typeof player.serverShotTokens !== 'number') {
+    resetServerCombatState(player);
+  }
+
+  if (stats.burstCount && stats.burstCount > 1) {
+    const intervalMs = Number(stats.burstIntervalMs || 75);
+    const inBurst =
+      Number(player.serverBurstShotsRemaining || 0) > 0 &&
+      player.serverBurstCategory === stats.category &&
+      player.serverBurstRarity === stats.rarity;
+    if (now < Number(player.serverNextShotAt || 0)) return false;
+    if (inBurst) {
+      player.serverBurstShotsRemaining -= 1;
+      if (player.serverBurstShotsRemaining > 0) {
+        player.serverNextShotAt = now + intervalMs * 0.65;
+      } else {
+        const cycleMs = 1000 / Math.max(0.1, stats.fireRate);
+        const postBurstDelay = Math.max(
+          220,
+          (cycleMs - intervalMs * (stats.burstCount - 1)) * 0.72
+        );
+        player.serverNextShotAt = now + postBurstDelay;
+      }
+    } else {
+      player.serverBurstShotsRemaining = stats.burstCount - 1;
+      player.serverBurstCategory = stats.category;
+      player.serverBurstRarity = stats.rarity;
+      player.serverNextShotAt = now + intervalMs * 0.65;
+    }
+  } else {
+    const updatedAt = Number(player.serverShotTokenUpdatedAt || now);
+    const elapsedMs = Math.max(0, now - updatedAt);
+    const refillPerSecond = Math.max(0.1, stats.fireRate) * 1.3;
+    player.serverShotTokens = Math.min(
+      3,
+      Number(player.serverShotTokens || 0) + (elapsedMs / 1000) * refillPerSecond
+    );
+    player.serverShotTokenUpdatedAt = now;
+    if (player.serverShotTokens < 1) return false;
+    player.serverShotTokens -= 1;
+    player.serverBurstShotsRemaining = 0;
+  }
+
+  const previous = player.serverShotCredit;
+  const previousPellets =
+    previous &&
+    previous.category === stats.category &&
+    previous.rarity === stats.rarity &&
+    Number(previous.expiresAt || 0) > now
+      ? Number(previous.pelletsRemaining || 0)
+      : 0;
+  player.serverShotCredit = {
+    category: stats.category,
+    rarity: stats.rarity,
+    pelletsRemaining: Math.min(
+      stats.pellets * 3,
+      previousPellets + stats.pellets
+    ),
+    expiresAt: now + 900,
+  };
+  player.lastServerShotAt = now;
+  return true;
+}
+
+function consumeServerHitCredit(player, stats, now = Date.now()) {
+  const credit = player?.serverShotCredit;
+  if (!credit || !stats) return false;
+  if (
+    credit.category !== stats.category ||
+    credit.rarity !== stats.rarity ||
+    Number(credit.expiresAt || 0) <= now ||
+    Number(credit.pelletsRemaining || 0) <= 0
+  ) {
+    return false;
+  }
+  credit.pelletsRemaining -= 1;
+  return true;
+}
 
 function cloneLegendaryTowerLootItem(item) {
   return { ...item, position: { ...item.position } };
@@ -190,13 +344,19 @@ function isLegendaryTowerLootId(lootId) {
 }
 
 function serverWeaponDisplayName(category, rarity) {
+  if (category === 'harvester') return 'CI Harvester';
   if (category === 'shield_potion') return 'Shield Potion (+50)';
   if (category === 'medkit') return 'Nano Medkit (+50)';
   const label = rarity.charAt(0).toUpperCase() + rarity.slice(1);
   const base = {
+    harvester: 'CI Harvester',
     pistol: 'Cyber Pistol',
+    heavy_pistol: 'Rhino Hand Cannon',
     assault_rifle: 'Pulse Rifle',
+    burst_rifle: 'Triad Burst Rifle',
+    dmr: 'Longbow DMR',
     shotgun: 'Scatter Pump',
+    tactical_shotgun: 'Vector Tactical Shotgun',
     smg: 'Hyper SMG',
     sniper: 'Rail Sniper',
   }[category] || 'Pulse Rifle';
@@ -755,7 +915,29 @@ async function applyAuthoritativeProgression(player, delta) {
   return prof;
 }
 
+// Mirrors src/systems/StormConfig.ts. Keep phase timings/radii identical so
+// offline and authoritative online matches have the same strategic pacing.
+const STORM_PHASE_CONFIGS = [
+  { phase: 1, waitSeconds: 90, shrinkSeconds: 70, targetRadius: 150, damagePerSecond: 1 },
+  { phase: 2, waitSeconds: 70, shrinkSeconds: 60, targetRadius: 105, damagePerSecond: 2 },
+  { phase: 3, waitSeconds: 55, shrinkSeconds: 50, targetRadius: 72, damagePerSecond: 3 },
+  { phase: 4, waitSeconds: 45, shrinkSeconds: 42, targetRadius: 48, damagePerSecond: 5 },
+  { phase: 5, waitSeconds: 35, shrinkSeconds: 34, targetRadius: 30, damagePerSecond: 7 },
+  { phase: 6, waitSeconds: 28, shrinkSeconds: 28, targetRadius: 18, damagePerSecond: 9 },
+  { phase: 7, waitSeconds: 22, shrinkSeconds: 24, targetRadius: 10, damagePerSecond: 12 },
+  { phase: 8, waitSeconds: 18, shrinkSeconds: 20, targetRadius: 4, damagePerSecond: 15 },
+];
+
+function getStormPhaseConfig(phase) {
+  const index = Math.max(
+    0,
+    Math.min(STORM_PHASE_CONFIGS.length - 1, Math.floor(Number(phase) || 1) - 1)
+  );
+  return STORM_PHASE_CONFIGS[index];
+}
+
 function createInitialStorm() {
+  const first = getStormPhaseConfig(1);
   return {
     phase: 1,
     currentCenterX: 0,
@@ -763,11 +945,115 @@ function createInitialStorm() {
     currentRadius: 255,
     targetCenterX: 12,
     targetCenterZ: -10,
-    targetRadius: 145,
-    phaseTimer: 40,
+    targetRadius: first.targetRadius,
+    phaseTimer: first.waitSeconds,
     isShrinking: false,
-    damagePerSecond: 2,
+    damagePerSecond: first.damagePerSecond,
+    shrinkFromCenterX: 0,
+    shrinkFromCenterZ: 0,
+    shrinkFromRadius: 255,
+    shrinkElapsed: 0,
+    shrinkDuration: 0,
   };
+}
+
+function chooseServerStormTargetCenter(storm, nextPhase) {
+  const shrinkAmount = Math.max(0, storm.currentRadius - nextPhase.targetRadius);
+  const shift = shrinkAmount * 0.42;
+  const angle = nextPhase.phase * 2.399963229728653 + 0.7;
+  return {
+    x: storm.currentCenterX + Math.cos(angle) * shift,
+    z: storm.currentCenterZ + Math.sin(angle) * shift,
+  };
+}
+
+function beginServerStormShrink(storm, config) {
+  storm.isShrinking = true;
+  storm.shrinkFromCenterX = storm.currentCenterX;
+  storm.shrinkFromCenterZ = storm.currentCenterZ;
+  storm.shrinkFromRadius = storm.currentRadius;
+  storm.shrinkElapsed = 0;
+  storm.shrinkDuration = config.shrinkSeconds;
+  storm.phaseTimer = config.shrinkSeconds;
+}
+
+function finishServerStormShrink(storm) {
+  storm.currentCenterX = storm.targetCenterX;
+  storm.currentCenterZ = storm.targetCenterZ;
+  storm.currentRadius = storm.targetRadius;
+  storm.isShrinking = false;
+  storm.shrinkElapsed = 0;
+  storm.shrinkDuration = 0;
+  storm.phase += 1;
+
+  if (storm.phase > STORM_PHASE_CONFIGS.length) {
+    const final = getStormPhaseConfig(STORM_PHASE_CONFIGS.length);
+    storm.damagePerSecond = final.damagePerSecond;
+    storm.phaseTimer = 0;
+    storm.targetCenterX = storm.currentCenterX;
+    storm.targetCenterZ = storm.currentCenterZ;
+    storm.targetRadius = storm.currentRadius;
+    return;
+  }
+
+  const next = getStormPhaseConfig(storm.phase);
+  storm.damagePerSecond = next.damagePerSecond;
+  storm.phaseTimer = next.waitSeconds;
+  const target = chooseServerStormTargetCenter(storm, next);
+  storm.targetCenterX = target.x;
+  storm.targetCenterZ = target.z;
+  storm.targetRadius = next.targetRadius;
+}
+
+function advanceServerStorm(storm, dt) {
+  if (!storm || !Number.isFinite(dt) || dt <= 0) return;
+  if (storm.phase > STORM_PHASE_CONFIGS.length) {
+    storm.phaseTimer = 0;
+    return;
+  }
+
+  let remaining = dt;
+  for (let guard = 0; remaining > 1e-9 && guard < 24; guard++) {
+    const config = getStormPhaseConfig(storm.phase);
+    if (!storm.isShrinking) {
+      storm.damagePerSecond = config.damagePerSecond;
+      if (remaining < storm.phaseTimer) {
+        storm.phaseTimer -= remaining;
+        remaining = 0;
+      } else {
+        remaining -= Math.max(0, storm.phaseTimer);
+        beginServerStormShrink(storm, config);
+      }
+      continue;
+    }
+
+    const duration = Math.max(
+      0.001,
+      Number(storm.shrinkDuration || config.shrinkSeconds) || config.shrinkSeconds
+    );
+    const fromX = Number(storm.shrinkFromCenterX ?? storm.currentCenterX);
+    const fromZ = Number(storm.shrinkFromCenterZ ?? storm.currentCenterZ);
+    const fromRadius = Number(storm.shrinkFromRadius ?? storm.currentRadius);
+    const elapsedBefore = Math.min(
+      duration,
+      Math.max(0, Number(storm.shrinkElapsed || 0))
+    );
+    const step = Math.min(remaining, duration - elapsedBefore);
+    const elapsed = elapsedBefore + step;
+    const t = Math.max(0, Math.min(1, elapsed / duration));
+    storm.currentCenterX = fromX + (storm.targetCenterX - fromX) * t;
+    storm.currentCenterZ = fromZ + (storm.targetCenterZ - fromZ) * t;
+    storm.currentRadius = fromRadius + (storm.targetRadius - fromRadius) * t;
+    storm.shrinkElapsed = elapsed;
+    storm.shrinkDuration = duration;
+    storm.phaseTimer = Math.max(0, duration - elapsed);
+    remaining -= step;
+
+    if (elapsed >= duration - 1e-9) {
+      finishServerStormShrink(storm);
+      if (storm.phase > STORM_PHASE_CONFIGS.length) return;
+    }
+  }
 }
 
 function getOrCreateRoom(
@@ -1318,6 +1604,7 @@ async function startLobbyMatch(room) {
     player.shield = 50;
     player.eliminations = 0;
     clearLegendaryTowerWeaponOwnership(player);
+    resetServerCombatState(player);
     if (isParticipant) {
       room.matchParticipantIds.add(player.id);
     }
@@ -2605,6 +2892,14 @@ server.on('upgrade', (req, socket) => {
               isReloading: false,
               equippedCategory: 'assault_rifle',
               equippedRarity: 'uncommon',
+              lastServerShotAt: 0,
+              serverShotTokens: 3,
+              serverShotTokenUpdatedAt: Date.now(),
+              serverShotCredit: null,
+              serverBurstShotsRemaining: 0,
+              serverBurstCategory: '',
+              serverBurstRarity: '',
+              serverNextShotAt: 0,
               legendaryTowerWeaponCategories: new Set(),
               skinColor: Number(msg.skinColor ?? 0x0284c7),
               accentColor: Number(msg.accentColor ?? 0x38bdf8),
@@ -2643,6 +2938,7 @@ server.on('upgrade', (req, socket) => {
               player.alive = true;
               player.eliminations = 0;
               clearLegendaryTowerWeaponOwnership(player);
+              resetServerCombatState(player);
               player.position = sanitizePosition(msg.position, player.position);
             } else if (msg.resetPlayer && lobbyManagedRoom && room.phase === 'lobby') {
               player.health = 100;
@@ -2650,6 +2946,7 @@ server.on('upgrade', (req, socket) => {
               player.alive = true;
               player.eliminations = 0;
               clearLegendaryTowerWeaponOwnership(player);
+              resetServerCombatState(player);
               player.isParticipant = false;
               player.position = sanitizePosition(msg.position, player.position);
             }
@@ -2920,10 +3217,17 @@ server.on('upgrade', (req, socket) => {
             p.reloadTimer = clampFinite(msg.reloadTimer, 0, 10, 0);
             p.reloadDuration = clampFinite(msg.reloadDuration, 0, 10, 0);
             if (msg.equippedCategory) {
-              p.equippedCategory = String(msg.equippedCategory).slice(0, 24);
+              const category = String(msg.equippedCategory).slice(0, 24);
+              if (
+                category === 'harvester' ||
+                LOOT_WEAPON_CATEGORIES.has(category)
+              ) {
+                p.equippedCategory = category;
+              }
             }
             if (msg.equippedRarity) {
-              p.equippedRarity = String(msg.equippedRarity).slice(0, 16);
+              const rarity = String(msg.equippedRarity).slice(0, 16);
+              if (LOOT_RARITIES.has(rarity)) p.equippedRarity = rarity;
             }
           }
         } else if (msg.type === 'heal_sync' && currentRoom && currentSessionToken) {
@@ -2948,13 +3252,26 @@ server.on('upgrade', (req, socket) => {
           ) {
             continue;
           }
+          const category = String(
+            msg.category || shooter.equippedCategory || 'assault_rifle'
+          ).slice(0, 24);
+          const rarity = String(
+            msg.rarity || shooter.equippedRarity || 'common'
+          ).slice(0, 16);
+          const weaponStats = getServerWeaponStats(category, rarity);
+          if (!weaponStats) continue;
+          shooter.equippedCategory = category;
+          shooter.equippedRarity = rarity;
+          if (!consumeServerShot(shooter, weaponStats)) continue;
+
           currentRoom.lastActivityAt = Date.now();
           broadcastToRoom(
             currentRoom,
             {
               type: 'remote_weapon_fired',
               shooterId: shooter.id,
-              category: String(msg.category || 'assault_rifle').slice(0, 24),
+              category,
+              rarity,
               muzzlePos: sanitizePosition(msg.muzzlePos, { x: 0, y: 1, z: 0 }),
               hitPoint: sanitizePosition(msg.hitPoint, { x: 0, y: 1, z: -10 }),
             },
@@ -3003,15 +3320,47 @@ server.on('upgrade', (req, socket) => {
             continue;
           }
 
-          // Server-authoritative distance sanity check (max sniper range = 360m)
+          if (attacker.id === victim.id) continue;
+
+          const requestedCategory = String(
+            msg.weaponCategory || attacker.equippedCategory || ''
+          ).slice(0, 24);
+          const requestedRarity = String(
+            msg.weaponRarity || attacker.equippedRarity || ''
+          ).slice(0, 16);
+          const weaponStats = getServerWeaponStats(
+            requestedCategory,
+            requestedRarity
+          );
+          if (!weaponStats) continue;
+          if (!consumeServerHitCredit(attacker, weaponStats)) continue;
+
+          // Category-specific 3D range validation, with a small allowance
+          // for the shooter's camera/muzzle origin and 20 Hz position sync.
           const dist = Math.hypot(
             (victim.position?.x || 0) - (attacker.position?.x || 0),
+            (victim.position?.y || 0) - (attacker.position?.y || 0),
             (victim.position?.z || 0) - (attacker.position?.z || 0)
           );
-          if (dist > 360) continue;
+          if (dist > weaponStats.range + 12) continue;
 
-          const rawDamage = Math.max(1, Math.min(240, Math.round(Number(msg.damage || 20))));
-          const isHeadshot = Boolean(msg.isHeadshot);
+          const validatedHitPoint = sanitizePosition(msg.hitPoint, victim.position);
+          if (msg.hitPoint && typeof msg.hitPoint === 'object') {
+            const hitPointDistance = Math.hypot(
+              validatedHitPoint.x - Number(victim.position?.x || 0),
+              validatedHitPoint.y - Number(victim.position?.y || 0),
+              validatedHitPoint.z - Number(victim.position?.z || 0)
+            );
+            if (hitPointDistance > 5) continue;
+          }
+
+          // Derive the headshot from the validated hit height rather than
+          // trusting a client flag. The client raycast uses 1.48 m; 1.38 m
+          // leaves a small allowance for 20 Hz vertical position sync.
+          const isHeadshot =
+            validatedHitPoint.y - Number(victim.position?.y || 0) >= 1.38;
+          const rawDamage = getServerWeaponDamage(weaponStats, isHeadshot);
+          if (rawDamage <= 0) continue;
           const isShieldHit = victim.shield > 0;
 
           let rem = rawDamage;
@@ -3127,8 +3476,13 @@ server.on('upgrade', (req, socket) => {
             isHeadshot,
             isShieldHit,
             isShieldBreak,
-            weaponName: String(msg.weaponName || 'Weapon').slice(0, 32),
-            hitPoint: sanitizePosition(msg.hitPoint, victim.position),
+            weaponName: serverWeaponDisplayName(
+              weaponStats.category,
+              weaponStats.rarity
+            ),
+            weaponCategory: weaponStats.category,
+            weaponRarity: weaponStats.rarity,
+            hitPoint: validatedHitPoint,
             eliminated,
           });
 
@@ -3449,37 +3803,7 @@ function sanitizeVelocity(raw, fallback) {
 
 function updateRoomStorm(room, dt) {
   room.matchTimer += dt;
-  const storm = room.storm;
-  storm.phaseTimer -= dt;
-
-  if (storm.phaseTimer <= 0) {
-    if (!storm.isShrinking) {
-      storm.isShrinking = true;
-      storm.phaseTimer = Math.max(18, 34 - storm.phase * 4);
-    } else {
-      storm.isShrinking = false;
-      storm.currentCenterX = storm.targetCenterX;
-      storm.currentCenterZ = storm.targetCenterZ;
-      storm.currentRadius = storm.targetRadius;
-      storm.phase++;
-      storm.damagePerSecond = Math.min(12, storm.phase * 2);
-      storm.phaseTimer = Math.max(16, 32 - storm.phase * 4);
-
-      const nextRadius = Math.max(12, storm.currentRadius * 0.56);
-      const shiftRange = (storm.currentRadius - nextRadius) * 0.5;
-      const angle = (storm.phase * 2.1) % (Math.PI * 2);
-      storm.targetCenterX = storm.currentCenterX + Math.cos(angle) * shiftRange;
-      storm.targetCenterZ = storm.currentCenterZ + Math.sin(angle) * shiftRange;
-      storm.targetRadius = nextRadius;
-    }
-  }
-
-  if (storm.isShrinking) {
-    const shrinkSpeed = dt * 0.045;
-    storm.currentCenterX += (storm.targetCenterX - storm.currentCenterX) * shrinkSpeed;
-    storm.currentCenterZ += (storm.targetCenterZ - storm.currentCenterZ) * shrinkSpeed;
-    storm.currentRadius += (storm.targetRadius - storm.currentRadius) * shrinkSpeed;
-  }
+  advanceServerStorm(room.storm, dt);
 }
 
 function q2(n) {

@@ -6,9 +6,15 @@ import {
   MatchState,
   PlayerInputPacket,
   PlayerState,
+  WeaponCategory,
+  WeaponRarity,
 } from '../network/schemas';
 import { IslandWorld } from '../world/IslandWorld';
-import { createWeaponStats, WeaponStats } from '../weapons/WeaponDefinitions';
+import {
+  calculateWeaponDamage,
+  createWeaponStats,
+  WeaponStats,
+} from '../weapons/WeaponDefinitions';
 import { CharacterMesh } from './CharacterMesh';
 import { ParticleSystem } from '../systems/ParticleSystem';
 import { SoundManager } from '../audio/SoundManager';
@@ -26,8 +32,18 @@ export interface ShotHitCallback {
   ): void;
 }
 
+interface BurstQueueState {
+  shotsRemaining: number;
+  timer: number;
+  slotIndex: number;
+  category: WeaponCategory;
+  rarity: WeaponRarity;
+  expiresAtMs: number;
+}
+
 export class PlayerController {
   private fireCooldown: Map<string, number> = new Map();
+  private burstQueues: Map<string, BurstQueueState> = new Map();
   private prevFireHeld: Map<string, boolean> = new Map();
   private lastFireTimeMs: Map<string, number> = new Map();
   private footstepTimer: number = 0;
@@ -60,6 +76,7 @@ export class PlayerController {
     if (input.selectSlot >= 0 && input.selectSlot < 5) {
       if (player.activeSlot !== input.selectSlot) {
         player.activeSlot = input.selectSlot;
+        this.burstQueues.delete(player.id);
         player.isReloading = false;
         player.reloadTimer = 0;
         player.isHealing = false;
@@ -72,6 +89,7 @@ export class PlayerController {
     } else if (input.selectSlot === -2 || input.selectSlot === -3) {
       const step = input.selectSlot === -2 ? 1 : -1;
       player.activeSlot = (player.activeSlot + step + 5) % 5;
+      this.burstQueues.delete(player.id);
       player.isReloading = false;
       player.reloadTimer = 0;
       player.isHealing = false;
@@ -286,7 +304,8 @@ export class PlayerController {
   public onLocalWeaponFired?: (
     category: string,
     muzzlePos: THREE.Vector3,
-    hitPoint: THREE.Vector3
+    hitPoint: THREE.Vector3,
+    rarity?: WeaponRarity
   ) => void;
   public onLocalDestructibleDamaged?: (destructibleId: string, damage: number) => void;
   public onLocalStructureFeedback?: (
@@ -414,8 +433,15 @@ export class PlayerController {
     const currentCd = Math.max(0, (this.fireCooldown.get(player.id) || 0) - dt);
     this.fireCooldown.set(player.id, currentCd);
 
+    if (!player.alive) {
+      this.burstQueues.delete(player.id);
+      this.prevFireHeld.set(player.id, wantsFire);
+      return;
+    }
+
     const slot = player.inventory[player.activeSlot];
     if (!slot) {
+      this.burstQueues.delete(player.id);
       this.prevFireHeld.set(player.id, wantsFire);
       return;
     }
@@ -423,6 +449,7 @@ export class PlayerController {
     const stats = createWeaponStats(slot.category, slot.rarity);
 
     if (player.isReloading) {
+      this.burstQueues.delete(player.id);
       player.reloadTimer -= dt;
       if (player.reloadTimer <= 0) {
         player.isReloading = false;
@@ -444,6 +471,7 @@ export class PlayerController {
       slot.clipAmmo < slot.maxClipAmmo &&
       this.getReserveAmmo(player, stats.ammoType) > 0
     ) {
+      this.burstQueues.delete(player.id);
       player.isReloading = true;
       player.reloadDuration = stats.reloadTime;
       player.reloadTimer = stats.reloadTime;
@@ -488,6 +516,53 @@ export class PlayerController {
       return;
     }
 
+    const burstQueue = this.burstQueues.get(player.id);
+    if (burstQueue) {
+      const queueStillValid =
+        performance.now() <= burstQueue.expiresAtMs &&
+        stats.fireMode === 'burst' &&
+        burstQueue.slotIndex === player.activeSlot &&
+        burstQueue.category === slot.category &&
+        burstQueue.rarity === slot.rarity;
+      if (!queueStillValid) {
+        this.burstQueues.delete(player.id);
+      } else {
+        burstQueue.timer -= dt;
+        this.prevFireHeld.set(player.id, wantsFire);
+        if (burstQueue.timer > 0) return;
+
+        if (slot.clipAmmo <= 0) {
+          this.burstQueues.delete(player.id);
+          this.startReloadIfClipEmpty(player, stats, sound);
+          return;
+        }
+
+        slot.clipAmmo = Math.max(0, slot.clipAmmo - 1);
+        this.lastFireTimeMs.set(player.id, performance.now());
+        this.executeWeaponShot(
+          player,
+          stats,
+          state,
+          world,
+          meshes,
+          particles,
+          sound,
+          aimRay,
+          onPlayerHit,
+          onCrosshairHitmarker,
+          onRecoilKick
+        );
+        burstQueue.shotsRemaining -= 1;
+        if (burstQueue.shotsRemaining <= 0 || slot.clipAmmo <= 0) {
+          this.burstQueues.delete(player.id);
+        } else {
+          burstQueue.timer = stats.burstIntervalSeconds ?? 0.075;
+        }
+        this.startReloadIfClipEmpty(player, stats, sound);
+        return;
+      }
+    }
+
     const wasHeld = this.prevFireHeld.get(player.id) || false;
     this.prevFireHeld.set(player.id, wantsFire);
     const triggerAllowed = stats.isAutomatic ? wantsFire : wantsFire && !wasHeld;
@@ -515,7 +590,55 @@ export class PlayerController {
 
     this.lastFireTimeMs.set(player.id, nowMs);
     this.fireCooldown.set(player.id, 1 / stats.fireRate);
+    this.executeWeaponShot(
+      player,
+      stats,
+      state,
+      world,
+      meshes,
+      particles,
+      sound,
+      aimRay,
+      onPlayerHit,
+      onCrosshairHitmarker,
+      onRecoilKick
+    );
 
+    if (
+      stats.fireMode === 'burst' &&
+      (stats.burstCount ?? 1) > 1 &&
+      slot.clipAmmo > 0
+    ) {
+      this.burstQueues.set(player.id, {
+        shotsRemaining: (stats.burstCount ?? 1) - 1,
+        timer: stats.burstIntervalSeconds ?? 0.075,
+        slotIndex: player.activeSlot,
+        category: slot.category,
+        rarity: slot.rarity,
+        expiresAtMs: nowMs + 1000,
+      });
+    }
+    this.startReloadIfClipEmpty(player, stats, sound);
+  }
+
+  private executeWeaponShot(
+    player: PlayerState,
+    stats: WeaponStats,
+    state: MatchState,
+    world: IslandWorld,
+    meshes: Map<string, CharacterMesh>,
+    particles: ParticleSystem,
+    sound: SoundManager,
+    aimRay: { origin: THREE.Vector3; direction: THREE.Vector3 },
+    onPlayerHit: ShotHitCallback,
+    onCrosshairHitmarker?: (isHeadshot: boolean, isShield: boolean) => void,
+    onRecoilKick?: (
+      pitchKick: number,
+      yawKick: number,
+      category?: string,
+      isAiming?: boolean
+    ) => void
+  ): void {
     const shooterMesh = meshes.get(player.id);
     shooterMesh?.triggerAttackAnimation(stats.category !== 'harvester');
 
@@ -585,22 +708,24 @@ export class PlayerController {
       );
 
       if (stats.category !== 'harvester') {
-        particles.spawnBulletTracer(
+        particles.spawnBulletTracer(muzzlePos, hitResult.point, stats.tracerColor);
+      }
+      if (!player.isBot && p === 0) {
+        // Includes harvester swings: online server cadence/pellet credits
+        // are keyed to this event, while remote clients use it for the
+        // swing animation and distance-attenuated sound.
+        this.onLocalWeaponFired?.(
+          stats.category,
           muzzlePos,
           hitResult.point,
-          stats.category === 'sniper' ? 0x38bdf8 : 0xfef08a
+          stats.rarity
         );
-        if (!player.isBot && p === 0) {
-          this.onLocalWeaponFired?.(stats.category, muzzlePos, hitResult.point);
-        }
       }
 
       if (hitResult.hitPlayer) {
         registeredAnyHit = true;
         const isHead = hitResult.isHeadshot;
-        const dmg = Math.round(
-          stats.baseDamage * (isHead ? stats.headshotMultiplier : 1.0)
-        );
+        const dmg = calculateWeaponDamage(stats, isHead);
         const hadShield = hitResult.hitPlayer.shield > 0;
         if (isHead) registeredHeadshot = true;
         if (hadShield) registeredShield = true;
@@ -671,17 +796,6 @@ export class PlayerController {
       if (!player.isBot && onCrosshairHitmarker) {
         onCrosshairHitmarker(registeredHeadshot, registeredShield);
       }
-    }
-
-    if (
-      stats.ammoType !== 'none' &&
-      slot.clipAmmo <= 0 &&
-      this.getReserveAmmo(player, stats.ammoType) > 0
-    ) {
-      player.isReloading = true;
-      player.reloadDuration = stats.reloadTime;
-      player.reloadTimer = stats.reloadTime;
-      if (!player.isBot) sound.playReload(stats.category);
     }
   }
 
@@ -754,6 +868,27 @@ export class PlayerController {
       hitPlayer,
       isHeadshot,
     };
+  }
+
+  private startReloadIfClipEmpty(
+    player: PlayerState,
+    stats: WeaponStats,
+    sound: SoundManager
+  ): void {
+    const slot = player.inventory[player.activeSlot];
+    if (
+      !slot ||
+      stats.ammoType === 'none' ||
+      slot.clipAmmo > 0 ||
+      this.getReserveAmmo(player, stats.ammoType) <= 0
+    ) {
+      return;
+    }
+    this.burstQueues.delete(player.id);
+    player.isReloading = true;
+    player.reloadDuration = stats.reloadTime;
+    player.reloadTimer = stats.reloadTime;
+    if (!player.isBot) sound.playReload(stats.category);
   }
 
   private getReserveAmmo(player: PlayerState, type: AmmoType): number {

@@ -827,13 +827,22 @@ test('lobby browser: authoritative create/discover/join/start, passwords, host t
     assert.equal(opponents.length, 2);
 
     sendJson(wsA, {
+      type: 'fire_weapon',
+      category: 'sniper',
+      rarity: 'legendary',
+      muzzlePos: { x: 0, y: 11, z: 0 },
+      hitPoint: { x: 0, y: 11.7, z: 0 },
+    });
+    sendJson(wsA, {
       type: 'combat_hit',
       hitId: 'duo-friendly-fire',
       targetId: teammate.id,
       damage: 240,
-      isHeadshot: false,
-      weaponName: 'Test Rifle',
-      hitPoint: { x: 0, y: 10, z: 0 },
+      isHeadshot: true,
+      weaponName: 'Legendary Rail Sniper',
+      weaponCategory: 'sniper',
+      weaponRarity: 'legendary',
+      hitPoint: { x: 0, y: 11.7, z: 0 },
     });
     await expectNoMessage(wsA, (msg) => msg.type === 'server_hit', 300);
 
@@ -845,13 +854,22 @@ test('lobby browser: authoritative create/discover/join/start, passwords, host t
         'duo opponent elimination'
       );
       sendJson(wsA, {
+        type: 'fire_weapon',
+        category: 'sniper',
+        rarity: 'legendary',
+        muzzlePos: { x: 0, y: 11, z: 0 },
+        hitPoint: { x: 0, y: 11.7, z: 0 },
+      });
+      sendJson(wsA, {
         type: 'combat_hit',
         hitId: `duo-kill-${index}`,
         targetId: opponent.id,
         damage: 240,
-        isHeadshot: false,
-        weaponName: 'Test Rifle',
-        hitPoint: { x: 0, y: 10, z: 0 },
+        isHeadshot: true,
+        weaponName: 'Legendary Rail Sniper',
+        weaponCategory: 'sniper',
+        weaponRarity: 'legendary',
+        hitPoint: { x: 0, y: 11.7, z: 0 },
       });
       await hitPromise;
     }

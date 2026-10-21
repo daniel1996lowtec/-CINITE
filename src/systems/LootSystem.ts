@@ -12,6 +12,7 @@ import {
 import {
   createWeaponMesh,
   createWeaponStats,
+  FIREARM_CATEGORIES,
   RARITY_COLORS,
 } from '../weapons/WeaponDefinitions';
 import { IslandWorld } from '../world/IslandWorld';
@@ -155,12 +156,12 @@ export class LootSystem {
     });
 
     // 2. Spawn Ground Weapons, Consumables, Ammo & Materials at Loot Points (deterministic IDs for multiplayer sync)
+    // Duplicate consumable entries preserve roughly the pre-Upgrade-2.0
+    // healing frequency after expanding five firearm archetypes to nine.
     const weaponPool: WeaponCategory[] = [
-      'pistol',
-      'assault_rifle',
-      'shotgun',
-      'smg',
-      'sniper',
+      ...FIREARM_CATEGORIES,
+      'shield_potion',
+      'medkit',
       'shield_potion',
       'medkit',
     ];
@@ -398,7 +399,17 @@ export class LootSystem {
       const ring = new THREE.Mesh(this.lootRingGeo, ringMat);
       ring.rotation.x = -Math.PI / 2;
       ring.position.y = 0.05;
-      if (item.isLegendaryTowerLoot) ring.scale.setScalar(1.65);
+      ring.scale.setScalar(
+        item.isLegendaryTowerLoot
+          ? 1.65
+          : item.rarity === 'legendary'
+            ? 1.42
+            : item.rarity === 'epic'
+              ? 1.24
+              : item.rarity === 'rare'
+                ? 1.1
+                : 1
+      );
       group.add(ring);
 
       if (item.itemType === 'weapon' || item.itemType === 'consumable') {
@@ -425,6 +436,7 @@ export class LootSystem {
               side: THREE.DoubleSide,
               depthWrite: false,
               blending: THREE.AdditiveBlending,
+              fog: false,
             });
           }
           beamGeo = this.towerBeamGeo;
@@ -439,11 +451,11 @@ export class LootSystem {
           if (!beamMat) {
             const beamOpacity =
               item.rarity === 'legendary'
-                ? 0.34
+                ? 0.4
                 : item.rarity === 'epic'
-                  ? 0.26
+                  ? 0.3
                   : item.rarity === 'rare'
-                    ? 0.2
+                    ? 0.21
                     : 0.13;
             beamMat = new THREE.MeshBasicMaterial({
               color: rarityInfo.int,
@@ -451,6 +463,8 @@ export class LootSystem {
               opacity: beamOpacity,
               side: THREE.DoubleSide,
               depthWrite: false,
+              blending: THREE.AdditiveBlending,
+              fog: false,
             });
             this.beamMatCache.set(item.rarity, beamMat);
           }
@@ -731,13 +745,7 @@ export class LootSystem {
 
       const rarities: WeaponRarity[] = ['uncommon', 'rare', 'epic', 'legendary'];
       const chosenRarity = rarities[Math.floor(Math.random() * rarities.length)];
-      const weapons: WeaponCategory[] = [
-        'pistol',
-        'assault_rifle',
-        'shotgun',
-        'smg',
-        'sniper',
-      ];
+      const weapons: readonly WeaponCategory[] = FIREARM_CATEGORIES;
       const chosenWeapon = weapons[Math.floor(Math.random() * weapons.length)];
       const stats = createWeaponStats(chosenWeapon, chosenRarity);
       const rarityInfo = RARITY_COLORS[chosenRarity];

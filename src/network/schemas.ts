@@ -7,8 +7,12 @@ export type WeaponRarity = 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary'
 export type WeaponCategory =
   | 'harvester'
   | 'pistol'
+  | 'heavy_pistol'
   | 'assault_rifle'
+  | 'burst_rifle'
+  | 'dmr'
   | 'shotgun'
+  | 'tactical_shotgun'
   | 'smg'
   | 'sniper'
   | 'medkit'
@@ -201,6 +205,12 @@ export interface StormState {
   phaseTimer: number;
   isShrinking: boolean;
   damagePerSecond: number;
+  /** Offline interpolation bookkeeping; online clients receive authoritative current values. */
+  shrinkFromCenterX?: number;
+  shrinkFromCenterZ?: number;
+  shrinkFromRadius?: number;
+  shrinkElapsed?: number;
+  shrinkDuration?: number;
 }
 
 export interface MatchState {
@@ -432,7 +442,7 @@ export interface GameSettings {
   touchSensitivity?: number;
   audioVolume: number;
   sfxVolume?: number;
-  graphicsQuality: 'low' | 'medium' | 'high';
+  graphicsQuality: 'auto' | 'low' | 'medium' | 'high';
   timeOfDay: TimeOfDayPreset;
   showFps: boolean;
 }

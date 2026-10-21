@@ -94,10 +94,13 @@ export class ThirdPersonCamera {
     const adsScale = isAiming ? 0.72 : 1.0;
     let patternYaw = (Math.random() - 0.5) * 2 * yawKick;
 
-    if (category === 'assault_rifle') {
+    if (category === 'assault_rifle' || category === 'burst_rifle') {
       const wave = Math.sin(this.shotStreak * 0.85) * yawKick * 0.9;
       patternYaw = wave + (Math.random() - 0.5) * yawKick * 0.45;
-      this.recoilFovOffset = Math.min(2.2, this.recoilFovOffset + 0.45);
+      this.recoilFovOffset = Math.min(
+        2.2,
+        this.recoilFovOffset + (category === 'burst_rifle' ? 0.32 : 0.45)
+      );
     } else if (category === 'smg') {
       const jitter = (this.shotStreak % 2 === 0 ? 1 : -1) * yawKick * 0.65;
       patternYaw = jitter + (Math.random() - 0.5) * yawKick * 0.85;
@@ -105,9 +108,18 @@ export class ThirdPersonCamera {
     } else if (category === 'shotgun') {
       this.recoilFovOffset = Math.min(4.5, this.recoilFovOffset + 2.4);
       this.addScreenShake(0.14);
+    } else if (category === 'tactical_shotgun') {
+      this.recoilFovOffset = Math.min(3.8, this.recoilFovOffset + 1.7);
+      this.addScreenShake(0.1);
     } else if (category === 'sniper') {
       this.recoilFovOffset = Math.min(5.0, this.recoilFovOffset + 3.0);
       this.addScreenShake(0.16);
+    } else if (category === 'dmr') {
+      this.recoilFovOffset = Math.min(3.6, this.recoilFovOffset + 1.8);
+      this.addScreenShake(0.09);
+    } else if (category === 'heavy_pistol') {
+      this.recoilFovOffset = Math.min(2.8, this.recoilFovOffset + 1.25);
+      this.addScreenShake(0.07);
     } else if (category === 'pistol') {
       this.recoilFovOffset = Math.min(1.5, this.recoilFovOffset + 0.5);
     }
