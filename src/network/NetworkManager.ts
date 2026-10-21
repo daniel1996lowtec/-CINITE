@@ -3,7 +3,11 @@ import {
   BuildMaterialType,
   BuildPieceType,
   InventorySlot,
+  BotDifficulty,
+  CreateLobbyRequest,
   LobbyConfig,
+  LobbyStartCondition,
+  LobbySummary,
   LootItemState,
   MatchState,
   MultiplayerRoomMode,
@@ -16,6 +20,7 @@ import {
   SessionMode,
   StarterLoadoutType,
   StormState,
+  TeamMode,
   WeaponCategory,
   WeaponRarity,
   isHumanOnlySessionMode,
@@ -99,6 +104,64 @@ function normalizeRoomModeValue(
   return 'online_ai_fill';
 }
 
+function normalizeTeamMode(raw: unknown): TeamMode {
+  return raw === 'duo' || raw === 'squad' ? raw : 'solo';
+}
+
+function normalizeStartCondition(raw: unknown): LobbyStartCondition {
+  return raw === 'host_start' || raw === 'fill_lobby' ? raw : 'all_ready';
+}
+
+function normalizeBotDifficulty(raw: unknown): BotDifficulty {
+  return raw === 'easy' || raw === 'hard' ? raw : 'medium';
+}
+
+export function normalizeLobbySummary(
+  data: Record<string, unknown>
+): LobbySummary {
+  const snapshot = normalizeRoomSnapshot(data, String(data.roomCode || 'CICRAFT-1'));
+  const currentPlayers = Number(data.currentPlayers ?? snapshot.connectedHumans);
+  return {
+    id: snapshot.roomCode,
+    roomId: snapshot.roomCode,
+    roomCode: snapshot.roomCode,
+    name: snapshot.name,
+    lobbyName: snapshot.lobbyName,
+    hostName: snapshot.hostName,
+    hostPlayerId: snapshot.hostPlayerId,
+    mode: snapshot.mode,
+    roomMode: snapshot.roomMode,
+    visibility: snapshot.visibility,
+    isPrivate: snapshot.isPrivate,
+    hasPassword: snapshot.hasPassword,
+    phase: snapshot.phase,
+    status: snapshot.status,
+    matchStatus: snapshot.matchStatus,
+    humanOnly: snapshot.humanOnly,
+    aiFillEnabled: snapshot.aiFillEnabled,
+    botCount: snapshot.botCount,
+    botDifficulty: snapshot.botDifficulty,
+    currentPlayers,
+    humanCount: currentPlayers,
+    connectedHumans: snapshot.connectedHumans,
+    readyHumans: snapshot.readyHumans,
+    maxPlayers: snapshot.maxPlayers,
+    availableSlots: snapshot.availableSlots,
+    minPlayers: snapshot.minPlayers,
+    mapId: snapshot.mapId,
+    mapName: snapshot.mapName,
+    teamMode: snapshot.teamMode,
+    gameMode: snapshot.gameMode,
+    startCondition: snapshot.startCondition,
+    allowLateJoin: snapshot.allowLateJoin,
+    canJoin: Boolean(data.canJoin ?? snapshot.phase === 'lobby'),
+    joinBlockReason: String(data.joinBlockReason || ''),
+    createdAt: snapshot.createdAt,
+    matchStartedAt: Number(data.matchStartedAt || 0),
+    pingMs: typeof data.pingMs === 'number' ? data.pingMs : null,
+  };
+}
+
 function normalizeRoomSnapshot(
   data: Record<string, unknown>,
   fallbackCode: string,
@@ -132,6 +195,9 @@ function normalizeRoomSnapshot(
             isReady: Boolean(player.isReady),
             isParticipant: Boolean(player.isParticipant),
             isConnected: Boolean(player.isConnected),
+            isHost: Boolean(player.isHost),
+            teamId: String(player.teamId || ''),
+            teamIndex: Number(player.teamIndex ?? -1),
             alive: Boolean(player.alive ?? true),
           })
         )
@@ -146,23 +212,59 @@ function normalizeRoomSnapshot(
       players.filter((player) => player.isConnected && player.isReady).length
   );
 
+  const visibility: RoomSnapshot['visibility'] =
+    data.visibility === 'public' || data.visibility === 'private'
+      ? data.visibility
+      : mode === 'human_only_public'
+        ? 'public'
+        : mode === 'human_only_private'
+          ? 'private'
+          : 'room_code';
+  const maxPlayers = Math.max(1, Number(data.maxPlayers || 20));
+  const selfPlayerId = data.selfPlayerId ? String(data.selfPlayerId) : undefined;
+  const hostPlayerId = data.hostPlayerId ? String(data.hostPlayerId) : null;
+  const rawStatus = String(data.status || '');
+  const status: RoomSnapshot['status'] =
+    rawStatus === 'waiting' ||
+    rawStatus === 'starting' ||
+    rawStatus === 'in_game' ||
+    rawStatus === 'full' ||
+    rawStatus === 'ended' ||
+    rawStatus === 'closed'
+      ? rawStatus
+      : phase === 'countdown'
+        ? 'starting'
+        : phase === 'active'
+          ? 'in_game'
+          : phase === 'ended'
+            ? 'ended'
+            : connectedHumans >= maxPlayers
+              ? 'full'
+              : 'waiting';
+
   return {
+    id: roomCode,
+    roomId: roomCode,
     roomCode,
+    name: String(data.name || data.lobbyName || `${roomCode} Lobby`),
+    lobbyName: String(data.lobbyName || data.name || `${roomCode} Lobby`),
+    hostName: String(data.hostName || 'Open Room'),
+    hostPlayerId,
+    isSelfHost: Boolean(selfPlayerId && hostPlayerId === selfPlayerId),
     mode,
     roomMode: mode,
-    visibility:
-      data.visibility === 'public' || data.visibility === 'private'
-        ? data.visibility
-        : mode === 'human_only_public'
-          ? 'public'
-          : mode === 'human_only_private'
-            ? 'private'
-            : 'room_code',
+    visibility,
+    isPrivate: visibility === 'private',
+    hasPassword: Boolean(data.hasPassword),
+    isListed: Boolean(data.isListed),
+    isLobbyManaged: Boolean(data.isLobbyManaged ?? isHumanOnly),
     phase,
+    status,
     matchStatus: phase,
     humanOnly: Boolean(data.humanOnly ?? isHumanOnly),
     aiFillEnabled: Boolean(data.aiFillEnabled ?? mode === 'online_ai_fill'),
-    botCount: Math.max(0, Number(data.botCount || 0)),
+    botCount: isHumanOnly ? 0 : Math.max(0, Number(data.botCount || 0)),
+    botDifficulty: normalizeBotDifficulty(data.botDifficulty),
     connectedPlayers: connectedHumans,
     connectedHumans,
     authenticatedHumans: Number(
@@ -177,15 +279,33 @@ function normalizeRoomSnapshot(
     aliveHumans: Number(
       data.aliveHumans ?? players.filter((player) => player.alive).length
     ),
-    maxPlayers: Math.max(1, Number(data.maxPlayers || 20)),
+    maxPlayers,
+    availableSlots: Math.max(
+      0,
+      Number(data.availableSlots ?? maxPlayers - connectedHumans)
+    ),
     minPlayers: Math.max(1, Number(data.minPlayers || (isHumanOnly ? 2 : 1))),
+    mapId: 'ci_island',
+    mapName: String(data.mapName || 'CI Island'),
+    teamMode: normalizeTeamMode(data.teamMode ?? data.gameMode),
+    gameMode: normalizeTeamMode(data.teamMode ?? data.gameMode),
+    startCondition: normalizeStartCondition(data.startCondition),
+    allowLateJoin: Boolean(data.allowLateJoin),
+    createdAt: Number(data.createdAt || 0),
     matchParticipantCount: Number(data.matchParticipantCount || 0),
     countdownEndsAt: Number(data.countdownEndsAt || 0),
     canStart: Boolean(data.canStart),
+    canHostStart: Boolean(data.canHostStart ?? data.canStart),
     winnerId: data.winnerId ? String(data.winnerId) : null,
+    winnerIds: Array.isArray(data.winnerIds)
+      ? data.winnerIds.map((winnerId) => String(winnerId))
+      : data.winnerId
+        ? [String(data.winnerId)]
+        : [],
+    winnerTeamId: String(data.winnerTeamId || ''),
     winnerName: String(data.winnerName || ''),
     stormPhase: Number(data.stormPhase || 1),
-    selfPlayerId: data.selfPlayerId ? String(data.selfPlayerId) : undefined,
+    selfPlayerId,
     players,
   };
 }
@@ -205,6 +325,9 @@ export class NetworkManager {
   private ws: WebSocket | null = null;
   private activeRoomConfig: LobbyConfig | null = null;
   private activeLocalPlayer: PlayerState | null = null;
+  private pendingCreateLobby: CreateLobbyRequest | null = null;
+  private pendingConnectionPurpose: 'match' | 'lobby' = 'match';
+  private pendingResetPlayer: boolean = false;
   private wantsRoomConnection: boolean = false;
   public sessionToken: string = '';
   public accountId: string = '';
@@ -252,6 +375,10 @@ export class NetworkManager {
     spawnedDrops?: LootItemState[],
     swappedDrop?: LootItemState
   ) => void;
+  public onAuthoritativeLootCollected?: (
+    item: LootItemState,
+    swappedDrop?: LootItemState
+  ) => void;
   public onRoomLootSync?: (
     collectedIds: string[],
     spawnedItems: LootItemState[]
@@ -274,11 +401,23 @@ export class NetworkManager {
   ) => void;
   public onJoinRejected?: (code: string, reason: string) => void;
   public onRoomActionRejected?: (reason: string) => void;
+  public onLobbyCreated?: (snapshot: RoomSnapshot) => void;
+  public onLobbyCreateRejected?: (code: string, reason: string) => void;
+  public onRoomClosed?: (snapshot: RoomSnapshot, reason: string) => void;
+  public onHostChanged?: (snapshot: RoomSnapshot) => void;
 
   public get isHumanOnlyRoom(): boolean {
     return (
       this.roomMode === 'human_only_public' ||
       this.roomMode === 'human_only_private'
+    );
+  }
+
+  public get isLobbyManagedRoom(): boolean {
+    return Boolean(
+      this.roomSnapshot?.isLobbyManaged ||
+        this.isHumanOnlyRoom ||
+        this.activeRoomConfig?.createLobby
     );
   }
 
@@ -358,6 +497,29 @@ export class NetworkManager {
       };
     } catch {
       return { ...fallback, ok: false, exists: false };
+    }
+  }
+
+  public async fetchLobbyList(): Promise<{
+    ok: boolean;
+    lobbies: LobbySummary[];
+    serverTime: number;
+  }> {
+    if (typeof fetch !== 'function') return { ok: false, lobbies: [], serverTime: 0 };
+    try {
+      const res = await fetch(`${this.resolveHttpBaseUrl()}/api/lobbies`);
+      if (!res.ok) throw new Error('Lobby list failed');
+      const data = (await res.json()) as Record<string, unknown>;
+      const rawLobbies = Array.isArray(data.lobbies) ? data.lobbies : [];
+      return {
+        ok: Boolean(data.ok),
+        lobbies: rawLobbies.map((lobby) =>
+          normalizeLobbySummary(lobby as Record<string, unknown>)
+        ),
+        serverTime: Number(data.serverTime || 0),
+      };
+    } catch {
+      return { ok: false, lobbies: [], serverTime: 0 };
     }
   }
 
@@ -583,18 +745,24 @@ export class NetworkManager {
   }
 
   /**
-   * Join a human-only room in its lobby phase without starting the 3D match.
-   * The server alone emits match_started once its authenticated ready check
+   * Create or join a lobby-managed room without starting the 3D match. The
+   * server alone emits match_started once its authenticated ready/host check
    * passes; GameEngine then calls initializeStartedMatch().
    */
   public connectToLobbyRoom(config: LobbyConfig): PlayerState {
-    const requestedCode = (config.roomCode || 'CICRAFT-1').trim().toUpperCase();
+    const requestedCode = (
+      config.createLobby ? 'NEW-LOBBY' : config.roomCode || 'CICRAFT-1'
+    )
+      .trim()
+      .toUpperCase();
     const requestedMode = roomModeForSessionMode(config.mode);
     if (
+      !config.createLobby &&
       this.wantsRoomConnection &&
       this.ws &&
       this.roomCode === requestedCode &&
       this.roomMode === requestedMode &&
+      this.activeRoomConfig?.roomPassword === config.roomPassword &&
       this.activeLocalPlayer
     ) {
       this.activeRoomConfig = config;
@@ -610,6 +778,7 @@ export class NetworkManager {
     this.serverPlayerId = '';
     this.lastJoinRejection = null;
     this.activeRoomConfig = config;
+    this.pendingCreateLobby = config.createLobby || null;
 
     const localPlayer = this.createLocalPlayerState(config, 0, 10, 0);
     localPlayer.isReady = false;
@@ -648,12 +817,21 @@ export class NetworkManager {
     const localPlayer = this.createLocalPlayerState(config, spawnX, spawnY, spawnZ);
     localPlayer.isReady = true;
     localPlayer.isParticipant = true;
+    const selfSummary = previousSnapshot?.players.find(
+      (player) => player.id === previousServerPlayerId
+    );
+    localPlayer.isHost = Boolean(selfSummary?.isHost || previousSnapshot?.isSelfHost);
+    localPlayer.teamId = selfSummary?.teamId || '';
+    localPlayer.teamIndex = selfSummary?.teamIndex ?? -1;
     this.activeLocalPlayer = localPlayer;
     this.state.players.set(this.localPlayerId, localPlayer);
 
     if (previousSnapshot) {
-      this.state.totalParticipants =
+      const humanParticipants =
         previousSnapshot.matchParticipantCount || previousSnapshot.connectedHumans || 1;
+      this.state.totalParticipants = previousSnapshot.humanOnly
+        ? humanParticipants
+        : humanParticipants + Math.max(0, previousSnapshot.botCount || 0);
       this.state.aliveCount =
         previousSnapshot.aliveHumans || this.state.totalParticipants;
     }
@@ -726,6 +904,48 @@ export class NetworkManager {
     }
   }
 
+  private sendJoinRoomPacket(): void {
+    const config = this.activeRoomConfig;
+    const localPlayer = this.activeLocalPlayer;
+    if (!config || !localPlayer) return;
+    this.sendPacket({
+      type: 'join_room',
+      roomCode: this.roomCode,
+      roomMode: this.roomMode,
+      purpose: this.pendingConnectionPurpose,
+      joinIntent:
+        this.pendingConnectionPurpose === 'lobby' ? 'join_existing' : 'join_or_create',
+      password: config.roomPassword || config.createLobby?.password || undefined,
+      sessionToken: this.sessionToken,
+      accountId: this.accountId || undefined,
+      accountToken: this.accountToken || undefined,
+      playerName: localPlayer.name,
+      starterLoadout: config.starterLoadout,
+      position: localPlayer.position,
+      isGliding: localPlayer.isGliding,
+      outfitId: config.cosmetics?.outfitId,
+      skinColor: localPlayer.skinColor,
+      accentColor: localPlayer.accentColor,
+      backAccessory: localPlayer.backAccessory || 'jump_pack',
+      resetPlayer: this.pendingResetPlayer,
+    });
+  }
+
+  private sendCreateLobbyPacket(): void {
+    const config = this.activeRoomConfig;
+    const createLobby = this.pendingCreateLobby;
+    const localPlayer = this.activeLocalPlayer;
+    if (!config || !createLobby || !localPlayer) return;
+    this.sendPacket({
+      type: 'create_lobby',
+      requestId: `create_${Date.now()}`,
+      accountId: this.accountId || undefined,
+      accountToken: this.accountToken || undefined,
+      playerName: localPlayer.name,
+      config: createLobby,
+    });
+  }
+
   public connectToMultiplayerRoom(
     config: LobbyConfig,
     localPlayer: PlayerState,
@@ -737,6 +957,14 @@ export class NetworkManager {
     this.activeRoomConfig = config;
     this.activeLocalPlayer = localPlayer;
     this.roomMode = roomModeForSessionMode(config.mode);
+    this.pendingConnectionPurpose = purpose;
+    this.pendingResetPlayer = resetPlayer;
+    if (purpose === 'match') this.pendingCreateLobby = null;
+    else if (config.createLobby && this.roomCode === 'NEW-LOBBY') {
+      this.pendingCreateLobby = config.createLobby;
+    } else if (purpose === 'lobby') {
+      this.pendingCreateLobby = null;
+    }
 
     const wsUrl = this.resolveWebSocketUrl();
 
@@ -760,24 +988,8 @@ export class NetworkManager {
           'connected',
           this.connectedHumanCount
         );
-        this.sendPacket({
-          type: 'join_room',
-          roomCode: this.roomCode,
-          roomMode: this.roomMode,
-          purpose,
-          sessionToken: this.sessionToken,
-          accountId: this.accountId || undefined,
-          accountToken: this.accountToken || undefined,
-          playerName: localPlayer.name,
-          starterLoadout: config.starterLoadout,
-          position: localPlayer.position,
-          isGliding: localPlayer.isGliding,
-          outfitId: config.cosmetics?.outfitId,
-          skinColor: localPlayer.skinColor,
-          accentColor: localPlayer.accentColor,
-          backAccessory: localPlayer.backAccessory || 'jump_pack',
-          resetPlayer,
-        });
+        if (this.pendingCreateLobby) this.sendCreateLobbyPacket();
+        else this.sendJoinRoomPacket();
       };
 
       this.ws.onmessage = (event) => {
@@ -891,6 +1103,7 @@ export class NetworkManager {
     this.roomSnapshot = null;
     this.serverPlayerId = '';
     this.activeLocalPlayer = null;
+    this.pendingCreateLobby = null;
     this.onRoomSnapshot?.(null);
     this.onConnectionStatusChange?.('🚪 LEFT ROOM', false, 'idle', 0);
 
@@ -920,8 +1133,85 @@ export class NetworkManager {
     this.sendPacket({ type: 'request_match_start' });
   }
 
+  public closeRoom(): void {
+    if (!this.isOnlineRoom || !this.roomConnected) return;
+    this.sendPacket({ type: 'close_room' });
+  }
+
   private handleServerMessage(msg: Record<string, unknown>): void {
     switch (msg.type) {
+      case 'lobby_created': {
+        const snapshot = normalizeRoomSnapshot(msg, this.roomCode, []);
+        const createdPassword = this.pendingCreateLobby?.password;
+        this.roomSnapshot = snapshot;
+        this.roomMode = snapshot.mode;
+        this.roomCode = snapshot.roomCode;
+        if (this.activeRoomConfig) {
+          const { createLobby: _createdLobby, ...joinedConfig } = this.activeRoomConfig;
+          this.activeRoomConfig = {
+            ...joinedConfig,
+            roomCode: snapshot.roomCode,
+            roomPassword: createdPassword,
+            botCount: snapshot.humanOnly ? 0 : snapshot.botCount,
+            difficulty: snapshot.botDifficulty,
+            lobbyName: snapshot.name,
+            maxPlayers: snapshot.maxPlayers,
+            mapId: snapshot.mapId,
+            teamMode: snapshot.teamMode,
+            startCondition: snapshot.startCondition,
+            visibility:
+              snapshot.visibility === 'private' ? 'private' : 'public',
+          };
+        }
+        this.pendingCreateLobby = null;
+        this.onLobbyCreated?.(snapshot);
+        this.onRoomSnapshot?.(snapshot);
+        this.sendJoinRoomPacket();
+        break;
+      }
+
+      case 'lobby_create_rejected': {
+        const code = String(msg.code || 'lobby_create_rejected');
+        const reason = String(msg.reason || 'The server rejected this lobby.');
+        this.lastJoinRejection = { code, reason };
+        this.pendingCreateLobby = null;
+        this.wantsRoomConnection = false;
+        this.roomConnected = false;
+        this.connectionState = 'error';
+        this.onLobbyCreateRejected?.(code, reason);
+        this.onJoinRejected?.(code, reason);
+        this.onConnectionStatusChange?.(`🚫 ${reason}`, false, 'error', 0);
+        this.closeSocketOnly();
+        break;
+      }
+
+      case 'host_changed': {
+        const snapshot = normalizeRoomSnapshot(
+          msg,
+          this.roomCode,
+          this.roomSnapshot?.players || []
+        );
+        if (this.serverPlayerId) snapshot.selfPlayerId = this.serverPlayerId;
+        snapshot.isSelfHost = snapshot.hostPlayerId === this.serverPlayerId;
+        this.roomSnapshot = snapshot;
+        this.onHostChanged?.(snapshot);
+        this.onRoomSnapshot?.(snapshot);
+        break;
+      }
+
+      case 'room_closed': {
+        const snapshot = normalizeRoomSnapshot(
+          msg,
+          this.roomCode,
+          this.roomSnapshot?.players || []
+        );
+        const reason = String(msg.reason || 'This lobby has been closed.');
+        this.roomSnapshot = snapshot;
+        this.onRoomClosed?.(snapshot, reason);
+        this.leaveRoom();
+        this.onConnectionStatusChange?.(`🚪 ${reason}`, false, 'idle', 0);
+        break;
+      }
       case 'room_state': {
         const snapshot = normalizeRoomSnapshot(
           msg,
@@ -1008,6 +1298,9 @@ export class NetworkManager {
               localPlayer.isReady = Boolean(rp.isReady);
               localPlayer.isParticipant = Boolean(rp.isParticipant);
               localPlayer.isConnected = Boolean(rp.isConnected ?? true);
+              localPlayer.isHost = Boolean(rp.isHost);
+              localPlayer.teamId = String(rp.teamId || '');
+              localPlayer.teamIndex = Number(rp.teamIndex ?? -1);
             }
             continue;
           }
@@ -1037,6 +1330,9 @@ export class NetworkManager {
               isReady: Boolean(rp.isReady),
               isParticipant: Boolean(rp.isParticipant),
               isConnected: Boolean(rp.isConnected ?? true),
+              isHost: Boolean(rp.isHost),
+              teamId: String(rp.teamId || ''),
+              teamIndex: Number(rp.teamIndex ?? -1),
               alive: Boolean(rp.alive ?? true),
               position: {
                 x: Number(incomingPos.x) || 0,
@@ -1196,6 +1492,9 @@ export class NetworkManager {
             existing.isReady = Boolean(rp.isReady);
             existing.isParticipant = Boolean(rp.isParticipant);
             existing.isConnected = Boolean(rp.isConnected ?? true);
+            existing.isHost = Boolean(rp.isHost);
+            existing.teamId = String(rp.teamId || '');
+            existing.teamIndex = Number(rp.teamIndex ?? -1);
             existing.isAiming = Boolean(rp.isAiming);
             existing.isSprinting = Boolean(rp.isSprinting);
             const wasGrounded = existing.isGrounded;
@@ -1269,6 +1568,7 @@ export class NetworkManager {
 
       case 'ready_rejected':
       case 'match_start_rejected':
+      case 'room_close_rejected':
       case 'bot_rejected': {
         const reason = String(msg.reason || 'Room action rejected by the server.');
         if (msg.roomCode) {
@@ -1304,8 +1604,12 @@ export class NetworkManager {
         this.roomMode = snapshot.mode;
         this.state.phase = 'ACTIVE';
         if (snapshot.matchParticipantCount > 0) {
-          this.state.totalParticipants = snapshot.matchParticipantCount;
-          this.state.aliveCount = snapshot.aliveHumans;
+          this.state.totalParticipants = snapshot.humanOnly
+            ? snapshot.matchParticipantCount
+            : snapshot.matchParticipantCount + snapshot.botCount;
+          this.state.aliveCount = snapshot.humanOnly
+            ? snapshot.aliveHumans
+            : this.state.totalParticipants;
         }
         this.onRoomSnapshot?.(snapshot);
         this.onMatchStarted?.(snapshot);
@@ -1399,7 +1703,15 @@ export class NetworkManager {
       }
 
       case 'loot_collected': {
-        if (String(msg.collectorId || '') === this.serverPlayerId) break;
+        if (String(msg.collectorId || '') === this.serverPlayerId) {
+          if (msg.authoritativeItem && typeof msg.authoritativeItem === 'object') {
+            this.onAuthoritativeLootCollected?.(
+              msg.authoritativeItem as LootItemState,
+              msg.swappedDrop ? (msg.swappedDrop as LootItemState) : undefined
+            );
+          }
+          break;
+        }
         this.onRemoteLootCollected?.(
           String(msg.collectorId || ''),
           String(msg.lootId || ''),
@@ -1659,6 +1971,34 @@ export class NetworkManager {
       health,
       shield,
     });
+  }
+
+  /**
+   * Requests (rather than optimistically performs) a Legendary Tower vault
+   * pickup. Returns false when no live room socket can carry the request.
+   */
+  public sendAuthoritativeLootCollectRequest(
+    item: LootItemState,
+    predictedSwappedDrop?: LootItemState
+  ): boolean {
+    if (
+      !this.isOnlineRoom ||
+      !this.roomConnected ||
+      !this.ws ||
+      this.ws.readyState !== WebSocket.OPEN
+    ) {
+      return false;
+    }
+    this.sendPacket({
+      type: 'collect_loot',
+      authoritative: true,
+      sessionToken: this.sessionToken,
+      lootId: item.id,
+      itemType: item.itemType,
+      position: this.activeLocalPlayer?.position,
+      swappedDrop: predictedSwappedDrop,
+    });
+    return true;
   }
 
   public sendLootCollected(

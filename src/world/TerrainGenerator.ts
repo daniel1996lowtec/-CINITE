@@ -5,6 +5,7 @@ import {
   EXPANSION_LANDMARKS,
   ISLAND_ROAD_SEGMENTS,
   ISLAND_SETTLEMENTS,
+  LEGENDARY_TOWER,
   distancePointToSegment,
   getBuildingFootprint,
   getLandmarkFootprint,
@@ -32,12 +33,12 @@ interface StructureTerrainPad {
 export const ISLAND_POIS: POIDefinition[] = [
   {
     id: 'pipeline_plaza',
-    name: 'Pipeline Plaza',
+    name: 'Legendary Tower',
     x: 0,
     z: 0,
     radius: 42,
     baseHeight: 4.5,
-    color: '#38bdf8',
+    color: '#facc15',
   },
   {
     id: 'docker_docks',
@@ -170,6 +171,14 @@ export class TerrainGenerator {
    * because they intentionally stand over water.
    */
   private readonly structureTerrainPads: StructureTerrainPad[] = [
+    {
+      minX: LEGENDARY_TOWER.x - 19,
+      maxX: LEGENDARY_TOWER.x + 19,
+      minZ: LEGENDARY_TOWER.z - 19,
+      maxZ: LEGENDARY_TOWER.z + 19,
+      height: this.getUnpaddedTerrainHeight(LEGENDARY_TOWER.x, LEGENDARY_TOWER.z),
+      blendWidth: 5.5,
+    },
     ...EXPANSION_BUILDINGS.map((building) => {
       const footprint = getBuildingFootprint(building);
       return {

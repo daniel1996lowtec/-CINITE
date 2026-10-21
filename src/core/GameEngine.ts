@@ -72,6 +72,11 @@ export class GameEngine {
   public onHumanLobbyJoinRejected?: (code: string, reason: string) => void;
   public onHumanRoomActionRejected?: (reason: string) => void;
   public onHumanMatchStarted?: (snapshot: RoomSnapshot) => void;
+  public onLobbyUpdated?: (snapshot: RoomSnapshot | null) => void;
+  public onLobbyJoinRejected?: (code: string, reason: string) => void;
+  public onLobbyActionRejected?: (reason: string) => void;
+  public onLobbyMatchStarted?: (snapshot: RoomSnapshot) => void;
+  public onLobbyClosed?: (snapshot: RoomSnapshot, reason: string) => void;
   /** Notified after held input is cleared so touch UI state can resync. */
   public onTransientInputCleared?: () => void;
 
@@ -103,8 +108,8 @@ export class GameEngine {
     starterLoadout: 'balanced',
   };
 
-  private pendingHumanLobbyConfig: LobbyConfig | null = null;
-  private serverAuthorizedHumanStart: boolean = false;
+  private pendingLobbyConfig: LobbyConfig | null = null;
+  private serverAuthorizedLobbyStart: boolean = false;
   private localEliminationPlacement: number | null = null;
   private localEliminatedByName: string = '';
 
@@ -354,21 +359,32 @@ export class GameEngine {
     };
 
     this.network.onRoomSnapshot = (snapshot) => {
-      if (!snapshot || snapshot.humanOnly) {
+      if (!snapshot || snapshot.isLobbyManaged || snapshot.humanOnly) {
+        this.onLobbyUpdated?.(snapshot);
         this.onHumanLobbyUpdated?.(snapshot);
       }
     };
 
     this.network.onJoinRejected = (code, reason) => {
+      this.pendingLobbyConfig = null;
+      this.serverAuthorizedLobbyStart = false;
+      this.onLobbyJoinRejected?.(code, reason);
       this.onHumanLobbyJoinRejected?.(code, reason);
     };
 
     this.network.onRoomActionRejected = (reason) => {
+      this.onLobbyActionRejected?.(reason);
       this.onHumanRoomActionRejected?.(reason);
     };
 
+    this.network.onRoomClosed = (snapshot, reason) => {
+      this.pendingLobbyConfig = null;
+      this.serverAuthorizedLobbyStart = false;
+      this.onLobbyClosed?.(snapshot, reason);
+    };
+
     this.network.onMatchStarted = (snapshot) => {
-      this.beginServerAuthorizedHumanMatch(snapshot);
+      this.beginServerAuthorizedLobbyMatch(snapshot);
     };
 
     this.network.onMatchEnded = (snapshot, placements) => {
@@ -434,6 +450,24 @@ export class GameEngine {
       );
     };
 
+    this.lootSystem.onServerAuthoritativeLootRequested = (
+      item,
+      predictedSwappedDrop
+    ) => this.network.sendAuthoritativeLootCollectRequest(item, predictedSwappedDrop);
+
+    this.network.onAuthoritativeLootCollected = (item, swappedDrop) => {
+      const lp = this.network.state.players.get(this.network.localPlayerId);
+      if (!lp) return;
+      this.lootSystem.applyAuthoritativeLootCollected(
+        this.network.state,
+        lp,
+        item,
+        this.particles,
+        this.sound,
+        swappedDrop
+      );
+    };
+
     this.network.onRemoteLootCollected = (
       _collectorId,
       lootId,
@@ -465,7 +499,13 @@ export class GameEngine {
       );
     };
 
-    this.network.onLootCollectRejected = (lootId) => {
+    this.network.onLootCollectRejected = (lootId, reason) => {
+      const item = this.network.state.lootItems.get(lootId);
+      if (item?.serverAuthoritative && !/already collected/i.test(reason)) {
+        this.lootSystem.clearAuthoritativeLootPending(lootId);
+        this.hud.showLootToast(reason, '#f87171', false);
+        return;
+      }
       this.lootSystem.removeLootItem(this.network.state, lootId);
     };
 
@@ -652,10 +692,39 @@ export class GameEngine {
         this.recountAliveCombatants();
 
         if (isLocalVictim && localPlayer) {
-          const placement = Math.max(2, state.aliveCount + 1);
-          this.localEliminationPlacement = placement;
           this.localEliminatedByName = ev.attackerName;
-          this.showEndScreen(false, placement, localPlayer, ev.attackerName);
+          const teamMode = this.currentConfig.teamMode || 'solo';
+          if (teamMode !== 'solo' && localPlayer.teamId) {
+            const aliveTeammate = Array.from(state.players.values()).find(
+              (player) =>
+                player.id !== localPlayer.id &&
+                player.alive &&
+                player.teamId === localPlayer.teamId
+            );
+            if (aliveTeammate) {
+              // The local player's result is not final while a teammate is
+              // alive. Spectate that teammate and let the authoritative
+              // team placement arrive with match_ended.
+              this.localEliminationPlacement = null;
+              this.clearTransientInput();
+              if (document.pointerLockElement) document.exitPointerLock();
+              this.spectatedPlayerId = aliveTeammate.id;
+              this.hud.updateSpectatorBanner(aliveTeammate);
+            } else {
+              const aliveTeamCount = new Set(
+                Array.from(state.players.values())
+                  .filter((player) => player.alive)
+                  .map((player) => player.teamId || player.id)
+              ).size;
+              const placement = Math.max(2, aliveTeamCount + 1);
+              this.localEliminationPlacement = placement;
+              this.showEndScreen(false, placement, localPlayer, ev.attackerName);
+            }
+          } else {
+            const placement = Math.max(2, state.aliveCount + 1);
+            this.localEliminationPlacement = placement;
+            this.showEndScreen(false, placement, localPlayer, ev.attackerName);
+          }
         } else if (
           !isHumanOnlySessionMode(this.currentConfig.mode) &&
           state.aliveCount <= 1 &&
@@ -857,18 +926,27 @@ export class GameEngine {
     }
   }
 
-  /** Connect to a server-owned human-only lobby without starting gameplay. */
-  public joinHumanLobby(config: LobbyConfig): void {
-    if (!isHumanOnlySessionMode(config.mode)) return;
+  /** Connect to a server-owned lobby without starting gameplay. */
+  public joinMultiplayerLobby(config: LobbyConfig): void {
+    if (config.mode === 'solo_bots') return;
 
+    const isHumanOnly = isHumanOnlySessionMode(config.mode);
     const lobbyConfig: LobbyConfig = {
       ...config,
-      botCount: 0,
+      botCount: effectiveBotCountForMode(config.mode, config.botCount),
       cosmetics: config.cosmetics || this.progression.cosmetics,
     };
-    this.pendingHumanLobbyConfig = lobbyConfig;
+    if (lobbyConfig.createLobby) {
+      lobbyConfig.createLobby = {
+        ...lobbyConfig.createLobby,
+        humanOnly: isHumanOnly,
+        botCount: isHumanOnly ? 0 : lobbyConfig.botCount,
+        botDifficulty: lobbyConfig.difficulty,
+      };
+    }
+    this.pendingLobbyConfig = lobbyConfig;
     this.currentConfig = lobbyConfig;
-    this.serverAuthorizedHumanStart = false;
+    this.serverAuthorizedLobbyStart = false;
     this.localEliminationPlacement = null;
     this.localEliminatedByName = '';
     this.matchResultRecorded = false;
@@ -882,31 +960,62 @@ export class GameEngine {
     this.network.connectToLobbyRoom(lobbyConfig);
   }
 
-  public setHumanLobbyReady(ready: boolean): void {
+  /** Backward-compatible wrapper for the original human-only entry point. */
+  public joinHumanLobby(config: LobbyConfig): void {
+    if (!isHumanOnlySessionMode(config.mode)) return;
+    this.joinMultiplayerLobby({ ...config, botCount: 0 });
+  }
+
+  public setLobbyReady(ready: boolean): void {
     this.network.setReady(ready);
   }
 
-  public requestHumanMatchStart(): void {
+  public setHumanLobbyReady(ready: boolean): void {
+    this.setLobbyReady(ready);
+  }
+
+  public requestLobbyMatchStart(): void {
     this.network.setReady(true);
     this.network.requestMatchStart();
   }
 
-  public leaveHumanLobby(): void {
-    this.pendingHumanLobbyConfig = null;
-    this.serverAuthorizedHumanStart = false;
+  public requestHumanMatchStart(): void {
+    this.requestLobbyMatchStart();
+  }
+
+  public closeLobby(): void {
+    this.network.closeRoom();
+  }
+
+  public leaveMultiplayerLobby(): void {
+    this.pendingLobbyConfig = null;
+    this.serverAuthorizedLobbyStart = false;
     this.network.leaveRoom();
+    this.onLobbyUpdated?.(null);
     this.onHumanLobbyUpdated?.(null);
   }
 
-  private beginServerAuthorizedHumanMatch(snapshot: RoomSnapshot): void {
-    const pendingConfig = this.pendingHumanLobbyConfig;
-    if (!pendingConfig || !isHumanOnlySessionMode(pendingConfig.mode)) return;
+  public leaveHumanLobby(): void {
+    this.leaveMultiplayerLobby();
+  }
+
+  private beginServerAuthorizedLobbyMatch(snapshot: RoomSnapshot): void {
+    const pendingConfig = this.pendingLobbyConfig;
+    if (!pendingConfig || pendingConfig.mode === 'solo_bots') return;
+
+    const expectsHumanOnly = isHumanOnlySessionMode(pendingConfig.mode);
     if (
-      !snapshot.humanOnly ||
-      snapshot.aiFillEnabled ||
-      snapshot.botCount !== 0 ||
-      snapshot.matchParticipantCount < snapshot.minPlayers
+      !snapshot.isLobbyManaged ||
+      snapshot.matchParticipantCount < snapshot.minPlayers ||
+      (expectsHumanOnly &&
+        (!snapshot.humanOnly || snapshot.aiFillEnabled || snapshot.botCount !== 0)) ||
+      (!expectsHumanOnly && snapshot.humanOnly)
     ) {
+      this.onLobbyActionRejected?.(
+        expectsHumanOnly
+          ? 'The server did not provide a valid human-only match start.'
+          : 'The server did not provide a valid lobby match start.'
+      );
       this.onHumanRoomActionRejected?.(
         'The server did not provide a valid human-only match start.'
       );
@@ -919,15 +1028,30 @@ export class GameEngine {
     );
     if (!localIsParticipant) return;
 
-    this.serverAuthorizedHumanStart = true;
+    this.serverAuthorizedLobbyStart = true;
     this.startMatch({
       ...pendingConfig,
       roomCode: snapshot.roomCode,
-      botCount: 0,
+      // The server snapshot is authoritative for these room settings. In a
+      // human-only room it is always zero; in AI Fill it is the host's
+      // configured client-spawned AI count, kept separate from humans.
+      botCount: expectsHumanOnly ? 0 : snapshot.botCount,
+      difficulty: snapshot.botDifficulty,
+      lobbyName: snapshot.name,
+      maxPlayers: snapshot.maxPlayers,
+      mapId: snapshot.mapId,
+      teamMode: snapshot.teamMode,
+      startCondition: snapshot.startCondition,
+      visibility: snapshot.visibility === 'private' ? 'private' : 'public',
     });
-    this.serverAuthorizedHumanStart = false;
-    this.pendingHumanLobbyConfig = null;
+    this.serverAuthorizedLobbyStart = false;
+    this.pendingLobbyConfig = null;
+    this.onLobbyMatchStarted?.(snapshot);
     this.onHumanMatchStarted?.(snapshot);
+  }
+
+  private beginServerAuthorizedHumanMatch(snapshot: RoomSnapshot): void {
+    this.beginServerAuthorizedLobbyMatch(snapshot);
   }
 
   private handleServerMatchEnded(
@@ -941,7 +1065,9 @@ export class GameEngine {
 
     this.network.state.phase = 'ENDED';
     this.network.state.winnerName = snapshot.winnerName || localPlayer.name;
-    const isVictory = snapshot.winnerId === this.network.serverPlayerId;
+    const isVictory =
+      snapshot.winnerId === this.network.serverPlayerId ||
+      snapshot.winnerIds.includes(this.network.serverPlayerId);
     const serverPlacement = placements[this.network.serverPlayerId];
     const placement = isVictory
       ? 1
@@ -959,8 +1085,14 @@ export class GameEngine {
 
   public startMatch(config: LobbyConfig): void {
     const isHumanOnly = isHumanOnlySessionMode(config.mode);
-    if (isHumanOnly && !this.serverAuthorizedHumanStart) {
-      // Human-only gameplay may only begin from the server's match_started event.
+    const isServerLobbyStart = this.serverAuthorizedLobbyStart;
+    const requiresServerLobbyStart =
+      isHumanOnly ||
+      Boolean(config.createLobby) ||
+      Boolean(this.pendingLobbyConfig && config.mode !== 'solo_bots');
+    if (requiresServerLobbyStart && !isServerLobbyStart) {
+      // Lobby-managed gameplay may only begin from the server's
+      // match_started event. This is especially strict for human-only rooms.
       return;
     }
 
@@ -994,8 +1126,23 @@ export class GameEngine {
     this.particles.clear();
     this.world.resetDynamicStructures();
 
-    const spawnX = (Math.random() - 0.5) * 40;
-    const spawnZ = (Math.random() - 0.5) * 40;
+    let spawnX = (Math.random() - 0.5) * 40;
+    let spawnZ = (Math.random() - 0.5) * 40;
+    if (
+      !this.currentConfig.skyDrop &&
+      Math.abs(spawnX) < 17 &&
+      Math.abs(spawnZ) < 17
+    ) {
+      // Ground spawns use a clear Plaza approach instead of appearing
+      // inside the central tower's walls/core. Skydiving remains free-form.
+      if (Math.abs(spawnX) >= Math.abs(spawnZ)) {
+        spawnX = spawnX < 0 ? -19 : 19;
+        spawnZ = 4;
+      } else {
+        spawnX = 4;
+        spawnZ = spawnZ < 0 ? -19 : 19;
+      }
+    }
     const groundY = this.world.terrain.getTerrainHeight(spawnX, spawnZ);
     const spawnY = this.currentConfig.skyDrop ? 92 : groundY + 0.3;
 
@@ -1004,12 +1151,17 @@ export class GameEngine {
       this.progression.credentials.accountToken
     );
 
-    const localPlayer = isHumanOnly
-      ? this.network.initializeStartedMatch(this.currentConfig, spawnX, spawnY, spawnZ)
-      : this.network.initializeMatch(this.currentConfig, spawnX, spawnY, spawnZ);
+    const localPlayer =
+      isHumanOnly || isServerLobbyStart
+        ? this.network.initializeStartedMatch(this.currentConfig, spawnX, spawnY, spawnZ)
+        : this.network.initializeMatch(this.currentConfig, spawnX, spawnY, spawnZ);
     this.createCharacterMeshForPlayer(localPlayer);
 
-    this.lootSystem.populateWorldLoot(this.network.state, this.world);
+    this.lootSystem.populateWorldLoot(this.network.state, this.world, {
+      // Online clients must not create the unique vault items themselves;
+      // the room server sends that registry in room_loot_sync.
+      includeLegendaryTowerVaultLoot: !this.network.isOnlineRoom,
+    });
 
     if (!isHumanOnly) {
       const bots = this.botController.spawnBots(
@@ -1023,15 +1175,21 @@ export class GameEngine {
       }
     }
 
-    if (isHumanOnly) {
+    if (isHumanOnly || isServerLobbyStart) {
       const snapshot = this.network.roomSnapshot;
+      const humanParticipants =
+        snapshot?.matchParticipantCount || snapshot?.connectedHumans || 1;
       this.network.state.totalParticipants = Math.max(
         0,
-        snapshot?.matchParticipantCount || this.network.state.players.size
+        isHumanOnly
+          ? humanParticipants
+          : humanParticipants + (snapshot?.botCount ?? this.currentConfig.botCount)
       );
       this.network.state.aliveCount = Math.max(
         0,
-        snapshot?.aliveHumans || this.network.state.totalParticipants
+        isHumanOnly
+          ? snapshot?.aliveHumans || this.network.state.totalParticipants
+          : this.network.state.totalParticipants
       );
     } else {
       this.network.state.totalParticipants = this.network.state.players.size;
@@ -1052,9 +1210,11 @@ export class GameEngine {
     if (cdModePill) {
       cdModePill.textContent = isHumanOnly
         ? `👥 HUMAN PLAYERS ONLY — NO BOTS • ROOM: ${this.network.roomCode} • ${this.network.state.totalParticipants} HUMANS`
-        : this.currentConfig.mode === 'online'
-          ? `🌐 ONLINE ROOM: ${this.network.roomCode}`
-          : `🤖 SOLO BATTLE ROYALE (${this.network.state.totalParticipants} CONTENDERS)`;
+        : isServerLobbyStart
+          ? `🌐 MULTIPLAYER LOBBY: ${this.network.roomCode} • ${this.network.roomSnapshot?.matchParticipantCount ?? 1} HUMANS + ${this.currentConfig.botCount} AI`
+          : this.currentConfig.mode === 'online'
+            ? `🌐 ONLINE ROOM: ${this.network.roomCode}`
+            : `🤖 SOLO BATTLE ROYALE (${this.network.state.totalParticipants} CONTENDERS)`;
     }
 
     this.requestPointerLock();
@@ -1104,9 +1264,10 @@ export class GameEngine {
     this.spectatedPlayerId = null;
     if (
       isHumanOnlySessionMode(this.currentConfig.mode) ||
-      this.pendingHumanLobbyConfig
+      this.pendingLobbyConfig ||
+      this.network.isLobbyManagedRoom
     ) {
-      this.leaveHumanLobby();
+      this.leaveMultiplayerLobby();
     } else {
       this.network.disconnectMultiplayerRoom();
     }
@@ -1606,6 +1767,15 @@ export class GameEngine {
     hitPoint: THREE.Vector3
   ): void {
     if (!victim.alive) return;
+    if (
+      this.currentConfig.teamMode &&
+      this.currentConfig.teamMode !== 'solo' &&
+      attacker.id !== victim.id &&
+      attacker.teamId &&
+      attacker.teamId === victim.teamId
+    ) {
+      return;
+    }
 
     attacker.damageDealt += damage;
 
@@ -1792,9 +1962,20 @@ export class GameEngine {
 
     banner.textContent = isVictory ? '👑 VICTORY ROYALE!' : '💀 ELIMINATED';
     banner.className = isVictory ? 'end-title victory' : 'end-title defeated';
+    const teamMode = this.currentConfig.teamMode || 'solo';
+    const isTeamMatch = teamMode === 'duo' || teamMode === 'squad';
+    const placementTotal = isTeamMatch
+      ? new Set(
+          Array.from(this.network.state.players.values()).map(
+            (player) => player.teamId || player.id
+          )
+        ).size
+      : this.network.state.totalParticipants;
     subtitle.textContent = isVictory
-      ? `${localPlayer.name} conquered the CI Craft Island!`
-      : `Eliminated by ${eliminatedBy} — Placed #${placement} of ${this.network.state.totalParticipants}`;
+      ? isTeamMatch
+        ? `Your ${teamMode === 'duo' ? 'Duo' : 'Squad'} team conquered the CI Craft Island!`
+        : `${localPlayer.name} conquered the CI Craft Island!`
+      : `Eliminated by ${eliminatedBy} — Placed #${placement} of ${placementTotal}${isTeamMatch ? ' teams' : ''}`;
 
     if (spectateBtn) {
       spectateBtn.classList.toggle(

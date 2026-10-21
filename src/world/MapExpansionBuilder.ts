@@ -11,6 +11,7 @@ import type {
   CardinalDirection,
   ExpansionBuildingPlacement,
   LandmarkPlacement,
+  LegendaryTowerSide,
 } from './WorldLayout';
 import {
   EXISTING_MAJOR_FOOTPRINTS,
@@ -19,6 +20,11 @@ import {
   FOREST_CLUSTERS,
   ISLAND_ROAD_SEGMENTS,
   ISLAND_SETTLEMENTS,
+  LEGENDARY_TOWER,
+  LEGENDARY_TOWER_FLOOR_LOOT,
+  LEGENDARY_TOWER_VAULT_LOOT,
+  getLegendaryTowerAscentSide,
+  getLegendaryTowerFloorHeight,
   buildingLocalToWorld,
   buildingWorldToLocal,
   expandFootprint,
@@ -94,6 +100,7 @@ export class MapExpansionBuilder {
   }
 
   public buildDistricts(): void {
+    this.buildLegendaryTower();
     for (const placement of EXPANSION_BUILDINGS) {
       this.createBuilding(placement);
     }
@@ -386,6 +393,988 @@ export class MapExpansionBuilder {
         return baseY + heightAtLocal(localX, localZ);
       },
     });
+  }
+
+  /**
+   * Builds The Legendary Tower at the exact island origin.
+   *
+   * The structure is intentionally axis-aligned: every floor, stair strip,
+   * balcony and exterior ramp maps onto the game's existing AABB movement,
+   * bullet and camera systems. Architecture is emitted through the same
+   * district InstancedMesh batcher as the expansion buildings, so seven
+   * detailed floors cost a handful of draw calls rather than hundreds of
+   * individual meshes. Interior ascent is a square perimeter spiral
+   * (east → north → west → south), and a second exterior spiral skips two
+   * floors at a time between observation decks.
+   */
+  private buildLegendaryTower(): void {
+    const district = 'legendary_tower';
+    const cx = LEGENDARY_TOWER.x;
+    const cz = LEGENDARY_TOWER.z;
+    const baseY = this.world.terrain.getTerrainHeight(cx, cz);
+    const floorY = (level: number): number =>
+      getLegendaryTowerFloorHeight(baseY, level);
+    const groundY = floorY(0);
+    const roofY = floorY(LEGENDARY_TOWER.roofLevel);
+    const half = LEGENDARY_TOWER.outerHalfExtent;
+    const podiumHalf = LEGENDARY_TOWER.podiumHalfExtent;
+    const wallThickness = 0.65;
+
+    const darkMetal = 0x172033;
+    const gunmetal = 0x273449;
+    const concrete = 0x64748b;
+    const paleConcrete = 0x94a3b8;
+    const floorSlate = 0x334155;
+    const cyan = 0x67e8f9;
+    const gold = 0xfacc15;
+    const purple = 0xa855f7;
+    const rarityColor = (rarity: string): number =>
+      rarity === 'legendary'
+        ? 0xfbbf24
+        : rarity === 'epic'
+          ? 0xc084fc
+          : rarity === 'rare'
+            ? 0x38bdf8
+            : rarity === 'uncommon'
+              ? 0x22c55e
+              : 0x94a3b8;
+
+    const addBox = (
+      x: number,
+      y: number,
+      z: number,
+      sx: number,
+      sy: number,
+      sz: number,
+      color: number,
+      options: ShapeOptions & { yaw?: number } = {}
+    ): void => this.addShapeWorld(district, x, y, z, sx, sy, sz, color, options);
+
+    const addSolid = (
+      id: string,
+      x: number,
+      y: number,
+      z: number,
+      sx: number,
+      sy: number,
+      sz: number,
+      color: number,
+      options: ShapeOptions & { yaw?: number } = {}
+    ): void => {
+      addBox(x, y, z, sx, sy, sz, color, options);
+      this.addWorldBoxCollider(`legendary_tower_${id}`, x, y, z, sx, sy, sz);
+    };
+
+    const sidePoint = (
+      side: LegendaryTowerSide,
+      along: number,
+      out: number
+    ): { x: number; z: number } => {
+      switch (side) {
+        case 'east':
+          return { x: cx + out, z: cz + along };
+        case 'west':
+          return { x: cx - out, z: cz + along };
+        case 'north':
+          return { x: cx + along, z: cz - out };
+        case 'south':
+        default:
+          return { x: cx + along, z: cz + out };
+      }
+    };
+
+    const sideDims = (
+      side: LegendaryTowerSide,
+      alongLength: number,
+      outDepth: number
+    ): { sx: number; sz: number } =>
+      side === 'east' || side === 'west'
+        ? { sx: outDepth, sz: alongLength }
+        : { sx: alongLength, sz: outDepth };
+
+    const sideRect = (
+      side: LegendaryTowerSide,
+      alongMin: number,
+      alongMax: number,
+      outMin: number,
+      outMax: number
+    ): AxisAlignedFootprint => {
+      switch (side) {
+        case 'east':
+          return {
+            minX: cx + outMin,
+            maxX: cx + outMax,
+            minZ: cz + alongMin,
+            maxZ: cz + alongMax,
+          };
+        case 'west':
+          return {
+            minX: cx - outMax,
+            maxX: cx - outMin,
+            minZ: cz + alongMin,
+            maxZ: cz + alongMax,
+          };
+        case 'north':
+          return {
+            minX: cx + alongMin,
+            maxX: cx + alongMax,
+            minZ: cz - outMax,
+            maxZ: cz - outMin,
+          };
+        case 'south':
+        default:
+          return {
+            minX: cx + alongMin,
+            maxX: cx + alongMax,
+            minZ: cz + outMin,
+            maxZ: cz + outMax,
+          };
+      }
+    };
+
+    const addSideBox = (
+      side: LegendaryTowerSide,
+      along: number,
+      y: number,
+      out: number,
+      alongLength: number,
+      sy: number,
+      outDepth: number,
+      color: number,
+      options: ShapeOptions = {}
+    ): void => {
+      const point = sidePoint(side, along, out);
+      const dims = sideDims(side, alongLength, outDepth);
+      addBox(point.x, y, point.z, dims.sx, sy, dims.sz, color, options);
+    };
+
+    const addSideCollider = (
+      id: string,
+      side: LegendaryTowerSide,
+      along: number,
+      y: number,
+      out: number,
+      alongLength: number,
+      sy: number,
+      outDepth: number
+    ): void => {
+      const point = sidePoint(side, along, out);
+      const dims = sideDims(side, alongLength, outDepth);
+      this.addWorldBoxCollider(
+        `legendary_tower_${id}`,
+        point.x,
+        y,
+        point.z,
+        dims.sx,
+        sy,
+        dims.sz
+      );
+    };
+
+    const addSideSolid = (
+      id: string,
+      side: LegendaryTowerSide,
+      along: number,
+      y: number,
+      out: number,
+      alongLength: number,
+      sy: number,
+      outDepth: number,
+      color: number,
+      options: ShapeOptions = {}
+    ): void => {
+      addSideBox(side, along, y, out, alongLength, sy, outDepth, color, options);
+      addSideCollider(id, side, along, y, out, alongLength, sy, outDepth);
+    };
+
+    const stairEnds = (
+      side: LegendaryTowerSide
+    ): { lowAlong: number; highAlong: number } =>
+      side === 'east' || side === 'north'
+        ? {
+            lowAlong: LEGENDARY_TOWER.stairRunHalf,
+            highAlong: -LEGENDARY_TOWER.stairRunHalf,
+          }
+        : {
+            lowAlong: -LEGENDARY_TOWER.stairRunHalf,
+            highAlong: LEGENDARY_TOWER.stairRunHalf,
+          };
+
+    const addRamp = (
+      id: string,
+      side: LegendaryTowerSide,
+      outMin: number,
+      outMax: number,
+      lowAlong: number,
+      highAlong: number,
+      lowY: number,
+      highY: number,
+      treadColor: number
+    ): void => {
+      const footprint = sideRect(
+        side,
+        Math.min(lowAlong, highAlong),
+        Math.max(lowAlong, highAlong),
+        outMin,
+        outMax
+      );
+      this.world.walkableSurfaces.push({
+        id,
+        ...footprint,
+        getHeight: (worldX: number, worldZ: number) => {
+          const along =
+            side === 'east' || side === 'west' ? worldZ - cz : worldX - cx;
+          const t = THREE.MathUtils.clamp(
+            (along - lowAlong) / (highAlong - lowAlong),
+            0,
+            1
+          );
+          return lowY + t * (highY - lowY);
+        },
+      });
+
+      const run = Math.abs(highAlong - lowAlong);
+      const rise = highY - lowY;
+      const slopeLength = Math.hypot(run, rise);
+      const centreOut = (outMin + outMax) / 2;
+      const outWidth = outMax - outMin;
+      const slopeOptions: ShapeOptions =
+        side === 'east' || side === 'west'
+          ? { rotationX: -Math.atan(rise / (highAlong - lowAlong)) }
+          : { rotationZ: Math.atan(rise / (highAlong - lowAlong)) };
+
+      // Sloped stringer below a visibly stepped tread run.
+      addSideBox(
+        side,
+        0,
+        (lowY + highY) / 2 - 0.22,
+        centreOut,
+        slopeLength,
+        0.28,
+        outWidth,
+        gunmetal,
+        slopeOptions
+      );
+      addSideBox(
+        side,
+        0,
+        (lowY + highY) / 2 + 0.08,
+        outMin + 0.16,
+        slopeLength,
+        0.1,
+        0.2,
+        cyan,
+        { ...slopeOptions, shape: 'glass', tier: 'detail' }
+      );
+
+      const steps = Math.max(12, Math.round(run / 1.25));
+      for (let i = 0; i < steps; i++) {
+        const t = (i + 0.5) / steps;
+        const along = lowAlong + (highAlong - lowAlong) * t;
+        const y = lowY + rise * t - 0.06;
+        addSideBox(
+          side,
+          along,
+          y,
+          centreOut,
+          run / steps + 0.1,
+          0.2,
+          outWidth - 0.28,
+          i % 4 === 0 ? paleConcrete : treadColor
+        );
+      }
+
+      for (const t of [0.18, 0.5, 0.82]) {
+        const along = lowAlong + (highAlong - lowAlong) * t;
+        addSideBox(
+          side,
+          along,
+          lowY + rise * t - 0.62,
+          outMin + 0.38,
+          0.4,
+          0.7,
+          0.72,
+          darkMetal,
+          { tier: 'detail' }
+        );
+      }
+    };
+
+    // --- Foundation, plaza podium and four entrance terraces -------------
+    addBox(cx, baseY + 0.02, cz, 38, 0.14, 38, 0x3f4c63, { tier: 'detail' });
+    addBox(cx, baseY + 0.05, cz, podiumHalf * 2, 1.0, podiumHalf * 2, concrete);
+    addBox(cx, groundY - 0.07, cz, 21.6, 0.16, 21.6, floorSlate);
+    this.addWorldWalkable(
+      'legendary_tower_podium',
+      {
+        minX: cx - podiumHalf,
+        maxX: cx + podiumHalf,
+        minZ: cz - podiumHalf,
+        maxZ: cz + podiumHalf,
+      },
+      groundY
+    );
+    for (const side of ['east', 'north', 'west', 'south'] as LegendaryTowerSide[]) {
+      addSideBox(side, 0, baseY + 0.3, 13.7, 7.2, 0.52, 5.2, paleConcrete);
+      this.addWorldWalkable(
+        `legendary_tower_entrance_${side}`,
+        sideRect(side, -3.6, 3.6, half, 16.3),
+        groundY
+      );
+      addSideBox(side, 0, groundY + 0.05, 13.9, 5.4, 0.08, 0.28, cyan, {
+        shape: 'glass',
+        tier: 'detail',
+      });
+    }
+
+    // --- Floor slabs with a stair opening over each incoming flight ------
+    const addFloorSlab = (level: number): void => {
+      if (level <= 0) return;
+      const y = floorY(level);
+      const incomingSide = getLegendaryTowerAscentSide(level - 1);
+      const inner = LEGENDARY_TOWER.stairInnerEdge;
+      const fp = (
+        minX: number,
+        maxX: number,
+        minZ: number,
+        maxZ: number
+      ): AxisAlignedFootprint => ({
+        minX: cx + minX,
+        maxX: cx + maxX,
+        minZ: cz + minZ,
+        maxZ: cz + maxZ,
+      });
+      let pieces: AxisAlignedFootprint[] = [];
+      switch (incomingSide) {
+        case 'east':
+          pieces = [fp(-half, inner, -half, half), fp(inner, half, -2.2, half)];
+          break;
+        case 'north':
+          pieces = [fp(-half, half, -inner, half), fp(-2.2, half, -half, -inner)];
+          break;
+        case 'west':
+          pieces = [fp(-inner, half, -half, half), fp(-half, -inner, -half, 2.2)];
+          break;
+        case 'south':
+          pieces = [fp(-half, half, -half, inner), fp(-half, 2.2, inner, half)];
+          break;
+      }
+      pieces.forEach((piece, index) => {
+        const sx = piece.maxX - piece.minX;
+        const sz = piece.maxZ - piece.minZ;
+        addBox(
+          (piece.minX + piece.maxX) / 2,
+          y - 0.19,
+          (piece.minZ + piece.maxZ) / 2,
+          sx,
+          0.38,
+          sz,
+          level === LEGENDARY_TOWER.roofLevel ? 0x475569 : floorSlate
+        );
+        // Every slab is also a coarse bullet/ceiling collider; the two
+        // pieces preserve the stair opening instead of filling it with one
+        // full-footprint box.
+        this.addWorldBoxCollider(
+          `legendary_tower_floor_slab_${level}_${index}`,
+          (piece.minX + piece.maxX) / 2,
+          y - 0.19,
+          (piece.minZ + piece.maxZ) / 2,
+          sx,
+          0.38,
+          sz
+        );
+        this.addWorldWalkable(`legendary_tower_floor_${level}_${index}`, piece, y);
+      });
+
+      const openingCentre =
+        incomingSide === 'east' || incomingSide === 'north' ? -6.4 : 6.4;
+      const crossAlong =
+        incomingSide === 'east' || incomingSide === 'north' ? -2.2 : 2.2;
+      addSideBox(
+        incomingSide,
+        openingCentre,
+        y + 0.06,
+        inner,
+        6.2,
+        0.12,
+        0.22,
+        cyan,
+        { shape: 'glass', tier: 'detail' }
+      );
+      addSideBox(
+        incomingSide,
+        crossAlong,
+        y + 0.06,
+        (inner + half) / 2,
+        0.22,
+        0.12,
+        half - inner,
+        cyan,
+        { shape: 'glass', tier: 'detail' }
+      );
+    };
+    for (let level = 1; level <= LEGENDARY_TOWER.roofLevel; level++) {
+      addFloorSlab(level);
+    }
+
+    // --- Outer walls, glass bands, doors and full-height colliders -------
+    const balconyDoorLevels: Record<LegendaryTowerSide, number[]> = {
+      east: [2, 3, 4],
+      north: [4, 5, 6],
+      west: [6],
+      south: [1, 2],
+    };
+    const hasDoor = (side: LegendaryTowerSide, level: number): boolean =>
+      level === 0 || balconyDoorLevels[side].includes(level);
+    const wallSegmentsFor = (door: boolean): Array<[number, number]> =>
+      door ? [[-half, -2.35], [2.35, half]] : [[-half, half]];
+
+    for (const side of ['east', 'north', 'west', 'south'] as LegendaryTowerSide[]) {
+      for (let level = 0; level < LEGENDARY_TOWER.roofLevel; level++) {
+        const bottom = floorY(level);
+        const door = hasDoor(side, level);
+        for (const [segMin, segMax] of wallSegmentsFor(door)) {
+          const along = (segMin + segMax) / 2;
+          const length = segMax - segMin;
+          addSideBox(side, along, bottom + 0.65, half, length, 1.3, wallThickness, darkMetal);
+          addSideBox(side, along, bottom + 2.85, half, length, 3.1, wallThickness * 0.72, 0xe0f2fe, {
+            shape: 'glass',
+          });
+          addSideBox(side, along, bottom + 5.5, half, length, 2.0, wallThickness, level % 2 ? gunmetal : concrete);
+          addSideBox(side, along, bottom + 4.48, half + 0.38, length, 0.14, 0.16, cyan, {
+            shape: 'glass',
+            tier: 'detail',
+          });
+        }
+        if (door) {
+          addSideBox(side, 0, bottom + 5.05, half, 4.7, 2.9, wallThickness, gunmetal);
+          for (const edge of [-2.48, 2.48]) {
+            addSideBox(side, edge, bottom + 1.8, half, 0.32, 3.6, 0.92, gold, {
+              tier: 'detail',
+            });
+          }
+          addSideBox(side, 0, bottom + 3.78, half + 0.42, 5.2, 0.2, 0.2, cyan, {
+            shape: 'glass',
+            tier: 'detail',
+          });
+        }
+        const mullions = door ? [-8.5, -5.5, 5.5, 8.5] : [-8.5, -5.5, -2.4, 0, 2.4, 5.5, 8.5];
+        for (const along of mullions) {
+          addSideBox(side, along, bottom + 2.85, half + 0.05, 0.42, 3.2, 0.78, darkMetal, {
+            tier: 'detail',
+          });
+        }
+      }
+
+      // Two uninterrupted side colliders plus central intervals between
+      // door openings keep closed glass/walls solid with ~five colliders
+      // per face instead of one per decorative panel.
+      const wallCentreY = (groundY + roofY) / 2;
+      const wallHeight = roofY - groundY;
+      addSideCollider(`wall_${side}_left`, side, -6.675, wallCentreY, half, 8.65, wallHeight, wallThickness);
+      addSideCollider(`wall_${side}_right`, side, 6.675, wallCentreY, half, 8.65, wallHeight, wallThickness);
+      const doorLevels = Array.from(
+        { length: LEGENDARY_TOWER.roofLevel },
+        (_, level) => level
+      ).filter((level) => hasDoor(side, level));
+      let cursor = groundY;
+      let intervalIndex = 0;
+      for (const level of doorLevels) {
+        const openingBottom = floorY(level);
+        const openingTop = openingBottom + 3.6;
+        if (openingBottom > cursor + 0.05) {
+          addSideCollider(
+            `wall_${side}_centre_${intervalIndex++}`,
+            side,
+            0,
+            (cursor + openingBottom) / 2,
+            half,
+            4.7,
+            openingBottom - cursor,
+            wallThickness
+          );
+        }
+        cursor = Math.max(cursor, openingTop);
+      }
+      if (roofY > cursor + 0.05) {
+        addSideCollider(
+          `wall_${side}_centre_${intervalIndex++}`,
+          side,
+          0,
+          (cursor + roofY) / 2,
+          half,
+          4.7,
+          roofY - cursor,
+          wallThickness
+        );
+      }
+
+      // Armored plinth, setback rings and vertical energy conduits give
+      // the tower its distant fortress silhouette.
+      for (const [segMin, segMax] of wallSegmentsFor(true)) {
+        addSideBox(
+          side,
+          (segMin + segMax) / 2,
+          groundY + 1.05,
+          half + 0.48,
+          segMax - segMin,
+          2.1,
+          0.85,
+          0x111827
+        );
+      }
+      for (const level of [2, 4, 6]) {
+        addSideBox(side, 0, floorY(level) + 0.18, half + 0.42, 22.7, 0.5, 0.85, darkMetal);
+        addSideBox(side, 0, floorY(level) + 0.52, half + 0.88, 22.7, 0.12, 0.12, cyan, {
+          shape: 'glass',
+          tier: 'detail',
+        });
+      }
+      for (const along of [-5.2, 5.2]) {
+        addSideBox(side, along, (groundY + roofY) / 2, half + 0.43, 0.5, wallHeight, 0.18, cyan, {
+          shape: 'glass',
+          tier: 'detail',
+        });
+      }
+    }
+
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        addBox(
+          cx + sx * half,
+          (groundY + roofY + 5) / 2,
+          cz + sz * half,
+          2.15,
+          roofY + 5 - groundY,
+          2.15,
+          darkMetal
+        );
+        addBox(cx + sx * (half + 0.82), (groundY + roofY) / 2, cz + sz * (half + 0.82), 0.28, roofY - groundY, 0.28, cyan, {
+          shape: 'glass',
+          tier: 'detail',
+        });
+      }
+    }
+
+    // --- Central energy core, partitions, cover and floor dressing -------
+    addBox(cx, (groundY + roofY) / 2, cz, 3.15, roofY - groundY, 3.15, darkMetal, {
+      shape: 'cylinder',
+    });
+    addBox(cx, (groundY + roofY) / 2, cz, 1.75, roofY - groundY, 1.75, cyan, {
+      shape: 'glass',
+    });
+    this.addWorldCylinderCollider(
+      'legendary_tower_central_core',
+      cx,
+      cz,
+      1.68,
+      groundY,
+      roofY
+    );
+
+    const addInteriorBox = (
+      level: number,
+      x: number,
+      z: number,
+      sx: number,
+      sy: number,
+      sz: number,
+      color: number,
+      yOffset: number = sy / 2,
+      options: ShapeOptions = {}
+    ): void => addBox(cx + x, floorY(level) + yOffset, cz + z, sx, sy, sz, color, options);
+    const addInteriorSolid = (
+      level: number,
+      suffix: string,
+      x: number,
+      z: number,
+      sx: number,
+      sy: number,
+      sz: number,
+      color: number,
+      yOffset: number = sy / 2
+    ): void =>
+      addSolid(
+        `floor_${level}_${suffix}`,
+        cx + x,
+        floorY(level) + yOffset,
+        cz + z,
+        sx,
+        sy,
+        sz,
+        color
+      );
+
+    for (let level = 0; level < LEGENDARY_TOWER.roofLevel; level++) {
+      addBox(cx, floorY(level) + 3.15, cz, 4.5, 0.18, 4.5, cyan, {
+        shape: 'cylinder',
+        tier: 'detail',
+      });
+      const sign = level % 2 === 0 ? 1 : -1;
+      if (level % 2 === 0) {
+        addInteriorSolid(level, 'cover', sign * 4.8, -sign * 2.2, 3.6, 1.05, 0.78, gunmetal);
+      } else {
+        addInteriorSolid(level, 'cover', sign * 4.8, -sign * 2.2, 0.78, 1.05, 3.6, gunmetal);
+      }
+      if (level === 0) {
+        addInteriorSolid(level, 'reception', 0, -4.7, 7.2, 1.08, 0.82, paleConcrete);
+      } else if (level === 1 || level === 5) {
+        addInteriorSolid(level, 'partition', -1, -4.45, 8.2, 3.35, 0.36, concrete, 1.68);
+      } else if (level === 2 || level === 6) {
+        addInteriorSolid(level, 'partition', 4.45, level === 2 ? 1 : -1, 0.36, 3.35, 8.2, concrete, 1.68);
+      } else if (level === 3) {
+        addInteriorSolid(level, 'partition', 1, 4.45, 8.2, 3.35, 0.36, concrete, 1.68);
+      } else if (level === 4) {
+        addInteriorSolid(level, 'partition', -4.45, -1, 0.36, 3.35, 8.2, concrete, 1.68);
+      }
+      addInteriorBox(level, sign * 3.1, -sign * 5.1, 2.2, 0.95, 0.72, darkMetal, 0.48, {
+        tier: 'detail',
+      });
+      addInteriorBox(level, sign * 3.1, -sign * 5.1, 1.65, 0.16, 0.5, cyan, 1.05, {
+        shape: 'glass',
+        tier: 'detail',
+      });
+      for (const lx of [-4.2, 4.2]) {
+        addInteriorBox(level, lx, lx * sign, 2.5, 0.12, 0.34, cyan, 5.85, {
+          shape: 'glass',
+          tier: 'detail',
+        });
+      }
+    }
+
+    for (const loot of LEGENDARY_TOWER_FLOOR_LOOT) {
+      addBox(cx + loot.x, floorY(loot.floor) + 0.16, cz + loot.z, 0.92, 0.32, 0.92, darkMetal, {
+        tier: 'detail',
+      });
+      addBox(cx + loot.x, floorY(loot.floor) + 0.36, cz + loot.z, 0.98, 0.07, 0.98, rarityColor(loot.rarity), {
+        tier: 'detail',
+      });
+    }
+
+    // --- Interior square-spiral stairs ------------------------------------
+    for (let fromLevel = 0; fromLevel < LEGENDARY_TOWER.roofLevel; fromLevel++) {
+      const side = getLegendaryTowerAscentSide(fromLevel);
+      const ends = stairEnds(side);
+      addRamp(
+        `legendary_tower_stair_${fromLevel}_${fromLevel + 1}`,
+        side,
+        LEGENDARY_TOWER.stairInnerEdge,
+        LEGENDARY_TOWER.stairOuterEdge,
+        ends.lowAlong,
+        ends.highAlong,
+        floorY(fromLevel),
+        floorY(fromLevel + 1),
+        fromLevel % 2 ? 0x52627a : 0x3b4a63
+      );
+    }
+
+    // --- Observation decks and an exterior two-floor spiral shortcut -------
+    const decks: Array<{
+      level: number;
+      side: LegendaryTowerSide;
+      alongMin: number;
+      alongMax: number;
+    }> = [
+      { level: 1, side: 'south', alongMin: -7, alongMax: 7 },
+      { level: 2, side: 'south', alongMin: -7, alongMax: 14.7 },
+      { level: 2, side: 'east', alongMin: -2, alongMax: 14.7 },
+      { level: 3, side: 'east', alongMin: -7, alongMax: 7 },
+      { level: 4, side: 'east', alongMin: -14.7, alongMax: 7 },
+      { level: 4, side: 'north', alongMin: -2, alongMax: 14.7 },
+      { level: 5, side: 'north', alongMin: -7, alongMax: 7 },
+      { level: 6, side: 'north', alongMin: -14.7, alongMax: 7 },
+      { level: 6, side: 'west', alongMin: -14.7, alongMax: 2 },
+    ];
+    for (const deck of decks) {
+      const y = floorY(deck.level);
+      const alongCentre = (deck.alongMin + deck.alongMax) / 2;
+      const alongLength = deck.alongMax - deck.alongMin;
+      addSideBox(deck.side, alongCentre, y - 0.22, 12.85, alongLength, 0.44, 3.7, gunmetal);
+      this.addWorldWalkable(
+        `legendary_tower_deck_${deck.level}_${deck.side}`,
+        sideRect(deck.side, deck.alongMin, deck.alongMax, half, 14.7),
+        y
+      );
+      addSideSolid(
+        `deck_${deck.level}_${deck.side}_parapet`,
+        deck.side,
+        alongCentre,
+        y + 0.55,
+        14.55,
+        alongLength,
+        1.1,
+        0.28,
+        darkMetal
+      );
+      for (const edge of [deck.alongMin, deck.alongMax]) {
+        addSideBox(deck.side, edge, y + 0.55, 12.85, 0.28, 1.1, 3.7, darkMetal, {
+          tier: 'detail',
+        });
+      }
+      for (const supportAlong of [deck.alongMin + 1.2, deck.alongMax - 1.2]) {
+        addSideBox(deck.side, supportAlong, y - 1.35, 12.5, 0.38, 2.7, 0.38, darkMetal, {
+          tier: 'detail',
+          rotationX: deck.side === 'north' || deck.side === 'south' ? 0.42 : 0,
+          rotationZ: deck.side === 'east' || deck.side === 'west' ? 0.42 : 0,
+        });
+      }
+      addSideBox(deck.side, alongCentre, y - 0.52, 14.45, alongLength, 0.12, 0.14, cyan, {
+        shape: 'glass',
+        tier: 'detail',
+      });
+    }
+
+    const exteriorAscents: Array<{
+      from: number;
+      to: number;
+      side: LegendaryTowerSide;
+    }> = [
+      { from: 0, to: 2, side: 'south' },
+      { from: 2, to: 4, side: 'east' },
+      { from: 4, to: 6, side: 'north' },
+      { from: 6, to: 7, side: 'west' },
+    ];
+    for (const ascent of exteriorAscents) {
+      const ends = stairEnds(ascent.side);
+      addRamp(
+        `legendary_tower_exterior_${ascent.from}_${ascent.to}`,
+        ascent.side,
+        11.65,
+        14.45,
+        ends.lowAlong,
+        ends.highAlong,
+        floorY(ascent.from),
+        floorY(ascent.to),
+        0x5b4632
+      );
+    }
+
+    // West roof landing for the final exterior flight. It extends back to
+    // z=-2 so it meets the solid west strip of the roof slab (the strip at
+    // z>2.2 is the interior stair opening).
+    addSideBox('west', 4.3, roofY - 0.22, 12.85, 12.6, 0.44, 3.7, gunmetal);
+    this.addWorldWalkable(
+      'legendary_tower_roof_west_landing',
+      sideRect('west', -2, 10.6, half, 14.7),
+      roofY
+    );
+    addSideSolid(
+      'roof_west_landing_parapet',
+      'west',
+      4.3,
+      roofY + 0.55,
+      14.55,
+      12.6,
+      1.1,
+      0.28,
+      darkMetal
+    );
+
+    // --- Roof parapets, corner turrets and the Legendary Vault ------------
+    for (const side of ['east', 'north', 'south'] as LegendaryTowerSide[]) {
+      addSideSolid(`roof_parapet_${side}`, side, 0, roofY + 0.55, half + 0.25, 22.6, 1.1, 0.32, darkMetal);
+    }
+    addSideSolid('roof_parapet_west_north', 'west', -6.75, roofY + 0.55, half + 0.25, 8.5, 1.1, 0.32, darkMetal);
+    addSideSolid('roof_parapet_west_south', 'west', 6.75, roofY + 0.55, half + 0.25, 8.5, 1.1, 0.32, darkMetal);
+
+    addBox(cx, roofY + 0.25, cz, 10.4, 0.5, 10.4, 0x3b2f13);
+    this.addWorldWalkable(
+      'legendary_tower_vault_dais',
+      { minX: cx - 5.2, maxX: cx + 5.2, minZ: cz - 5.2, maxZ: cz + 5.2 },
+      roofY + 0.5
+    );
+    for (const side of ['east', 'north', 'west', 'south'] as LegendaryTowerSide[]) {
+      addSideBox(side, 0, roofY + 0.13, 5.68, 5.4, 0.26, 0.95, gold, { tier: 'detail' });
+    }
+
+    for (const loot of LEGENDARY_TOWER_VAULT_LOOT) {
+      addBox(cx + loot.x, roofY + 0.81, cz + loot.z, 1.06, 0.62, 1.06, darkMetal, {
+        tier: 'detail',
+      });
+      addBox(
+        cx + loot.x,
+        roofY + 1.16,
+        cz + loot.z,
+        1.14,
+        0.08,
+        1.14,
+        loot.rarity === 'legendary' ? gold : purple,
+        { shape: 'glass', tier: 'detail' }
+      );
+    }
+    for (const [lx, lz, color] of [
+      [-4.7, -4.7, gold],
+      [4.7, -4.7, purple],
+      [-4.7, 4.7, purple],
+      [4.7, 4.7, gold],
+    ] as const) {
+      addBox(cx + lx, roofY + 0.82, cz + lz, 1.35, 0.64, 1.0, color, { tier: 'detail' });
+      addBox(cx + lx, roofY + 1.22, cz + lz - 0.18, 1.42, 0.18, 1.04, color, {
+        tier: 'detail',
+        rotationX: -0.5,
+      });
+    }
+
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        addSolid(
+          `vault_pillar_${sx}_${sz}`,
+          cx + sx * 5.7,
+          roofY + 2.7,
+          cz + sz * 5.7,
+          0.75,
+          5.4,
+          0.75,
+          darkMetal
+        );
+        addBox(cx + sx * 9.6, roofY + 2.75, cz + sz * 9.6, 2.4, 5.5, 2.4, gunmetal, {
+          shape: 'cylinder',
+        });
+        addBox(cx + sx * 9.6, roofY + 6.8, cz + sz * 9.6, 3.1, 2.7, 3.1, gold, {
+          shape: 'cone',
+          rotationY: Math.PI / 4,
+        });
+        this.addWorldCylinderCollider(
+          `legendary_tower_roof_turret_${sx}_${sz}`,
+          cx + sx * 9.6,
+          cz + sz * 9.6,
+          1.28,
+          roofY,
+          roofY + 5.5
+        );
+      }
+    }
+    addSideBox('north', 0, roofY + 2.7, 5.7, 10.6, 3.5, 0.14, purple, { shape: 'glass' });
+    addSideCollider('vault_glass_north', 'north', 0, roofY + 2.7, 5.7, 10.6, 3.5, 0.18);
+    addSideBox('east', 0, roofY + 2.7, 5.7, 10.6, 3.5, 0.14, purple, { shape: 'glass' });
+    addSideCollider('vault_glass_east', 'east', 0, roofY + 2.7, 5.7, 10.6, 3.5, 0.18);
+
+    addBox(cx, roofY + 5.65, cz, 13.2, 0.55, 13.2, darkMetal);
+    this.addWorldBoxCollider('legendary_tower_vault_canopy', cx, roofY + 5.65, cz, 13.2, 0.55, 13.2);
+    this.addWorldWalkable(
+      'legendary_tower_vault_canopy_top',
+      { minX: cx - 6.6, maxX: cx + 6.6, minZ: cz - 6.6, maxZ: cz + 6.6 },
+      roofY + 5.93
+    );
+    for (const side of ['east', 'north', 'west', 'south'] as LegendaryTowerSide[]) {
+      addSideBox(side, 0, roofY + 5.42, 6.68, 13.4, 0.18, 0.18, gold, {
+        shape: 'glass',
+        tier: 'detail',
+      });
+    }
+
+    // Crown, spire and antennas.
+    addBox(cx, roofY + 10.4, cz, 2.7, 9.2, 2.7, darkMetal, { shape: 'cylinder' });
+    this.addWorldCylinderCollider(
+      'legendary_tower_crown_core',
+      cx,
+      cz,
+      1.45,
+      roofY + 5.93,
+      roofY + 15
+    );
+    addBox(cx, roofY + 16.6, cz, 3.5, 5.2, 3.5, gold, {
+      shape: 'cone',
+      rotationY: Math.PI / 4,
+    });
+    addBox(cx, roofY + 20.2, cz, 0.34, 4.6, 0.34, cyan, {
+      shape: 'cylinder',
+      tier: 'detail',
+    });
+    for (const [lx, lz, height] of [
+      [-3.8, -2.6, 7.5],
+      [3.8, -2.6, 6.2],
+      [-3.8, 2.6, 6.2],
+      [3.8, 2.6, 7.5],
+    ] as const) {
+      addBox(cx + lx, roofY + 5.93 + height / 2, cz + lz, 0.2, height, 0.2, paleConcrete, {
+        shape: 'cylinder',
+        tier: 'detail',
+      });
+      addBox(cx + lx, roofY + 6.15 + height, cz + lz, 0.48, 0.48, 0.48, 0xef4444, {
+        shape: 'glow',
+        tier: 'detail',
+      });
+    }
+
+    // --- Fortified plaza, supply kiosks and natural transition props -------
+    const barrierSpecs: Array<[number, number, number, number]> = [
+      [-7, 22, 8.5, 0.75],
+      [7, 22, 8.5, 0.75],
+      [-7, -22, 8.5, 0.75],
+      [7, -22, 8.5, 0.75],
+      [22, -7, 0.75, 8.5],
+      [22, 7, 0.75, 8.5],
+      [-22, -7, 0.75, 8.5],
+      [-22, 7, 0.75, 8.5],
+    ];
+    barrierSpecs.forEach(([lx, lz, sx, sz], index) => {
+      const y = this.world.terrain.getTerrainHeight(cx + lx, cz + lz);
+      addSolid(`plaza_barrier_${index}`, cx + lx, y + 0.55, cz + lz, sx, 1.1, sz, concrete);
+      addBox(cx + lx * 0.88, y + 1.22, cz + lz * 0.88, sx * 0.45, 0.28, sz * 0.45, darkMetal, {
+        tier: 'detail',
+        rotationZ: index % 2 ? 0.06 : -0.05,
+      });
+    });
+
+    for (const sign of [-1, 1]) {
+      const kx = cx + sign * 24;
+      const ky = this.world.terrain.getTerrainHeight(kx, cz);
+      addBox(kx, ky + 0.12, cz, 6.4, 0.24, 5.4, paleConcrete);
+      this.addWorldWalkable(
+        `legendary_tower_supply_kiosk_${sign}`,
+        { minX: kx - 3.2, maxX: kx + 3.2, minZ: cz - 2.7, maxZ: cz + 2.7 },
+        ky + 0.24
+      );
+      for (const px of [-2.7, 2.7]) {
+        for (const pz of [-2.2, 2.2]) {
+          addBox(kx + px, ky + 1.65, cz + pz, 0.3, 3.05, 0.3, darkMetal, {
+            shape: 'cylinder',
+            tier: 'detail',
+          });
+        }
+      }
+      addBox(kx, ky + 3.35, cz, 7.1, 0.3, 6.0, sign < 0 ? 0x0f766e : 0x7c3aed);
+      this.addWorldBoxCollider(
+        `legendary_tower_supply_kiosk_${sign}_roof`,
+        kx,
+        ky + 3.35,
+        cz,
+        7.1,
+        0.3,
+        6.0
+      );
+      this.addWorldWalkable(
+        `legendary_tower_supply_kiosk_${sign}_roof`,
+        { minX: kx - 3.55, maxX: kx + 3.55, minZ: cz - 3, maxZ: cz + 3 },
+        ky + 3.5
+      );
+      addSolid(
+        `supply_kiosk_${sign}_counter`,
+        kx - sign * 2.15,
+        ky + 0.72,
+        cz,
+        0.72,
+        1.0,
+        4.1,
+        gunmetal
+      );
+      addBox(kx - sign * 2.15, ky + 1.34, cz, 0.84, 0.14, 4.3, cyan, {
+        shape: 'glass',
+        tier: 'detail',
+      });
+      this.world.lootSpawnPoints.push(new THREE.Vector3(kx + sign * 0.8, ky + 0.48, cz));
+      this.world.spawnCrate(kx + sign * 2.2, cz + 3.8);
+    }
+
+    this.world.spawnTree(cx - 28, cz + 5, 'pine');
+    this.world.spawnTree(cx + 28, cz - 5, 'pine');
+    this.world.spawnTree(cx - 15, cz - 26, 'oak');
+    this.world.spawnTree(cx - 5, cz + 28, 'oak');
+    this.world.spawnRock(cx, cz + 28, 1.25);
+    this.world.spawnRock(cx - 5, cz - 28, 1.05);
+    this.world.spawnCrate(cx + 15, cz + 8);
+    this.world.spawnCrate(cx - 15, cz - 8);
   }
 
   private createBuilding(placement: ExpansionBuildingPlacement): void {

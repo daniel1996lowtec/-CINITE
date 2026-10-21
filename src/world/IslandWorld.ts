@@ -1,11 +1,18 @@
 import * as THREE from 'three';
 import { TerrainGenerator, ISLAND_POIS } from './TerrainGenerator';
 import { MapExpansionBuilder } from './MapExpansionBuilder';
-import { ISLAND_SETTLEMENTS } from './WorldLayout';
+import {
+  ISLAND_SETTLEMENTS,
+  LEGENDARY_TOWER,
+  LEGENDARY_TOWER_FLOOR_LOOT,
+  LEGENDARY_TOWER_VAULT_LOOT,
+  getLegendaryTowerFloorHeight,
+} from './WorldLayout';
 import {
   BuildablePieceState,
   BuildMaterialType,
   BuildPieceType,
+  LootItemState,
 } from '../network/schemas';
 
 export interface BoxCollider {
@@ -68,6 +75,12 @@ export class IslandWorld {
   public raycastMeshes: THREE.Object3D[] = [];
   public chestSpawnPoints: THREE.Vector3[] = [];
   public lootSpawnPoints: THREE.Vector3[] = [];
+  /** Fixed, sub-legendary loot found while climbing the central tower. */
+  public legendaryTowerFloorLootItems: LootItemState[] = [];
+  /** The unique rooftop vault registry (server-owned in online matches). */
+  public legendaryTowerVaultLootItems: LootItemState[] = [];
+  public legendaryTowerBaseY = 4.5;
+  public legendaryTowerRoofY = 50.55;
   public occupiedBuildCells: Set<string> = new Set();
 
   private raycaster = new THREE.Raycaster();
@@ -114,6 +127,9 @@ export class IslandWorld {
   private previewLineInvalid: THREE.LineBasicMaterial;
 
   private monumentCrystal: THREE.Mesh | null = null;
+  private legendaryTowerCrystalBaseY = 0;
+  private legendaryTowerBeaconGroup: THREE.Group | null = null;
+  private legendaryTowerParticles: THREE.Points | null = null;
   private ruinObeliskCrystal: THREE.Mesh | null = null;
   private windmillBlades: THREE.Group | null = null;
   private lighthouseBeam: THREE.Group | null = null;
@@ -282,7 +298,9 @@ export class IslandWorld {
     // Additive districts register their colliders/loot before procedural
     // wilderness placement, allowing every later tree/rock/crate pass to
     // reject building footprints deterministically.
+    this.buildLegendaryTowerLootDefinitions();
     this.mapExpansion.buildDistricts();
+    this.buildLegendaryTowerFx();
     this.populateWilderness();
     this.mapExpansion.populateVegetation();
     this.buildInstancedWorldProps();
@@ -358,6 +376,164 @@ export class IslandWorld {
         }
       }
     }
+  }
+
+  private buildLegendaryTowerLootDefinitions(): void {
+    this.legendaryTowerBaseY = this.terrain.getTerrainHeight(
+      LEGENDARY_TOWER.x,
+      LEGENDARY_TOWER.z
+    );
+    this.legendaryTowerRoofY = getLegendaryTowerFloorHeight(
+      this.legendaryTowerBaseY,
+      LEGENDARY_TOWER.roofLevel
+    );
+
+    const toLootItem = (
+      definition: (typeof LEGENDARY_TOWER_FLOOR_LOOT)[number],
+      isVault: boolean
+    ): LootItemState => ({
+      id: definition.id,
+      itemType: definition.itemType,
+      weaponCategory: definition.weaponCategory,
+      ammoType: definition.ammoType,
+      materialType: definition.materialType,
+      rarity: definition.rarity,
+      name: definition.name,
+      amount: definition.amount,
+      position: {
+        x: LEGENDARY_TOWER.x + definition.x,
+        y:
+          getLegendaryTowerFloorHeight(this.legendaryTowerBaseY, definition.floor) +
+          definition.yOffset,
+        z: LEGENDARY_TOWER.z + definition.z,
+      },
+      opened: false,
+      isLegendaryTowerLoot: isVault || undefined,
+      serverAuthoritative: isVault || undefined,
+    });
+
+    this.legendaryTowerFloorLootItems = LEGENDARY_TOWER_FLOOR_LOOT.map((definition) =>
+      toLootItem(definition, false)
+    );
+    this.legendaryTowerVaultLootItems = LEGENDARY_TOWER_VAULT_LOOT.map((definition) =>
+      toLootItem(definition, true)
+    );
+  }
+
+  /**
+   * A deliberately tiny animated layer (two additive beams, two rings, one
+   * rotating crystal and one 56-point particle spiral) makes the vault
+   * readable from the coast without adding a per-frame particle system or a
+   * forest of dynamic lights. The tower's architecture itself is instanced
+   * by MapExpansionBuilder.
+   */
+  private buildLegendaryTowerFx(): void {
+    const roofY = this.legendaryTowerRoofY;
+    const group = new THREE.Group();
+    group.name = 'LegendaryTowerBeaconFx';
+    group.position.set(LEGENDARY_TOWER.x, roofY, LEGENDARY_TOWER.z);
+
+    const goldBeamMat = new THREE.MeshBasicMaterial({
+      color: 0xfacc15,
+      transparent: true,
+      opacity: 0.16,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const goldBeam = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.35, 2.7, 38, 12, 1, true),
+      goldBeamMat
+    );
+    goldBeam.name = 'LegendaryTowerBeaconBeam';
+    goldBeam.position.y = 21;
+    group.add(goldBeam);
+
+    const cyanBeamMat = new THREE.MeshBasicMaterial({
+      color: 0x22d3ee,
+      transparent: true,
+      opacity: 0.2,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const cyanBeam = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.32, 0.72, 32, 8, 1, true),
+      cyanBeamMat
+    );
+    cyanBeam.name = 'LegendaryTowerEnergyBeam';
+    cyanBeam.position.y = 18;
+    group.add(cyanBeam);
+
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0xfde047,
+      transparent: true,
+      opacity: 0.72,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    for (const [radius, y, tilt] of [
+      [4.6, 5.9, 0.18],
+      [3.1, 8.2, -0.24],
+    ] as const) {
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(radius, 0.055, 6, 40), ringMat);
+      ring.name = 'LegendaryTowerBeaconRing';
+      ring.position.y = y;
+      ring.rotation.x = Math.PI / 2 + tilt;
+      group.add(ring);
+    }
+
+    const crystalMat = new THREE.MeshStandardMaterial({
+      color: 0xfacc15,
+      emissive: 0xa855f7,
+      emissiveIntensity: 0.72,
+      metalness: 0.35,
+      roughness: 0.22,
+      flatShading: true,
+    });
+    this.monumentCrystal = new THREE.Mesh(new THREE.OctahedronGeometry(1.15, 0), crystalMat);
+    this.monumentCrystal.name = 'LegendaryTowerVaultCrystal';
+    this.legendaryTowerCrystalBaseY = roofY + 7.6;
+    this.monumentCrystal.position.set(
+      LEGENDARY_TOWER.x,
+      this.legendaryTowerCrystalBaseY,
+      LEGENDARY_TOWER.z
+    );
+    this.worldGroup.add(this.monumentCrystal);
+
+    const particleCount = 56;
+    const positions = new Float32Array(particleCount * 3);
+    for (let i = 0; i < particleCount; i++) {
+      const t = i / particleCount;
+      const angle = t * Math.PI * 8;
+      const radius = 2.3 + Math.sin(t * Math.PI * 3) * 1.15;
+      positions[i * 3] = Math.cos(angle) * radius;
+      positions[i * 3 + 1] = 0.6 + t * 10.5;
+      positions[i * 3 + 2] = Math.sin(angle) * radius;
+    }
+    const particleGeo = new THREE.BufferGeometry();
+    particleGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    this.legendaryTowerParticles = new THREE.Points(
+      particleGeo,
+      new THREE.PointsMaterial({
+        color: 0xfde68a,
+        size: 0.24,
+        transparent: true,
+        opacity: 0.88,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      })
+    );
+    this.legendaryTowerParticles.name = 'LegendaryTowerVaultParticles';
+    group.add(this.legendaryTowerParticles);
+
+    const vaultLight = new THREE.PointLight(0xfacc15, 85, 34, 2);
+    vaultLight.name = 'LegendaryTowerVaultLight';
+    vaultLight.position.y = 4.2;
+    group.add(vaultLight);
+
+    this.legendaryTowerBeaconGroup = group;
+    this.worldGroup.add(group);
   }
 
   private createEnterableHouse(
@@ -657,43 +833,17 @@ export class IslandWorld {
     this.createEnterableHouse(18, 16, 11, 10, 4.6, 0x4ade80, 0x16a34a, true);
 
     const baseY = this.terrain.getTerrainHeight(0, 0);
-    const pedestalMat = new THREE.MeshStandardMaterial({ color: 0x475569, flatShading: true });
-    const pedestal = new THREE.Mesh(new THREE.CylinderGeometry(3.4, 4.0, 1.5, 8), pedestalMat);
-    pedestal.position.set(0, baseY + 0.75, 0);
-    pedestal.castShadow = true;
-    pedestal.receiveShadow = true;
-    this.worldGroup.add(pedestal);
-    this.raycastMeshes.push(pedestal);
-    this.cylinderColliders.push({
-      id: 'plaza_pedestal',
-      x: 0,
-      z: 0,
-      radius: 3.6,
-      minY: baseY,
-      maxY: baseY + 1.5,
-    });
-
-    const ringMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8 });
-    const holoRing = new THREE.Mesh(new THREE.TorusGeometry(2.6, 0.08, 8, 24), ringMat);
-    holoRing.rotation.x = Math.PI / 2;
-    holoRing.position.set(0, baseY + 1.6, 0);
-    this.worldGroup.add(holoRing);
-
-    const crystalMat = new THREE.MeshStandardMaterial({
-      color: 0x38bdf8,
-      emissive: 0x0ea5e9,
-      emissiveIntensity: 0.65,
-      flatShading: true,
-    });
-    this.monumentCrystal = new THREE.Mesh(new THREE.OctahedronGeometry(2.0, 0), crystalMat);
-    this.monumentCrystal.position.set(0, baseY + 3.8, 0);
-    this.worldGroup.add(this.monumentCrystal);
+    // The small former monument has been replaced by The Legendary Tower.
+    // MapExpansionBuilder constructs that 22 m core with instanced meshes
+    // after the original houses, preserving these four Plaza buildings just
+    // outside the tower footprint. The animated crystal is recreated as the
+    // tower's rooftop vault crystal in buildLegendaryTowerFx().
 
     const lampPositions = [
-      [-9, -9],
-      [9, -9],
-      [-9, 9],
-      [9, 9],
+      [-17, 0],
+      [17, 0],
+      [0, -17],
+      [0, 17],
     ];
     const poleMat = new THREE.MeshStandardMaterial({ color: 0x334155, flatShading: true });
     const bulbMat = new THREE.MeshBasicMaterial({ color: 0xfef08a });
@@ -715,10 +865,10 @@ export class IslandWorld {
     const planterMat = new THREE.MeshStandardMaterial({ color: 0x64748b, flatShading: true });
     const bushTopMat = new THREE.MeshStandardMaterial({ color: 0x22c55e, flatShading: true });
     for (const [px, pz] of [
-      [-11, 0],
-      [11, 0],
-      [0, -11],
-      [0, 11],
+      [-20, -5],
+      [20, 5],
+      [-5, -20],
+      [5, 20],
     ]) {
       const py = this.terrain.getTerrainHeight(px, pz);
       const planter = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.95, 1.2), planterMat);
@@ -739,13 +889,13 @@ export class IslandWorld {
       });
     }
 
-    this.chestSpawnPoints.push(new THREE.Vector3(0, baseY + 0.4, 5.2));
-    this.lootSpawnPoints.push(new THREE.Vector3(-4.8, baseY + 0.4, 0));
-    this.lootSpawnPoints.push(new THREE.Vector3(4.8, baseY + 0.4, 0));
+    this.chestSpawnPoints.push(new THREE.Vector3(-16, baseY + 0.4, 6));
+    this.lootSpawnPoints.push(new THREE.Vector3(16, baseY + 0.4, -6));
+    this.lootSpawnPoints.push(new THREE.Vector3(-6, baseY + 0.4, 16));
 
-    this.spawnCrate(8, -5);
-    this.spawnCrate(-8, 6);
-    this.spawnCrate(6, 8);
+    this.spawnCrate(16, 6);
+    this.spawnCrate(-16, -6);
+    this.spawnCrate(6, -16);
   }
 
   private buildDockerDocks(): void {
@@ -3016,7 +3166,16 @@ export class IslandWorld {
     if (this.monumentCrystal) {
       this.monumentCrystal.rotation.y += dt * 1.1;
       this.monumentCrystal.position.y =
-        this.terrain.getTerrainHeight(0, 0) + 3.8 + Math.sin(this.animTime * 2.2) * 0.25;
+        this.legendaryTowerCrystalBaseY + Math.sin(this.animTime * 2.2) * 0.25;
+    }
+    if (this.legendaryTowerBeaconGroup) {
+      this.legendaryTowerBeaconGroup.rotation.y += dt * 0.16;
+      const pulse = 1 + Math.sin(this.animTime * 2.6) * 0.035;
+      this.legendaryTowerBeaconGroup.scale.set(pulse, 1, pulse);
+    }
+    if (this.legendaryTowerParticles) {
+      this.legendaryTowerParticles.rotation.y -= dt * 0.55;
+      this.legendaryTowerParticles.position.y = Math.sin(this.animTime * 1.4) * 0.18;
     }
 
     if (this.ruinObeliskCrystal) {

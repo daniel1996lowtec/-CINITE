@@ -698,7 +698,7 @@ export class BotAIController {
     let bestDist = radius;
 
     for (const item of state.lootItems.values()) {
-      if (item.opened) continue;
+      if (item.opened || item.serverAuthoritative) continue;
       if (item.itemType !== 'chest' && item.itemType !== 'weapon' && item.itemType !== 'consumable') {
         continue;
       }

@@ -97,6 +97,116 @@ export interface ProtectedWorldZone extends AxisAlignedFootprint {
   id: string;
 }
 
+export type LegendaryTowerSide = 'east' | 'north' | 'west' | 'south';
+export type LegendaryTowerLootKind = 'weapon' | 'consumable' | 'ammo' | 'material';
+
+export interface LegendaryTowerLootDefinition {
+  id: string;
+  itemType: LegendaryTowerLootKind;
+  name: string;
+  rarity: 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary';
+  amount: number;
+  floor: number;
+  x: number;
+  z: number;
+  yOffset: number;
+  weaponCategory?: 'pistol' | 'assault_rifle' | 'shotgun' | 'smg' | 'sniper' | 'medkit' | 'shield_potion';
+  ammoType?: 'light' | 'medium' | 'shells' | 'heavy';
+  materialType?: 'wood' | 'stone' | 'metal';
+}
+
+/**
+ * The single central landmark. It deliberately sits at the island origin:
+ * Pipeline Plaza's original four houses remain just outside its 22 m core,
+ * while every spoke road already terminates at its plaza/entrances.
+ */
+export const LEGENDARY_TOWER = {
+  id: 'legendary_tower',
+  name: 'The Legendary Tower',
+  districtId: 'pipeline_plaza',
+  x: 0,
+  z: 0,
+  outerHalfExtent: 11,
+  podiumHalfExtent: 12.3,
+  floorCount: 8,
+  roofLevel: 7,
+  floorHeight: 6.5,
+  baseFloorOffset: 0.55,
+  stairInnerEdge: 7.05,
+  stairOuterEdge: 10.35,
+  stairRunHalf: 8.6,
+  crownHeightAboveTerrain: 68,
+} as const;
+
+export const LEGENDARY_TOWER_ASCENT_SIDES: LegendaryTowerSide[] = [
+  'east',
+  'north',
+  'west',
+  'south',
+];
+
+export function getLegendaryTowerFloorHeight(baseY: number, level: number): number {
+  return baseY + LEGENDARY_TOWER.baseFloorOffset + level * LEGENDARY_TOWER.floorHeight;
+}
+
+export function getLegendaryTowerAscentSide(fromLevel: number): LegendaryTowerSide {
+  return LEGENDARY_TOWER_ASCENT_SIDES[
+    ((fromLevel % LEGENDARY_TOWER_ASCENT_SIDES.length) +
+      LEGENDARY_TOWER_ASCENT_SIDES.length) %
+      LEGENDARY_TOWER_ASCENT_SIDES.length
+  ];
+}
+
+/**
+ * Small, deliberately sub-legendary rewards on the climb. These use fixed
+ * IDs in every mode so multiplayer collection can be deduplicated by the
+ * server; the unique best-in-game weapons are only in the vault list below.
+ */
+export const LEGENDARY_TOWER_FLOOR_LOOT: LegendaryTowerLootDefinition[] = [
+  { id: 'tower_floor_0_pistol', itemType: 'weapon', weaponCategory: 'pistol', name: 'Common Cyber Pistol', rarity: 'common', amount: 1, floor: 0, x: -4, z: 5, yOffset: 0.35 },
+  { id: 'tower_floor_0_medkit', itemType: 'consumable', weaponCategory: 'medkit', name: 'Nano Medkit (+50)', rarity: 'uncommon', amount: 1, floor: 0, x: 4, z: 5, yOffset: 0.35 },
+  { id: 'tower_floor_0_light_ammo', itemType: 'ammo', ammoType: 'light', name: 'Light Ammo (36)', rarity: 'common', amount: 36, floor: 0, x: 5, z: -4, yOffset: 0.35 },
+  { id: 'tower_floor_1_smg', itemType: 'weapon', weaponCategory: 'smg', name: 'Uncommon Hyper SMG', rarity: 'uncommon', amount: 1, floor: 1, x: -5, z: -3, yOffset: 0.35 },
+  { id: 'tower_floor_1_shield', itemType: 'consumable', weaponCategory: 'shield_potion', name: 'Shield Potion (+50)', rarity: 'rare', amount: 1, floor: 1, x: 4, z: 4, yOffset: 0.35 },
+  { id: 'tower_floor_1_wood', itemType: 'material', materialType: 'wood', name: 'WOOD x50', rarity: 'uncommon', amount: 50, floor: 1, x: 5, z: 0, yOffset: 0.35 },
+  { id: 'tower_floor_2_rifle', itemType: 'weapon', weaponCategory: 'assault_rifle', name: 'Rare Pulse Rifle', rarity: 'rare', amount: 1, floor: 2, x: -4, z: 4, yOffset: 0.35 },
+  { id: 'tower_floor_2_medium_ammo', itemType: 'ammo', ammoType: 'medium', name: 'Medium Ammo (60)', rarity: 'common', amount: 60, floor: 2, x: 5, z: -3, yOffset: 0.35 },
+  { id: 'tower_floor_2_stone', itemType: 'material', materialType: 'stone', name: 'STONE x60', rarity: 'uncommon', amount: 60, floor: 2, x: -5, z: 0, yOffset: 0.35 },
+  { id: 'tower_floor_3_shotgun', itemType: 'weapon', weaponCategory: 'shotgun', name: 'Rare Scatter Pump', rarity: 'rare', amount: 1, floor: 3, x: 4, z: 5, yOffset: 0.35 },
+  { id: 'tower_floor_3_medkit', itemType: 'consumable', weaponCategory: 'medkit', name: 'Nano Medkit (+50)', rarity: 'uncommon', amount: 1, floor: 3, x: -5, z: -4, yOffset: 0.35 },
+  { id: 'tower_floor_3_shells', itemType: 'ammo', ammoType: 'shells', name: 'Shotgun Shells (24)', rarity: 'common', amount: 24, floor: 3, x: 0, z: 5, yOffset: 0.35 },
+  { id: 'tower_floor_4_sniper', itemType: 'weapon', weaponCategory: 'sniper', name: 'Rare Rail Sniper', rarity: 'rare', amount: 1, floor: 4, x: -4, z: -5, yOffset: 0.35 },
+  { id: 'tower_floor_4_shield', itemType: 'consumable', weaponCategory: 'shield_potion', name: 'Shield Potion (+50)', rarity: 'rare', amount: 1, floor: 4, x: 5, z: 4, yOffset: 0.35 },
+  { id: 'tower_floor_4_heavy_ammo', itemType: 'ammo', ammoType: 'heavy', name: 'Heavy Sniper Ammo (16)', rarity: 'common', amount: 16, floor: 4, x: 3, z: -5, yOffset: 0.35 },
+  { id: 'tower_floor_5_smg', itemType: 'weapon', weaponCategory: 'smg', name: 'Epic Hyper SMG', rarity: 'epic', amount: 1, floor: 5, x: 5, z: -4, yOffset: 0.35 },
+  { id: 'tower_floor_5_shield', itemType: 'consumable', weaponCategory: 'shield_potion', name: 'Shield Potion (+50)', rarity: 'rare', amount: 1, floor: 5, x: -2.5, z: 3, yOffset: 0.35 },
+  { id: 'tower_floor_5_light_ammo', itemType: 'ammo', ammoType: 'light', name: 'Light Ammo (72)', rarity: 'common', amount: 72, floor: 5, x: -3, z: 5, yOffset: 0.35 },
+  { id: 'tower_floor_6_rifle', itemType: 'weapon', weaponCategory: 'assault_rifle', name: 'Epic Pulse Rifle', rarity: 'epic', amount: 1, floor: 6, x: -4, z: 4, yOffset: 0.35 },
+  { id: 'tower_floor_6_medkit', itemType: 'consumable', weaponCategory: 'medkit', name: 'Nano Medkit (+50)', rarity: 'uncommon', amount: 1, floor: 6, x: 4, z: -4, yOffset: 0.35 },
+  { id: 'tower_floor_6_metal', itemType: 'material', materialType: 'metal', name: 'METAL x100', rarity: 'uncommon', amount: 100, floor: 6, x: 0, z: 5, yOffset: 0.35 },
+];
+
+/**
+ * The roof vault. IDs are part of the multiplayer contract: the Node server
+ * keeps an identical authoritative registry, sends these items itself in
+ * online matches, and rejects any client-forged duplicate/swap for them.
+ */
+export const LEGENDARY_TOWER_VAULT_LOOT: LegendaryTowerLootDefinition[] = [
+  { id: 'legendary_tower_assault_rifle', itemType: 'weapon', weaponCategory: 'assault_rifle', name: 'Legendary Pulse Rifle', rarity: 'legendary', amount: 1, floor: 7, x: -3, z: 2.8, yOffset: 1.18 },
+  { id: 'legendary_tower_sniper', itemType: 'weapon', weaponCategory: 'sniper', name: 'Legendary Rail Sniper', rarity: 'legendary', amount: 1, floor: 7, x: 0, z: 3.4, yOffset: 1.18 },
+  { id: 'legendary_tower_shotgun', itemType: 'weapon', weaponCategory: 'shotgun', name: 'Legendary Scatter Pump', rarity: 'legendary', amount: 1, floor: 7, x: 3, z: 2.8, yOffset: 1.18 },
+  { id: 'legendary_tower_shield_1', itemType: 'consumable', weaponCategory: 'shield_potion', name: 'Shield Potion (+50)', rarity: 'rare', amount: 1, floor: 7, x: -3.6, z: 0.6, yOffset: 1.18 },
+  { id: 'legendary_tower_shield_2', itemType: 'consumable', weaponCategory: 'shield_potion', name: 'Shield Potion (+50)', rarity: 'rare', amount: 1, floor: 7, x: -1.9, z: 0.8, yOffset: 1.18 },
+  { id: 'legendary_tower_medkit_1', itemType: 'consumable', weaponCategory: 'medkit', name: 'Nano Medkit (+50)', rarity: 'uncommon', amount: 1, floor: 7, x: 1.9, z: 0.8, yOffset: 1.18 },
+  { id: 'legendary_tower_medkit_2', itemType: 'consumable', weaponCategory: 'medkit', name: 'Nano Medkit (+50)', rarity: 'uncommon', amount: 1, floor: 7, x: 3.6, z: 0.6, yOffset: 1.18 },
+  { id: 'legendary_tower_medium_ammo', itemType: 'ammo', ammoType: 'medium', name: 'Medium Ammo (120)', rarity: 'common', amount: 120, floor: 7, x: -3.4, z: -3, yOffset: 1.18 },
+  { id: 'legendary_tower_heavy_ammo', itemType: 'ammo', ammoType: 'heavy', name: 'Heavy Sniper Ammo (40)', rarity: 'common', amount: 40, floor: 7, x: 0, z: -3.6, yOffset: 1.18 },
+  { id: 'legendary_tower_shells', itemType: 'ammo', ammoType: 'shells', name: 'Shotgun Shells (48)', rarity: 'common', amount: 48, floor: 7, x: 3.4, z: -3, yOffset: 1.18 },
+  { id: 'legendary_tower_metal', itemType: 'material', materialType: 'metal', name: 'METAL x250', rarity: 'uncommon', amount: 250, floor: 7, x: -3.8, z: -0.8, yOffset: 1.18 },
+  { id: 'legendary_tower_stone', itemType: 'material', materialType: 'stone', name: 'STONE x200', rarity: 'uncommon', amount: 200, floor: 7, x: 3.8, z: -0.8, yOffset: 1.18 },
+  { id: 'legendary_tower_wood', itemType: 'material', materialType: 'wood', name: 'WOOD x200', rarity: 'uncommon', amount: 200, floor: 7, x: 0, z: -2.2, yOffset: 1.18 },
+];
+
 export const ISLAND_SETTLEMENTS: SettlementDefinition[] = [
   { id: 'westlook_village', name: 'Westlook Village', x: -150, z: -45, radius: 25, baseHeight: 3.6, ground: 'paved', color: '#38bdf8', streetAxis: 'x' },
   { id: 'southwest_hamlet', name: 'Southwest Hamlet', x: -145, z: 45, radius: 25, baseHeight: 4.2, ground: 'sand', color: '#fb7185', streetAxis: 'x' },
@@ -321,7 +431,11 @@ export const EXISTING_MAJOR_FOOTPRINTS: ProtectedWorldZone[] = [
   { id: 'plaza_house_ne', minX: 12, maxX: 27, minZ: -21, maxZ: -11 },
   { id: 'plaza_house_sw', minX: -23, maxX: -13, minZ: 11, maxZ: 21 },
   { id: 'plaza_house_se', minX: 12, maxX: 27, minZ: 11, maxZ: 21 },
-  { id: 'plaza_monument', minX: -5, maxX: 5, minZ: -5, maxZ: 5 },
+  { id: 'legendary_tower_core', minX: -11.8, maxX: 11.8, minZ: -11.8, maxZ: 11.8 },
+  { id: 'legendary_tower_south_works', minX: -11, maxX: 11, minZ: 11.2, maxZ: 16.2 },
+  { id: 'legendary_tower_north_works', minX: -11, maxX: 11, minZ: -16.2, maxZ: -11.2 },
+  { id: 'legendary_tower_east_works', minX: 11.2, maxX: 16.2, minZ: -11, maxZ: 11 },
+  { id: 'legendary_tower_west_works', minX: -16.2, maxX: -11.2, minZ: -11, maxZ: 11 },
   { id: 'docks_original_house', minX: -112, maxX: -95, minZ: 78, maxZ: 88 },
   { id: 'docks_pier_lighthouse', minX: -138, maxX: -123, minZ: 107, maxZ: 127 },
   { id: 'docks_crane_containers', minX: -123, maxX: -89, minZ: 87, maxZ: 109 },

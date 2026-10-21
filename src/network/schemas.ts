@@ -124,6 +124,9 @@ export interface PlayerState {
   isReady?: boolean;
   isParticipant?: boolean;
   isConnected?: boolean;
+  isHost?: boolean;
+  teamId?: string;
+  teamIndex?: number;
   aiState?: BotAIState;
   skinColor: number;
   accentColor: number;
@@ -170,6 +173,10 @@ export interface LootItemState {
   amount: number;
   position: Vector3State;
   opened: boolean;
+  /** True only for the fixed Legendary Tower vault registry. */
+  isLegendaryTowerLoot?: boolean;
+  /** In online play these items are spawned/claimed only by the server. */
+  serverAuthoritative?: boolean;
 }
 
 export interface BuildablePieceState {
@@ -237,6 +244,78 @@ export type SessionMode = 'solo_bots' | 'online' | HumanOnlySessionMode;
 
 export type RoomPhase = 'lobby' | 'countdown' | 'active' | 'ended';
 
+export type LobbyVisibility = 'public' | 'private';
+
+export type RoomVisibility = LobbyVisibility | 'room_code';
+
+export type TeamMode = 'solo' | 'duo' | 'squad';
+
+export type LobbyStartCondition = 'all_ready' | 'host_start' | 'fill_lobby';
+
+export type LobbyMapId = 'ci_island';
+
+export type LobbyStatus =
+  | 'waiting'
+  | 'starting'
+  | 'in_game'
+  | 'full'
+  | 'ended'
+  | 'closed';
+
+export interface CreateLobbyRequest {
+  name?: string;
+  visibility: LobbyVisibility;
+  humanOnly: boolean;
+  maxPlayers: 2 | 4 | 8 | 16 | 20;
+  mapId: LobbyMapId;
+  teamMode: TeamMode;
+  botCount: number;
+  botDifficulty?: BotDifficulty;
+  startCondition: LobbyStartCondition;
+  password?: string;
+  allowLateJoin?: boolean;
+}
+
+export interface LobbySummary {
+  id: string;
+  roomId: string;
+  roomCode: string;
+  name: string;
+  lobbyName: string;
+  hostName: string;
+  hostPlayerId: string | null;
+  mode: MultiplayerRoomMode;
+  roomMode: MultiplayerRoomMode;
+  visibility: RoomVisibility;
+  isPrivate: boolean;
+  hasPassword: boolean;
+  phase: RoomPhase;
+  status: LobbyStatus;
+  matchStatus: RoomPhase;
+  humanOnly: boolean;
+  aiFillEnabled: boolean;
+  botCount: number;
+  botDifficulty: BotDifficulty;
+  currentPlayers: number;
+  humanCount: number;
+  connectedHumans: number;
+  readyHumans: number;
+  maxPlayers: number;
+  availableSlots: number;
+  minPlayers: number;
+  mapId: LobbyMapId;
+  mapName: string;
+  teamMode: TeamMode;
+  gameMode: TeamMode;
+  startCondition: LobbyStartCondition;
+  allowLateJoin: boolean;
+  canJoin: boolean;
+  joinBlockReason: string;
+  createdAt: number;
+  matchStartedAt: number;
+  pingMs: number | null;
+}
+
 export function isHumanOnlySessionMode(
   mode: SessionMode
 ): mode is HumanOnlySessionMode {
@@ -269,19 +348,35 @@ export interface RoomPlayerSummary {
   isReady: boolean;
   isParticipant: boolean;
   isConnected: boolean;
+  isHost: boolean;
+  teamId: string;
+  teamIndex: number;
   alive: boolean;
 }
 
 export interface RoomSnapshot {
+  id: string;
+  roomId: string;
   roomCode: string;
+  name: string;
+  lobbyName: string;
+  hostName: string;
+  hostPlayerId: string | null;
+  isSelfHost: boolean;
   mode: MultiplayerRoomMode;
   roomMode: MultiplayerRoomMode;
-  visibility: 'public' | 'private' | 'room_code';
+  visibility: RoomVisibility;
+  isPrivate: boolean;
+  hasPassword: boolean;
+  isListed: boolean;
+  isLobbyManaged: boolean;
   phase: RoomPhase;
+  status: LobbyStatus;
   matchStatus: RoomPhase;
   humanOnly: boolean;
   aiFillEnabled: boolean;
   botCount: number;
+  botDifficulty: BotDifficulty;
   connectedPlayers: number;
   connectedHumans: number;
   authenticatedHumans: number;
@@ -291,11 +386,22 @@ export interface RoomSnapshot {
   totalHumans: number;
   aliveHumans: number;
   maxPlayers: number;
+  availableSlots: number;
   minPlayers: number;
+  mapId: LobbyMapId;
+  mapName: string;
+  teamMode: TeamMode;
+  gameMode: TeamMode;
+  startCondition: LobbyStartCondition;
+  allowLateJoin: boolean;
+  createdAt: number;
   matchParticipantCount: number;
   countdownEndsAt: number;
   canStart: boolean;
+  canHostStart: boolean;
   winnerId: string | null;
+  winnerIds: string[];
+  winnerTeamId: string;
   winnerName: string;
   stormPhase: number;
   selfPlayerId?: string;
@@ -306,6 +412,14 @@ export interface LobbyConfig {
   playerName: string;
   mode: SessionMode;
   roomCode?: string;
+  roomPassword?: string;
+  createLobby?: CreateLobbyRequest;
+  lobbyName?: string;
+  maxPlayers?: number;
+  mapId?: LobbyMapId;
+  teamMode?: TeamMode;
+  startCondition?: LobbyStartCondition;
+  visibility?: LobbyVisibility;
   botCount: number;
   difficulty: BotDifficulty;
   skyDrop: boolean;
