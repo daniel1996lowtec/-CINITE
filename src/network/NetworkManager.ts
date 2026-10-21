@@ -2,6 +2,7 @@ import {
   BackAccessoryType,
   BuildMaterialType,
   BuildPieceType,
+  CosmeticLoadout,
   InventorySlot,
   BotDifficulty,
   CreateLobbyRequest,
@@ -23,9 +24,11 @@ import {
   TeamMode,
   WeaponCategory,
   WeaponRarity,
+  getStarterLoadoutItems as resolveStarterLoadoutItems,
   isHumanOnlySessionMode,
   roomModeForSessionMode,
 } from './schemas';
+import { normalizeOutfitPresetId } from '../entities/CharacterCosmetics';
 import { createWeaponStats } from '../weapons/WeaponDefinitions';
 import { createInitialStormState } from '../systems/StormConfig';
 
@@ -200,6 +203,26 @@ function normalizeRoomSnapshot(
             teamId: String(player.teamId || ''),
             teamIndex: Number(player.teamIndex ?? -1),
             alive: Boolean(player.alive ?? true),
+            outfitId: normalizeOutfitPresetId(player.outfitId),
+            skinColor:
+              Number.isInteger(Number(player.skinColor)) &&
+              Number(player.skinColor) >= 0 &&
+              Number(player.skinColor) <= 0xffffff
+                ? Number(player.skinColor)
+                : 0x0284c7,
+            accentColor:
+              Number.isInteger(Number(player.accentColor)) &&
+              Number(player.accentColor) >= 0 &&
+              Number(player.accentColor) <= 0xffffff
+                ? Number(player.accentColor)
+                : 0x38bdf8,
+            backAccessory: (
+              ['jump_pack', 'energy_wings', 'tactical_shield', 'none'].includes(
+                String(player.backAccessory || '')
+              )
+                ? String(player.backAccessory)
+                : 'jump_pack'
+            ) as BackAccessoryType,
           })
         )
     : previousPlayers;
@@ -690,6 +713,7 @@ export class NetworkManager {
       reloadDuration: 0,
       isHealing: false,
       landingImpactTimer: 0,
+      outfitId: normalizeOutfitPresetId(config.cosmetics?.outfitId),
       skinColor: config.cosmetics?.skinColor ?? 0x0284c7,
       accentColor: config.cosmetics?.accentColor ?? 0x38bdf8,
       backAccessory: config.cosmetics?.backAccessory ?? 'jump_pack',
@@ -850,48 +874,8 @@ export class NetworkManager {
     return localPlayer;
   }
 
-  private getStarterLoadoutItems(loadout: StarterLoadoutType): {
-    primaryCat: WeaponCategory;
-    primaryRarity: 'common' | 'uncommon' | 'rare';
-    secondaryCat: WeaponCategory;
-    secondaryRarity: 'common' | 'uncommon' | 'rare';
-    materials: { wood: number; stone: number; metal: number };
-  } {
-    switch (loadout) {
-      case 'close_quarters':
-        return {
-          primaryCat: 'tactical_shotgun',
-          primaryRarity: 'uncommon',
-          secondaryCat: 'smg',
-          secondaryRarity: 'common',
-          materials: { wood: 120, stone: 60, metal: 30 },
-        };
-      case 'sharpshooter':
-        return {
-          primaryCat: 'dmr',
-          primaryRarity: 'rare',
-          secondaryCat: 'heavy_pistol',
-          secondaryRarity: 'uncommon',
-          materials: { wood: 80, stone: 60, metal: 30 },
-        };
-      case 'demolition':
-        return {
-          primaryCat: 'burst_rifle',
-          primaryRarity: 'uncommon',
-          secondaryCat: 'tactical_shotgun',
-          secondaryRarity: 'rare',
-          materials: { wood: 200, stone: 150, metal: 100 },
-        };
-      case 'balanced':
-      default:
-        return {
-          primaryCat: 'assault_rifle',
-          primaryRarity: 'uncommon',
-          secondaryCat: 'pistol',
-          secondaryRarity: 'common',
-          materials: { wood: 100, stone: 50, metal: 25 },
-        };
-    }
+  private getStarterLoadoutItems(loadout: StarterLoadoutType) {
+    return resolveStarterLoadoutItems(loadout);
   }
 
   private sendJoinRoomPacket(): void {
@@ -913,7 +897,7 @@ export class NetworkManager {
       starterLoadout: config.starterLoadout,
       position: localPlayer.position,
       isGliding: localPlayer.isGliding,
-      outfitId: config.cosmetics?.outfitId,
+      outfitId: localPlayer.outfitId || config.cosmetics?.outfitId,
       skinColor: localPlayer.skinColor,
       accentColor: localPlayer.accentColor,
       backAccessory: localPlayer.backAccessory || 'jump_pack',
@@ -1116,6 +1100,29 @@ export class NetworkManager {
     const localPlayer = this.state.players.get(this.localPlayerId);
     if (localPlayer) localPlayer.isReady = ready;
     this.sendPacket({ type: 'set_ready', ready });
+  }
+
+  /** Visual-only locker sync for players already seated in a lobby. */
+  public sendCosmeticsUpdate(cosmetics: CosmeticLoadout): void {
+    const normalized = {
+      outfitId: normalizeOutfitPresetId(cosmetics.outfitId),
+      skinColor: cosmetics.skinColor,
+      accentColor: cosmetics.accentColor,
+      backAccessory: cosmetics.backAccessory,
+    };
+    if (this.activeLocalPlayer) {
+      Object.assign(this.activeLocalPlayer, normalized);
+    }
+    const localPlayer = this.state.players.get(this.localPlayerId);
+    if (localPlayer && localPlayer !== this.activeLocalPlayer) {
+      Object.assign(localPlayer, normalized);
+    }
+    if (!this.isOnlineRoom || !this.roomConnected) return;
+    this.sendPacket({
+      type: 'cosmetics_update',
+      sessionToken: this.sessionToken,
+      ...normalized,
+    });
   }
 
   public requestMatchStart(): void {
@@ -1391,6 +1398,7 @@ export class NetworkManager {
               reloadDuration: 0,
               isHealing: false,
               landingImpactTimer: 0,
+              outfitId: normalizeOutfitPresetId(rp.outfitId),
               skinColor: Number(rp.skinColor ?? 0x22c55e),
               accentColor: Number(rp.accentColor ?? 0xfef08a),
               backAccessory:
@@ -1410,6 +1418,9 @@ export class NetworkManager {
               lastPacketPerfMs: performance.now(),
             });
           } else {
+            if (rp.outfitId !== undefined) {
+              existing.outfitId = normalizeOutfitPresetId(rp.outfitId);
+            }
             if (rp.skinColor !== undefined) {
               existing.skinColor = Number(rp.skinColor);
             }

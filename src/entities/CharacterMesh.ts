@@ -3,11 +3,23 @@ import { GLTFLoader, GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import {
   BackAccessoryType,
+  OutfitPresetId,
   PlayerState,
   WeaponCategory,
   WeaponRarity,
 } from '../network/schemas';
 import { createWeaponMesh } from '../weapons/WeaponDefinitions';
+import {
+  getOutfitVisualProfile,
+  normalizeOutfitPresetId,
+} from './CharacterCosmetics';
+import {
+  getAirbornePose,
+  getLocomotionBlend,
+  getReloadAnimationPose,
+  getTurnLean,
+  getWeaponSwitchPose,
+} from './CharacterAnimation';
 
 function lerpAngle(a: number, b: number, t: number): number {
   let diff = ((b - a + Math.PI) % (Math.PI * 2)) - Math.PI;
@@ -85,9 +97,19 @@ function createTacticalArmorTexture(): THREE.CanvasTexture | null {
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(2, 2);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
   sharedTacticalArmorTexture = tex;
   return tex;
 }
+
+// Shared unit geometries for every procedural outfit attachment. Each mesh
+// only changes scale/rotation, so six cosmetic silhouettes add no unique
+// BufferGeometry allocations per player.
+const OUTFIT_BOX_GEO = new THREE.BoxGeometry(1, 1, 1);
+const OUTFIT_CYLINDER_GEO = new THREE.CylinderGeometry(0.5, 0.5, 1, 10);
+const OUTFIT_CONE_GEO = new THREE.ConeGeometry(0.5, 1, 8);
+const OUTFIT_OCTA_GEO = new THREE.OctahedronGeometry(0.5, 0);
 
 function quatKeyframes(
   boneName: string,
@@ -455,6 +477,7 @@ export class CharacterMesh {
   public proceduralFallbackGroup: THREE.Group;
   public gltfModelGroup: THREE.Group | null = null;
   public jumpPackGroup: THREE.Group | null = null;
+  public outfitAttachmentGroup: THREE.Group | null = null;
   public isUsingGLTF: boolean = false;
 
   // Procedural Fallback Rig Pivots (kept for instant fallback & API compatibility)
@@ -502,6 +525,7 @@ export class CharacterMesh {
   private overheadHealthFill: THREE.Mesh;
   private overheadShieldFill: THREE.Mesh;
 
+  private outfitId: OutfitPresetId;
   private skinColorHex: number;
   private accentColorHex: number;
   private backAccessoryType: BackAccessoryType;
@@ -526,8 +550,12 @@ export class CharacterMesh {
   private aimPoseBlend: number = 0;
   private reloadPoseBlend: number = 0;
   private airbornePoseBlend: number = 0;
+  private turnLean: number = 0;
+  private weaponSwitchDipY: number = 0;
+  private weaponSwitchRoll: number = 0;
   private activeWeaponCategory: WeaponCategory = 'harvester';
   private torsoMat: THREE.MeshStandardMaterial;
+  private accentMat: THREE.MeshStandardMaterial;
   private armorTexture: THREE.CanvasTexture | null = null;
   private tempHandWorldPos = new THREE.Vector3();
   private tempSpineWorldPos = new THREE.Vector3();
@@ -537,6 +565,7 @@ export class CharacterMesh {
 
   constructor(playerState: PlayerState) {
     this.playerId = playerState.id;
+    this.outfitId = normalizeOutfitPresetId(playerState.outfitId);
     this.skinColorHex = playerState.skinColor;
     this.accentColorHex = playerState.accentColor;
     this.backAccessoryType = playerState.backAccessory || 'jump_pack';
@@ -558,13 +587,14 @@ export class CharacterMesh {
       roughness: 0.38,
       metalness: 0.25,
     });
-    const accentMat = new THREE.MeshStandardMaterial({
+    this.accentMat = new THREE.MeshStandardMaterial({
       color: playerState.accentColor,
       emissive: playerState.accentColor,
       emissiveIntensity: 0.36,
       roughness: 0.25,
       metalness: 0.35,
     });
+    const accentMat = this.accentMat;
     const skinMat = new THREE.MeshStandardMaterial({
       color: 0xfde68a,
       roughness: 0.55,
@@ -863,6 +893,10 @@ export class CharacterMesh {
     this.overheadBarGroup.visible = false;
     this.root.add(this.overheadBarGroup);
 
+    this.applyOutfitMaterialFinish();
+    this.rebuildBackAccessory();
+    this.rebuildOutfitAttachments();
+
     // 6. Upgrade to Real Rigged GLTF Character if cached, or queue for async load
     if (CharacterMesh.sharedGLTFTemplate) {
       this.upgradeToRiggedGLTFModel();
@@ -897,16 +931,19 @@ export class CharacterMesh {
           mesh.frustumCulled = false;
 
           if (mesh.name === 'vanguard_visor') {
+            const profile = getOutfitVisualProfile(this.outfitId);
             const visorMat = new THREE.MeshStandardMaterial({
               color: this.accentColorHex,
               emissive: this.accentColorHex,
-              emissiveIntensity: 0.72,
-              roughness: 0.14,
-              metalness: 0.85,
+              emissiveIntensity: profile.visorEmissiveIntensity,
+              roughness: Math.max(0.08, profile.roughness * 0.42),
+              metalness: Math.min(0.88, profile.metalness + 0.34),
+              envMapIntensity: profile.envMapIntensity + 0.25,
             });
             mesh.material = visorMat;
             this.gltfVisorMat = visorMat;
           } else if (mesh.material) {
+            const profile = getOutfitVisualProfile(this.outfitId);
             const origMat = mesh.material as THREE.MeshStandardMaterial;
             const customBodyMat = origMat.clone();
             const vibrantColor = new THREE.Color(this.skinColorHex);
@@ -915,8 +952,13 @@ export class CharacterMesh {
             vibrantColor.setHSL(hsl.h, Math.min(1, hsl.s * 1.2), Math.max(0.45, hsl.l));
             const tinted = new THREE.Color(0xffffff).lerp(vibrantColor, 0.58);
             customBodyMat.color.copy(tinted);
-            customBodyMat.roughness = 0.36;
-            customBodyMat.metalness = 0.26;
+            customBodyMat.roughness = profile.roughness;
+            customBodyMat.metalness = profile.metalness;
+            customBodyMat.envMapIntensity = profile.envMapIntensity;
+            if (this.armorTexture) {
+              customBodyMat.bumpMap = this.armorTexture;
+              customBodyMat.bumpScale = 0.012;
+            }
             mesh.material = customBodyMat;
             this.gltfBodyMat = customBodyMat;
           }
@@ -925,6 +967,7 @@ export class CharacterMesh {
 
       // Add Stylized Battle Royale Back Accessory (Jump-Pack, Energy Wings, Tactical Shield, or None)
       this.rebuildBackAccessory();
+      this.applyOutfitMaterialFinish();
 
       // Cache Mixamo skeleton bone references for upper-body aiming/shooting/reloading & airborne layering
       this.gltfBones = {
@@ -1019,6 +1062,191 @@ export class CharacterMesh {
       this.isUsingGLTF = false;
       this.proceduralFallbackGroup.visible = true;
     }
+  }
+
+  private applyOutfitMaterialFinish(): void {
+    const profile = getOutfitVisualProfile(this.outfitId);
+    this.torsoMat.roughness = profile.roughness;
+    this.torsoMat.metalness = profile.metalness;
+    this.torsoMat.envMapIntensity = profile.envMapIntensity;
+    this.accentMat.roughness = Math.max(0.12, profile.roughness * 0.62);
+    this.accentMat.metalness = Math.min(0.72, profile.metalness + 0.18);
+    this.accentMat.envMapIntensity = profile.envMapIntensity;
+    this.accentMat.emissiveIntensity = profile.visorEmissiveIntensity * 0.5;
+
+    if (this.gltfBodyMat) {
+      this.gltfBodyMat.roughness = profile.roughness;
+      this.gltfBodyMat.metalness = profile.metalness;
+      this.gltfBodyMat.envMapIntensity = profile.envMapIntensity;
+      if (this.armorTexture && !this.gltfBodyMat.bumpMap) {
+        this.gltfBodyMat.bumpMap = this.armorTexture;
+        this.gltfBodyMat.bumpScale = 0.012;
+        this.gltfBodyMat.needsUpdate = true;
+      }
+    }
+    if (this.gltfVisorMat) {
+      this.gltfVisorMat.roughness = Math.max(0.08, profile.roughness * 0.42);
+      this.gltfVisorMat.metalness = Math.min(0.88, profile.metalness + 0.34);
+      this.gltfVisorMat.envMapIntensity = profile.envMapIntensity + 0.25;
+      this.gltfVisorMat.emissiveIntensity = profile.visorEmissiveIntensity;
+    }
+  }
+
+  private disposeOutfitAttachments(): void {
+    if (!this.outfitAttachmentGroup) return;
+    this.bodyGroup.remove(this.outfitAttachmentGroup);
+    this.outfitAttachmentGroup.traverse((child) => {
+      const mesh = child as THREE.Mesh;
+      if (!mesh.isMesh || !mesh.material) return;
+      // Geometry is one of the module-level shared unit primitives.
+      if (Array.isArray(mesh.material)) {
+        mesh.material.forEach((material) => material.dispose());
+      } else {
+        mesh.material.dispose();
+      }
+    });
+    this.outfitAttachmentGroup = null;
+  }
+
+  /**
+   * Builds one of six compact procedural armor silhouettes. Every piece is
+   * visual-only, stays inside the existing capsule's practical footprint,
+   * and reuses four shared unit geometries.
+   */
+  private rebuildOutfitAttachments(): void {
+    this.disposeOutfitAttachments();
+    const profile = getOutfitVisualProfile(this.outfitId);
+    const group = new THREE.Group();
+    group.name = 'outfit_attachments';
+    group.userData.outfitId = profile.id;
+    group.userData.armorStyle = profile.armorStyle;
+
+    const armorMat = new THREE.MeshStandardMaterial({
+      color: this.skinColorHex,
+      map: this.armorTexture,
+      roughness: profile.roughness,
+      metalness: profile.metalness,
+      envMapIntensity: profile.envMapIntensity,
+      flatShading: true,
+    });
+    const accentMat = new THREE.MeshStandardMaterial({
+      color: this.accentColorHex,
+      emissive: this.accentColorHex,
+      emissiveIntensity: profile.visorEmissiveIntensity * 0.42,
+      roughness: Math.max(0.12, profile.roughness * 0.55),
+      metalness: Math.min(0.7, profile.metalness + 0.16),
+      envMapIntensity: profile.envMapIntensity,
+      flatShading: true,
+    });
+    const darkMat = new THREE.MeshStandardMaterial({
+      color: 0x1e293b,
+      map: this.armorTexture,
+      roughness: Math.min(0.72, profile.roughness + 0.16),
+      metalness: 0.24,
+      envMapIntensity: profile.envMapIntensity * 0.72,
+      flatShading: true,
+    });
+
+    const add = (
+      name: string,
+      geometry: THREE.BufferGeometry,
+      material: THREE.Material,
+      x: number,
+      y: number,
+      z: number,
+      sx: number,
+      sy: number,
+      sz: number,
+      rx: number = 0,
+      ry: number = 0,
+      rz: number = 0
+    ) => {
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.name = `outfit_${profile.armorStyle}_${name}`;
+      mesh.position.set(x, y, z);
+      mesh.scale.set(sx, sy, sz);
+      mesh.rotation.set(rx, ry, rz);
+      mesh.castShadow = true;
+      group.add(mesh);
+      return mesh;
+    };
+    const pauldron = (
+      side: -1 | 1,
+      width: number,
+      height: number,
+      depth: number,
+      material: THREE.Material = armorMat
+    ) =>
+      add(
+        side < 0 ? 'left_pauldron' : 'right_pauldron',
+        OUTFIT_BOX_GEO,
+        material,
+        side * 0.39,
+        1.5,
+        0,
+        width,
+        height,
+        depth,
+        0,
+        0,
+        side * -0.08
+      );
+
+    switch (profile.armorStyle) {
+      case 'solar':
+        pauldron(-1, 0.28, 0.1, 0.24, accentMat);
+        pauldron(1, 0.28, 0.1, 0.24, accentMat);
+        add('solar_disc', OUTFIT_CYLINDER_GEO, accentMat, 0, 1.31, -0.25, 0.2, 0.032, 0.2, Math.PI / 2);
+        add('solar_core', OUTFIT_OCTA_GEO, armorMat, 0, 1.31, -0.28, 0.1, 0.1, 0.05);
+        add('plume', OUTFIT_CONE_GEO, accentMat, 0, 1.99, 0.02, 0.13, 0.3, 0.13, -0.12);
+        add('waist_sash', OUTFIT_BOX_GEO, darkMat, 0, 0.98, -0.2, 0.42, 0.07, 0.04, 0, 0, -0.18);
+        break;
+      case 'phantom':
+        pauldron(-1, 0.09, 0.32, 0.2);
+        pauldron(1, 0.09, 0.32, 0.2);
+        add('diamond_core', OUTFIT_OCTA_GEO, accentMat, 0, 1.3, -0.26, 0.13, 0.19, 0.05);
+        add('left_antenna', OUTFIT_CYLINDER_GEO, accentMat, -0.11, 1.98, -0.02, 0.024, 0.3, 0.024, 0, 0, 0.18);
+        add('right_antenna', OUTFIT_CYLINDER_GEO, accentMat, 0.11, 1.98, -0.02, 0.024, 0.3, 0.024, 0, 0, -0.18);
+        add('stealth_collar', OUTFIT_BOX_GEO, darkMat, 0, 1.58, -0.08, 0.34, 0.08, 0.22, 0.14);
+        break;
+      case 'ranger':
+        pauldron(-1, 0.3, 0.16, 0.3);
+        pauldron(1, 0.17, 0.1, 0.22, darkMat);
+        add('field_strap', OUTFIT_BOX_GEO, darkMat, 0, 1.3, -0.245, 0.52, 0.07, 0.028, 0, 0, -0.48);
+        add('left_pouch', OUTFIT_BOX_GEO, armorMat, -0.16, 0.98, -0.2, 0.13, 0.16, 0.08);
+        add('right_pouch', OUTFIT_BOX_GEO, darkMat, 0.16, 0.98, -0.2, 0.13, 0.16, 0.08);
+        add('left_sensor_fin', OUTFIT_BOX_GEO, accentMat, -0.12, 1.91, 0, 0.04, 0.17, 0.1, 0, 0, 0.14);
+        add('right_sensor_fin', OUTFIT_BOX_GEO, accentMat, 0.12, 1.91, 0, 0.04, 0.17, 0.1, 0, 0, -0.14);
+        break;
+      case 'arctic':
+        pauldron(-1, 0.28, 0.17, 0.31);
+        pauldron(1, 0.28, 0.17, 0.31);
+        add('sentinel_collar', OUTFIT_BOX_GEO, armorMat, 0, 1.59, -0.02, 0.54, 0.13, 0.34);
+        add('chest_plate', OUTFIT_BOX_GEO, armorMat, 0, 1.29, -0.245, 0.31, 0.3, 0.035);
+        add('cryo_strip', OUTFIT_BOX_GEO, accentMat, 0, 1.31, -0.27, 0.06, 0.24, 0.02);
+        add('visor_guard', OUTFIT_BOX_GEO, darkMat, 0, 1.82, -0.16, 0.3, 0.05, 0.1, 0.2);
+        break;
+      case 'crimson':
+        pauldron(-1, 0.18, 0.11, 0.22, darkMat);
+        pauldron(1, 0.34, 0.19, 0.33);
+        add('slash_left', OUTFIT_BOX_GEO, accentMat, -0.07, 1.33, -0.255, 0.21, 0.035, 0.024, 0, 0, -0.52);
+        add('slash_right', OUTFIT_BOX_GEO, accentMat, 0.07, 1.22, -0.255, 0.21, 0.035, 0.024, 0, 0, -0.52);
+        add('mohawk_fin', OUTFIT_BOX_GEO, accentMat, 0, 1.98, -0.02, 0.035, 0.25, 0.23, -0.08);
+        add('striker_core', OUTFIT_OCTA_GEO, darkMat, 0, 1.08, -0.24, 0.1, 0.13, 0.05);
+        break;
+      case 'vanguard':
+      default:
+        pauldron(-1, 0.25, 0.14, 0.29);
+        pauldron(1, 0.25, 0.14, 0.29);
+        add('chevron_left', OUTFIT_BOX_GEO, accentMat, -0.09, 1.34, -0.25, 0.19, 0.035, 0.024, 0, 0, 0.55);
+        add('chevron_right', OUTFIT_BOX_GEO, accentMat, 0.09, 1.34, -0.25, 0.19, 0.035, 0.024, 0, 0, -0.55);
+        add('chest_core', OUTFIT_OCTA_GEO, accentMat, 0, 1.22, -0.26, 0.11, 0.11, 0.05);
+        add('brow_fin', OUTFIT_BOX_GEO, armorMat, 0, 1.87, -0.13, 0.22, 0.035, 0.12, 0.18);
+        break;
+    }
+
+    this.outfitAttachmentGroup = group;
+    this.bodyGroup.add(group);
   }
 
   private rebuildBackAccessory(): void {
@@ -1127,19 +1355,25 @@ export class CharacterMesh {
   public setCosmetics(
     skinColor: number,
     accentColor: number,
-    backAccessory: BackAccessoryType = 'jump_pack'
+    backAccessory: BackAccessoryType = 'jump_pack',
+    outfitId: OutfitPresetId = this.outfitId
   ): void {
+    const nextOutfitId = normalizeOutfitPresetId(outfitId);
     const changed =
       this.skinColorHex !== skinColor ||
       this.accentColorHex !== accentColor ||
-      this.backAccessoryType !== backAccessory;
+      this.backAccessoryType !== backAccessory ||
+      this.outfitId !== nextOutfitId;
     if (!changed) return;
 
+    this.outfitId = nextOutfitId;
     this.skinColorHex = skinColor;
     this.accentColorHex = accentColor;
     this.backAccessoryType = backAccessory;
 
     this.torsoMat.color.setHex(skinColor);
+    this.accentMat.color.setHex(accentColor);
+    this.accentMat.emissive.setHex(accentColor);
     if (this.gltfVisorMat) {
       this.gltfVisorMat.color.setHex(accentColor);
       this.gltfVisorMat.emissive.setHex(accentColor);
@@ -1153,7 +1387,9 @@ export class CharacterMesh {
       this.gltfBodyMat.color.copy(tinted);
     }
 
+    this.applyOutfitMaterialFinish();
     this.rebuildBackAccessory();
+    this.rebuildOutfitAttachments();
   }
 
   public triggerAttackAnimation(isFirearm: boolean = true): void {
@@ -1243,6 +1479,12 @@ export class CharacterMesh {
     }
 
     const model = createWeaponMesh(category, rarity);
+    model.traverse((child) => {
+      if (child.name !== 'weapon_mag' && child.name !== 'weapon_slide') return;
+      if (typeof child.userData.baseX !== 'number') child.userData.baseX = child.position.x;
+      if (typeof child.userData.baseY !== 'number') child.userData.baseY = child.position.y;
+      if (typeof child.userData.baseZ !== 'number') child.userData.baseZ = child.position.z;
+    });
     if (category === 'harvester') {
       model.rotation.x = -Math.PI / 3;
     } else {
@@ -1261,18 +1503,30 @@ export class CharacterMesh {
     this.setCosmetics(
       state.skinColor,
       state.accentColor,
-      state.backAccessory || 'jump_pack'
+      state.backAccessory || 'jump_pack',
+      state.outfitId || this.outfitId
     );
 
     this.root.position.set(state.position.x, state.position.y, state.position.z);
 
     const targetFacing = state.facingYaw ?? state.yaw;
+    let facingDelta = ((targetFacing - this.visualFacingYaw + Math.PI) % (Math.PI * 2)) - Math.PI;
+    if (facingDelta < -Math.PI) facingDelta += Math.PI * 2;
+    const horizontalSpeedForLean = Math.hypot(state.velocity.x, state.velocity.z);
+    this.turnLean = getTurnLean(
+      this.turnLean,
+      facingDelta,
+      dt,
+      horizontalSpeedForLean,
+      state.isAiming
+    );
     this.visualFacingYaw = lerpAngle(
       this.visualFacingYaw,
       targetFacing,
       Math.min(1, dt * 15)
     );
     this.bodyGroup.rotation.y = this.visualFacingYaw;
+    this.bodyGroup.rotation.z = this.turnLean * 0.45;
 
     const slot = state.inventory[state.activeSlot];
     if (slot) {
@@ -1281,8 +1535,10 @@ export class CharacterMesh {
       this.equipWeaponModel('harvester', 'rare');
     }
 
-    const drawTilt =
-      this.equipAnimTimer > 0 ? -(this.equipAnimTimer / 0.24) * 1.1 : 0;
+    const switchPose = getWeaponSwitchPose(this.equipAnimTimer, 0.24);
+    const drawTilt = switchPose.pitchOffset;
+    this.weaponSwitchDipY = switchPose.dipY;
+    this.weaponSwitchRoll = switchPose.roll;
     if (this.equipAnimTimer > 0) {
       this.equipAnimTimer = Math.max(0, this.equipAnimTimer - dt);
     }
@@ -1348,6 +1604,11 @@ export class CharacterMesh {
     let distToCamera = 0;
     if (cameraPos) {
       distToCamera = cameraPos.distanceTo(this.root.position);
+    }
+    if (this.outfitAttachmentGroup) {
+      // Cosmetic micro-geometry is the first character detail shed at range;
+      // the body, weapon and back accessory remain visible.
+      this.outfitAttachmentGroup.visible = !cameraPos || distToCamera <= 70;
     }
 
     if (state.isBot && cameraPos && (state.health < 100 || state.shield < 50)) {
@@ -1501,28 +1762,17 @@ export class CharacterMesh {
     );
 
     // 1. Blend Real GLB AnimationAction Weights (Idle, Walk, Run/Sprint) with Stride Matching
-    let targetIdleW = 0;
-    let targetWalkW = 0;
-    let targetRunW = 0;
-    let walkTimeScale = 1.0;
-    let runTimeScale = 1.0;
-
-    if (this.currentAnimState === 'walk') {
-      targetWalkW = 1.0;
-      walkTimeScale = THREE.MathUtils.clamp(horizSpeed / 3.4, 0.72, 1.35);
-    } else if (this.currentAnimState === 'run') {
-      // Crossfade walk -> run around 4.6..6.0 m/s to eliminate foot sliding
-      const runRatio = THREE.MathUtils.clamp((horizSpeed - 4.2) / 2.2, 0.25, 1.0);
-      targetWalkW = 1.0 - runRatio;
-      targetRunW = runRatio;
-      walkTimeScale = 1.2;
-      runTimeScale = THREE.MathUtils.clamp(horizSpeed / 6.7, 0.82, 1.18);
-    } else if (this.currentAnimState === 'sprint') {
-      targetRunW = 1.0;
-      runTimeScale = THREE.MathUtils.clamp((horizSpeed / 10.0) * 1.38, 1.18, 1.52);
-    } else {
-      targetIdleW = 1.0;
-    }
+    const locomotion = getLocomotionBlend(
+      horizSpeed,
+      state.isSprinting,
+      state.isGrounded,
+      state.isGliding
+    );
+    const targetIdleW = locomotion.idle;
+    const targetWalkW = locomotion.walk;
+    const targetRunW = locomotion.run;
+    const walkTimeScale = locomotion.walkTimeScale;
+    const runTimeScale = locomotion.runTimeScale;
 
     if (this.gltfActions.idle) {
       const w = THREE.MathUtils.lerp(
@@ -1557,18 +1807,20 @@ export class CharacterMesh {
     const airW = this.airbornePoseBlend;
 
     // 2. Layer Airborne (Jump / Fall / Glide) & Landing Bone Poses on Legs & Spine
+    const airbornePose = getAirbornePose(state.velocity.y);
     if (this.currentAnimState === 'jump') {
-      if (b.rightUpLeg) b.rightUpLeg.rotation.x -= 0.62 * airW;
-      if (b.rightLeg) b.rightLeg.rotation.x += 0.85 * airW;
-      if (b.leftUpLeg) b.leftUpLeg.rotation.x -= 0.35 * airW;
-      if (b.leftLeg) b.leftLeg.rotation.x += 0.55 * airW;
-      if (b.spine1) b.spine1.rotation.x += 0.14 * airW;
+      if (b.rightUpLeg) b.rightUpLeg.rotation.x -= (0.34 + airbornePose.riseBlend * 0.3) * airW;
+      if (b.rightLeg) b.rightLeg.rotation.x += airbornePose.legBend * airW;
+      if (b.leftUpLeg) b.leftUpLeg.rotation.x -= (0.2 + airbornePose.riseBlend * 0.18) * airW;
+      if (b.leftLeg) b.leftLeg.rotation.x += airbornePose.legBend * 0.72 * airW;
+      if (b.spine1) b.spine1.rotation.x += airbornePose.spinePitch * airW;
     } else if (this.currentAnimState === 'fall') {
       const flutter = Math.sin(this.animTime * 2.2) * 0.1;
-      if (b.rightUpLeg) b.rightUpLeg.rotation.x -= (0.32 + flutter) * airW;
-      if (b.rightLeg) b.rightLeg.rotation.x += 0.48 * airW;
-      if (b.leftUpLeg) b.leftUpLeg.rotation.x -= (0.25 - flutter) * airW;
-      if (b.leftLeg) b.leftLeg.rotation.x += 0.42 * airW;
+      if (b.rightUpLeg) b.rightUpLeg.rotation.x -= (0.2 + airbornePose.fallBlend * 0.18 + flutter) * airW;
+      if (b.rightLeg) b.rightLeg.rotation.x += airbornePose.legBend * 0.82 * airW;
+      if (b.leftUpLeg) b.leftUpLeg.rotation.x -= (0.16 + airbornePose.fallBlend * 0.14 - flutter) * airW;
+      if (b.leftLeg) b.leftLeg.rotation.x += airbornePose.legBend * 0.72 * airW;
+      if (b.spine1) b.spine1.rotation.x += airbornePose.spinePitch * 0.55 * airW;
     } else if (this.currentAnimState === 'land') {
       if (b.rightUpLeg) b.rightUpLeg.rotation.x -= 0.35 * airW;
       if (b.rightLeg) b.rightLeg.rotation.x += 0.55 * airW;
@@ -1598,6 +1850,7 @@ export class CharacterMesh {
     if (b.spine2) {
       b.spine2.rotation.x +=
         -state.pitch * (0.26 + this.aimPoseBlend * 0.1) - flinchWave * 0.15;
+      b.spine2.rotation.z += this.turnLean * 0.55;
       if (flinchWave > 0) {
         b.spine2.rotation.z += flinchWave * 0.07 * this.hitFlinchDir;
       }
@@ -1650,27 +1903,23 @@ export class CharacterMesh {
       if (b.leftForeArm) b.leftForeArm.rotation.set(-0.7, 0.2, 0.55 + rWave);
 
       const magMesh = this.weaponSocket.getObjectByName('weapon_mag');
+      const reloadPose = getReloadAnimationPose(
+        state.reloadTimer,
+        state.reloadDuration,
+        this.reloadAnimClock
+      );
+      reloadBoltPull = reloadPose.boltPull;
       if (magMesh) {
         const baseMagY =
-          activeCat === 'pistol' || activeCat === 'heavy_pistol' ? -0.06 : -0.09;
-        // Stage 1: Mag drop, Stage 2: Mag insert, Stage 3: Slide/bolt rack
-        const cycle = (this.reloadAnimClock % 1.4) / 1.4;
-        if (cycle < 0.45) {
-          magMesh.position.y = baseMagY - Math.sin((cycle / 0.45) * Math.PI) * 0.2;
-        } else if (cycle < 0.8) {
-          magMesh.position.y =
-            baseMagY - (1 - (cycle - 0.45) / 0.35) * 0.14;
-        } else {
-          magMesh.position.y = baseMagY;
-          reloadBoltPull = Math.sin(((cycle - 0.8) / 0.2) * Math.PI) * 0.16;
-        }
+          typeof magMesh.userData.baseY === 'number' ? magMesh.userData.baseY : -0.09;
+        magMesh.position.y = baseMagY + reloadPose.magazineOffsetY;
       }
     } else {
       this.reloadAnimClock = 0;
       const magMesh = this.weaponSocket.getObjectByName('weapon_mag');
       if (magMesh) {
         magMesh.position.y =
-          activeCat === 'pistol' || activeCat === 'heavy_pistol' ? -0.06 : -0.09;
+          typeof magMesh.userData.baseY === 'number' ? magMesh.userData.baseY : -0.09;
       }
 
       if (activeCat === 'harvester') {
@@ -1726,7 +1975,7 @@ export class CharacterMesh {
       this.bodyGroup.worldToLocal(this.tempHandWorldPos);
       this.weaponSocket.position.set(
         this.tempHandWorldPos.x + 0.04 + adsCenterOffsetX,
-        this.tempHandWorldPos.y + 0.04 + adsLiftOffsetY + moveBobY,
+        this.tempHandWorldPos.y + 0.04 + adsLiftOffsetY + moveBobY + this.weaponSwitchDipY,
         this.tempHandWorldPos.z - 0.1 + recoilKick * 0.14
       );
       if (b.spine2 && this.jumpPackGroup) {
@@ -1737,11 +1986,18 @@ export class CharacterMesh {
           this.tempSpineWorldPos.y + 0.04,
           this.tempSpineWorldPos.z + 0.15
         );
+        if (this.outfitAttachmentGroup) {
+          this.outfitAttachmentGroup.position.set(
+            this.tempSpineWorldPos.x,
+            this.tempSpineWorldPos.y - 1.28,
+            this.tempSpineWorldPos.z
+          );
+        }
       }
     } else {
       this.weaponSocket.position.set(
         0.18 + adsCenterOffsetX,
-        1.22 + adsLiftOffsetY + moveBobY,
+        1.22 + adsLiftOffsetY + moveBobY + this.weaponSwitchDipY,
         -0.28 + recoilKick * 0.14
       );
     }
@@ -1759,7 +2015,7 @@ export class CharacterMesh {
     this.weaponSocket.rotation.set(
       state.pitch * 0.65 - recoilKick * 0.45 + drawTilt + this.swayPitchOffset,
       this.swayYawOffset,
-      -this.swayYawOffset * 0.5
+      -this.swayYawOffset * 0.5 + this.weaponSwitchRoll
     );
   }
 
@@ -1867,6 +2123,11 @@ export class CharacterMesh {
 
     this.pelvisGroup.position.y = 0.82 + targetPelvisBobY + landDipY;
     this.spinePivot.position.y = 0.88 + targetPelvisBobY + landDipY;
+    if (this.outfitAttachmentGroup) {
+      this.outfitAttachmentGroup.position.y = targetPelvisBobY + landDipY;
+      this.outfitAttachmentGroup.rotation.x = targetSpineX * 0.35;
+      this.outfitAttachmentGroup.rotation.z = this.turnLean * 0.45;
+    }
 
     this.leftLegPivot.rotation.x = THREE.MathUtils.lerp(
       this.leftLegPivot.rotation.x,
@@ -1908,6 +2169,11 @@ export class CharacterMesh {
       targetSpineY,
       blend
     );
+    this.spinePivot.rotation.z = THREE.MathUtils.lerp(
+      this.spinePivot.rotation.z,
+      this.turnLean * 0.65,
+      blend
+    );
 
     let relHeadYaw =
       ((state.yaw - this.visualFacingYaw + Math.PI) % (Math.PI * 2)) - Math.PI;
@@ -1917,6 +2183,8 @@ export class CharacterMesh {
     this.headGroup.rotation.z = state.isAiming ? -0.06 : 0;
 
     this.weaponSocket.rotation.x = drawTilt;
+    this.weaponSocket.rotation.z = this.weaponSwitchRoll;
+    this.weaponSocket.position.y = -0.25 + this.weaponSwitchDipY;
 
     if (state.isReloading) {
       this.reloadAnimClock += dt;
@@ -1931,15 +2199,28 @@ export class CharacterMesh {
       this.weaponSocket.position.z = -0.14;
 
       const magMesh = this.weaponSocket.getObjectByName('weapon_mag');
+      const reloadPose = getReloadAnimationPose(
+        state.reloadTimer,
+        state.reloadDuration,
+        this.reloadAnimClock
+      );
       if (magMesh) {
-        magMesh.position.y = -0.09 - Math.abs(Math.sin(rPhase * 6)) * 0.18;
+        const baseY =
+          typeof magMesh.userData.baseY === 'number' ? magMesh.userData.baseY : -0.09;
+        magMesh.position.y = baseY + reloadPose.magazineOffsetY;
+      }
+      const slideMesh = this.weaponSocket.getObjectByName('weapon_slide');
+      if (slideMesh) {
+        const baseZ =
+          typeof slideMesh.userData.baseZ === 'number' ? slideMesh.userData.baseZ : -0.16;
+        slideMesh.position.z = baseZ + reloadPose.boltPull;
       }
     } else {
       this.reloadAnimClock = 0;
       const magMesh = this.weaponSocket.getObjectByName('weapon_mag');
       if (magMesh) {
         magMesh.position.y =
-          activeCat === 'pistol' || activeCat === 'heavy_pistol' ? -0.06 : -0.09;
+          typeof magMesh.userData.baseY === 'number' ? magMesh.userData.baseY : -0.09;
       }
       this.rightArmPivot.rotation.z = state.isAiming ? -0.08 : 0;
       this.leftArmPivot.rotation.z = 0;
@@ -1958,7 +2239,11 @@ export class CharacterMesh {
           this.weaponSocket.position.z = -0.14 + kick * 0.14;
           const slideMesh = this.weaponSocket.getObjectByName('weapon_slide');
           if (slideMesh) {
-            slideMesh.position.z = -0.16 + kick * 0.18;
+            const baseZ =
+              typeof slideMesh.userData.baseZ === 'number'
+                ? slideMesh.userData.baseZ
+                : -0.16;
+            slideMesh.position.z = baseZ + kick * 0.18;
           }
           if (isLongGun) {
             this.leftArmPivot.rotation.x =
@@ -1979,7 +2264,10 @@ export class CharacterMesh {
         this.weaponSocket.position.z = -0.14;
         const slideMesh = this.weaponSocket.getObjectByName('weapon_slide');
         if (slideMesh) {
-          slideMesh.position.z = -0.16;
+          slideMesh.position.z =
+            typeof slideMesh.userData.baseZ === 'number'
+              ? slideMesh.userData.baseZ
+              : -0.16;
         }
         if (state.isAiming || isLongGun) {
           this.leftArmPivot.rotation.x = Math.PI * 0.44 + state.pitch * 0.55;
@@ -1997,6 +2285,7 @@ export class CharacterMesh {
 
   public dispose(): void {
     CharacterMesh.pendingInstances.delete(this);
+    this.disposeOutfitAttachments();
     if (this.mixer) {
       this.mixer.stopAllAction();
       this.mixer = null;

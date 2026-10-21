@@ -5,6 +5,7 @@ import {
   InventorySlot,
   LootItemState,
   MatchState,
+  OutfitPresetId,
   PlayerState,
   WeaponCategory,
   WeaponRarity,
@@ -39,14 +40,18 @@ const BOT_NAMES = [
   'PrettierFormat',
 ];
 
-const SKIN_PALETTE = [
-  { skin: 0xf97316, accent: 0xfef08a },
-  { skin: 0xa855f7, accent: 0x38bdf8 },
-  { skin: 0xec4899, accent: 0xfde047 },
-  { skin: 0x10b981, accent: 0xa7f3d0 },
-  { skin: 0xef4444, accent: 0xfca5a5 },
-  { skin: 0x6366f1, accent: 0xc7d2fe },
-  { skin: 0x14b8a6, accent: 0x99f6e4 },
+const SKIN_PALETTE: Array<{
+  outfitId: OutfitPresetId;
+  skin: number;
+  accent: number;
+}> = [
+  { outfitId: 'solar_phoenix', skin: 0xf97316, accent: 0xfef08a },
+  { outfitId: 'neon_phantom', skin: 0xa855f7, accent: 0x38bdf8 },
+  { outfitId: 'crimson_striker', skin: 0xec4899, accent: 0xfde047 },
+  { outfitId: 'emerald_ranger', skin: 0x10b981, accent: 0xa7f3d0 },
+  { outfitId: 'crimson_striker', skin: 0xef4444, accent: 0xfca5a5 },
+  { outfitId: 'vanguard_blue', skin: 0x6366f1, accent: 0xc7d2fe },
+  { outfitId: 'arctic_sentinel', skin: 0x14b8a6, accent: 0x99f6e4 },
 ];
 
 interface BotMemory {
@@ -231,6 +236,7 @@ export class BotAIController {
         reloadDuration: 0,
         isHealing: false,
         landingImpactTimer: 0,
+        outfitId: palette.outfitId,
         skinColor: palette.skin,
         accentColor: palette.accent,
         aiState: 'PATROLLING',

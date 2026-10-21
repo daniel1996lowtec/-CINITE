@@ -173,6 +173,10 @@ test('production server: HTTP APIs + authoritative two-client multiplayer over i
         sessionToken: 'sess_bravo',
         playerName: 'Bravo_Two',
         position: { x: 5, y: 10, z: 5 },
+        outfitId: 'crimson_striker',
+        skinColor: 0xbe123c,
+        accentColor: 0xfb7185,
+        backAccessory: 'jump_pack',
       })
     );
     const roomState = await stateWithTwo;
@@ -188,8 +192,37 @@ test('production server: HTTP APIs + authoritative two-client multiplayer over i
     const names = roomState.players.map((p) => p.name).sort();
     assert.deepEqual(names, ['Alpha_One', 'Bravo_Two']);
     const bravoPublicId = roomState.players.find((p) => p.name === 'Bravo_Two')?.id;
+    const bravoSummary = roomState.players.find((p) => p.name === 'Bravo_Two');
+    assert.equal(bravoSummary.outfitId, 'crimson_striker');
+    assert.equal(bravoSummary.skinColor, 0xbe123c);
+    assert.equal(bravoSummary.accentColor, 0xfb7185);
+    assert.equal(bravoSummary.backAccessory, 'jump_pack');
     assert.ok(bravoPublicId, 'Bravo_Two should have an opaque public player id');
     assert.doesNotMatch(bravoPublicId, /sess_bravo/);
+
+    const cosmeticSync = waitForMessage(
+      wsA,
+      (m) =>
+        m.type === 'room_state' &&
+        m.players?.some(
+          (player) => player.id === bravoPublicId && player.outfitId === 'arctic_sentinel'
+        )
+    );
+    wsB.send(
+      JSON.stringify({
+        type: 'cosmetics_update',
+        sessionToken: 'sess_bravo',
+        outfitId: 'arctic_sentinel',
+        skinColor: 0xcbd5e1,
+        accentColor: 0x22d3ee,
+        backAccessory: 'tactical_shield',
+      })
+    );
+    const cosmeticState = await cosmeticSync;
+    const updatedBravo = cosmeticState.players.find((p) => p.id === bravoPublicId);
+    assert.equal(updatedBravo.skinColor, 0xcbd5e1);
+    assert.equal(updatedBravo.accentColor, 0x22d3ee);
+    assert.equal(updatedBravo.backAccessory, 'tactical_shield');
 
     // Authoritative combat: the client claims 999 damage, but an Epic
     // Triad Burst Rifle is catalogued at 30 body damage. The fire event

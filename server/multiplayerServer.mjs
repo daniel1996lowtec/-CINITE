@@ -2854,6 +2854,12 @@ server.on('upgrade', (req, socket) => {
           currentSessionToken = requestedSessionToken;
 
           const cleanCallsign = sanitizeCallsign(msg.playerName);
+          const roomCosmetics = sanitizeCosmetics({
+            outfitId: msg.outfitId ?? player?.outfitId,
+            skinColor: msg.skinColor ?? player?.skinColor,
+            accentColor: msg.accentColor ?? player?.accentColor,
+            backAccessory: msg.backAccessory ?? player?.backAccessory,
+          });
           let isFreshJoinOrReset = false;
 
           if (!player) {
@@ -2901,9 +2907,10 @@ server.on('upgrade', (req, socket) => {
               serverBurstRarity: '',
               serverNextShotAt: 0,
               legendaryTowerWeaponCategories: new Set(),
-              skinColor: Number(msg.skinColor ?? 0x0284c7),
-              accentColor: Number(msg.accentColor ?? 0x38bdf8),
-              backAccessory: String(msg.backAccessory || 'jump_pack'),
+              outfitId: roomCosmetics.outfitId,
+              skinColor: roomCosmetics.skinColor,
+              accentColor: roomCosmetics.accentColor,
+              backAccessory: roomCosmetics.backAccessory,
               socket,
             };
             room.players.set(currentSessionToken, player);
@@ -2927,9 +2934,10 @@ server.on('upgrade', (req, socket) => {
               // countdown can start. The existing seat is not duplicated.
               player.isReady = false;
             }
-            if (msg.skinColor !== undefined) player.skinColor = Number(msg.skinColor);
-            if (msg.accentColor !== undefined) player.accentColor = Number(msg.accentColor);
-            if (msg.backAccessory) player.backAccessory = String(msg.backAccessory);
+            player.outfitId = roomCosmetics.outfitId;
+            player.skinColor = roomCosmetics.skinColor;
+            player.accentColor = roomCosmetics.accentColor;
+            player.backAccessory = roomCosmetics.backAccessory;
             if (msg.resetPlayer && !lobbyManagedRoom) {
               isFreshJoinOrReset = true;
               room.matchSeq += 1;
@@ -3018,6 +3026,24 @@ server.on('upgrade', (req, socket) => {
           evaluateLobby(room);
           broadcastRoomState(room);
           queueLobbyDirectoryBroadcast('player_joined');
+        } else if (msg.type === 'cosmetics_update' && currentRoom && currentSessionToken) {
+          const player = currentRoom.players.get(currentSessionToken);
+          if (!player || currentRoom.phase === 'ended') continue;
+          const now = Date.now();
+          if (now - Number(player.lastCosmeticsUpdateAt || 0) < 100) continue;
+          player.lastCosmeticsUpdateAt = now;
+          const cosmetics = sanitizeCosmetics({
+            outfitId: msg.outfitId ?? player.outfitId,
+            skinColor: msg.skinColor ?? player.skinColor,
+            accentColor: msg.accentColor ?? player.accentColor,
+            backAccessory: msg.backAccessory ?? player.backAccessory,
+          });
+          player.outfitId = cosmetics.outfitId;
+          player.skinColor = cosmetics.skinColor;
+          player.accentColor = cosmetics.accentColor;
+          player.backAccessory = cosmetics.backAccessory;
+          currentRoom.lastActivityAt = now;
+          broadcastRoomState(currentRoom);
         } else if (msg.type === 'set_ready' && currentRoom && currentSessionToken) {
           const player = currentRoom.players.get(currentSessionToken);
           if (!player) continue;
@@ -3848,6 +3874,7 @@ function buildRoomPlayersSnapshot(room) {
       reloadDuration: q2(p.reloadDuration || 0),
       equippedCategory: p.equippedCategory,
       equippedRarity: p.equippedRarity,
+      outfitId: sanitizeCosmetics(p).outfitId,
       skinColor: p.skinColor ?? 0x0284c7,
       accentColor: p.accentColor ?? 0x38bdf8,
       backAccessory: p.backAccessory || 'jump_pack',

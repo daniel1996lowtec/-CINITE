@@ -573,6 +573,16 @@
 
                 <div id="my-lobby-stats" class="my-lobby-stats"></div>
 
+                <div class="my-lobby-ready-progress" aria-label="Squad readiness">
+                  <div class="my-lobby-ready-progress-head">
+                    <span>SQUAD READINESS</span>
+                    <strong id="my-lobby-ready-label">0/0 READY</strong>
+                  </div>
+                  <div class="my-lobby-ready-track">
+                    <span id="my-lobby-ready-fill" class="my-lobby-ready-fill"></span>
+                  </div>
+                </div>
+
                 <div class="my-lobby-invite-grid">
                   <div class="form-group">
                     <label for="my-lobby-code">Room ID / Lobby Code</label>
@@ -676,7 +686,31 @@
         <div class="preview-dock-header">
           <span class="preview-tag">LIVE 3D OPERATOR PREVIEW</span>
           <strong id="preview-outfit-name">CI Vanguard</strong>
+          <small id="preview-outfit-detail">Satin cobalt alloy</small>
         </div>
+        <section id="preview-showcase" class="preview-showcase" aria-label="Operator weapon showcase">
+          <div class="preview-showcase-head">
+            <span id="preview-weapon-icon" class="preview-weapon-icon" aria-hidden="true">▰</span>
+            <div class="preview-showcase-copy">
+              <span>WEAPON SHOWCASE</span>
+              <strong id="preview-weapon-name">Uncommon Pulse Rifle</strong>
+              <small id="preview-weapon-role">Versatile automatic rifle</small>
+            </div>
+            <span id="preview-outfit-finish" class="preview-finish-chip">SATIN</span>
+          </div>
+          <div class="preview-stat-grid" aria-label="Showcase weapon statistics">
+            <span>DMG <b id="preview-weapon-damage">26</b></span>
+            <span>RATE <b id="preview-weapon-rate">5.8/s</b></span>
+            <span>RANGE <b id="preview-weapon-range">190m</b></span>
+            <span>MAG <b id="preview-weapon-mag">30</b></span>
+          </div>
+          <p id="preview-secondary-weapon" class="preview-secondary-weapon">
+            Sidearm · Common Cyber Pistol
+          </p>
+          <p id="preview-squad-status" class="preview-squad-status">
+            SQUAD · Create or join a lobby
+          </p>
+        </section>
         <div class="preview-dock-controls">
           <button id="btn-rot-left" class="preview-ctrl-btn" type="button" title="Rotate Left">
             ⟲ Rotate

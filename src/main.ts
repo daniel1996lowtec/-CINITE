@@ -13,6 +13,7 @@ import {
   StarterLoadoutType,
   TimeOfDayPreset,
   effectiveBotCountForMode,
+  getStarterLoadoutItems,
   isHumanOnlySessionMode,
 } from './network/schemas';
 import {
@@ -25,6 +26,11 @@ import { MobileLandscapeManager } from './input/MobileLandscapeManager';
 import { LobbyBrowserClient } from './network/LobbyBrowserClient';
 import { getLobbyJoinBlock, parseLobbyInviteCode } from './network/lobbyBrowserUtils';
 import { LobbyBrowserUI } from './ui/LobbyBrowser';
+import {
+  createWeaponStats,
+  getWeaponVisualProfile,
+} from './weapons/WeaponDefinitions';
+import { getOutfitVisualProfile } from './entities/CharacterCosmetics';
 
 window.addEventListener('DOMContentLoaded', () => {
   const container = document.getElementById('game-canvas-container')!;
@@ -169,6 +175,45 @@ window.addEventListener('DOMContentLoaded', () => {
   // =========================================================================
   // 2. COSMETIC LOCKER & 3D OPERATOR PREVIEW CONTROLS
   // =========================================================================
+  const syncOperatorShowcase = () => {
+    const cosmetics = engine.progression.cosmetics;
+    const outfitPreset =
+      OUTFIT_PRESETS.find((o) => o.id === cosmetics.outfitId) || OUTFIT_PRESETS[0];
+    const visual = getOutfitVisualProfile(cosmetics.outfitId);
+    const loadoutSelect = document.getElementById(
+      'lobby-starter-loadout'
+    ) as HTMLSelectElement | null;
+    const loadout = getStarterLoadoutItems(
+      (loadoutSelect?.value as StarterLoadoutType) || 'balanced'
+    );
+    const primary = createWeaponStats(loadout.primaryCat, loadout.primaryRarity);
+    const secondary = createWeaponStats(loadout.secondaryCat, loadout.secondaryRarity);
+    const primaryProfile = getWeaponVisualProfile(primary.category);
+    const setText = (id: string, value: string) => {
+      const element = document.getElementById(id);
+      if (element) element.textContent = value;
+    };
+
+    setText('preview-outfit-detail', `${visual.finishLabel} · ${visual.silhouetteLabel}`);
+    setText('preview-outfit-finish', visual.finishLabel.toUpperCase());
+    setText('preview-weapon-icon', primaryProfile.icon);
+    setText('preview-weapon-name', primary.name);
+    setText('preview-weapon-role', `${primaryProfile.role} · ${primaryProfile.silhouette}`);
+    setText(
+      'preview-weapon-damage',
+      primary.pellets > 1 ? `${primary.baseDamage}×${primary.pellets}` : `${primary.baseDamage}`
+    );
+    setText(
+      'preview-weapon-rate',
+      primary.fireMode === 'burst'
+        ? `${primary.burstCount}× burst`
+        : `${primary.fireRate.toFixed(1)}/s`
+    );
+    setText('preview-weapon-range', `${primary.range}m`);
+    setText('preview-weapon-mag', `${primary.clipSize}`);
+    setText('preview-secondary-weapon', `Sidearm · ${secondary.name} · ${outfitPreset.tagline}`);
+  };
+
   const syncLockerUI = () => {
     const c = engine.progression.cosmetics;
     const presetObj =
@@ -177,6 +222,11 @@ window.addEventListener('DOMContentLoaded', () => {
     if (previewNameEl) previewNameEl.textContent = presetObj.name;
 
     document.querySelectorAll<HTMLButtonElement>('.outfit-btn').forEach((btn) => {
+      const preset = OUTFIT_PRESETS.find((o) => o.id === btn.dataset.outfit);
+      const profile = preset ? getOutfitVisualProfile(preset.id) : null;
+      if (preset && profile) {
+        btn.title = `${preset.tagline} · ${profile.finishLabel} · ${profile.silhouetteLabel}`;
+      }
       btn.classList.toggle('active', btn.dataset.outfit === c.outfitId);
     });
     document.querySelectorAll<HTMLButtonElement>('.back-acc-btn').forEach((btn) => {
@@ -198,6 +248,7 @@ window.addEventListener('DOMContentLoaded', () => {
           Number(btn.dataset.color) === c.accentColor
         );
       });
+    syncOperatorShowcase();
   };
 
   const armorSwatchContainer = document.getElementById('locker-armor-swatches');
@@ -750,6 +801,7 @@ window.addEventListener('DOMContentLoaded', () => {
       undefined,
       (loadoutSelectEl.value as StarterLoadoutType) || 'balanced'
     );
+    syncOperatorShowcase();
   });
 
   document.addEventListener('visibilitychange', () => {

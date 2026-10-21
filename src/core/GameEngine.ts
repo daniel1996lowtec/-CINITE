@@ -11,6 +11,7 @@ import {
   TimeOfDayPreset,
   WeaponCategory,
   effectiveBotCountForMode,
+  getStarterLoadoutItems,
   isHumanOnlySessionMode,
 } from '../network/schemas';
 import {
@@ -75,6 +76,7 @@ export class GameEngine {
   public lobbyCharacterMesh!: CharacterMesh;
   public lobbyPreviewState!: PlayerState;
   public lobbyPreviewYaw = 0.35;
+  private lobbyPreviewRingMat: THREE.MeshBasicMaterial | null = null;
 
   public onLobbyConnectionChange?: (
     statusText: string,
@@ -262,22 +264,38 @@ export class GameEngine {
     baseDisc.position.y = 0.09;
     baseDisc.receiveShadow = true;
 
+    this.lobbyPreviewRingMat = new THREE.MeshBasicMaterial({
+      color: this.progression.cosmetics.accentColor,
+    });
     const glowRing = new THREE.Mesh(
       new THREE.TorusGeometry(1.12, 0.045, 10, 32),
-      new THREE.MeshBasicMaterial({ color: 0x38bdf8 })
+      this.lobbyPreviewRingMat
     );
     glowRing.rotation.x = Math.PI / 2;
     glowRing.position.y = 0.19;
 
     this.lobbyPreviewGroup.add(baseDisc, glowRing);
+    for (const side of [-1, 1]) {
+      const pillar = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.025, 0.025, 1.85, 8),
+        this.lobbyPreviewRingMat
+      );
+      pillar.position.set(side * 1.28, 1.05, -0.28);
+      this.lobbyPreviewGroup.add(pillar);
+    }
     this.scene.add(this.lobbyPreviewGroup);
 
-    const wStats = createWeaponStats('assault_rifle', 'rare');
+    const initialLoadout = getStarterLoadoutItems('balanced');
+    const wStats = createWeaponStats(
+      initialLoadout.primaryCat,
+      initialLoadout.primaryRarity
+    );
     this.lobbyPreviewState = {
       id: 'lobby_preview_char',
       name: 'Preview',
       isBot: false,
       alive: true,
+      outfitId: this.progression.cosmetics.outfitId,
       skinColor: this.progression.cosmetics.skinColor,
       accentColor: this.progression.cosmetics.accentColor,
       backAccessory: this.progression.cosmetics.backAccessory,
@@ -301,8 +319,8 @@ export class GameEngine {
         {
           weaponId: wStats.id,
           name: wStats.name,
-          category: 'assault_rifle',
-          rarity: 'rare',
+          category: initialLoadout.primaryCat,
+          rarity: initialLoadout.primaryRarity,
           clipAmmo: wStats.clipSize,
           maxClipAmmo: wStats.clipSize,
           ammoType: wStats.ammoType,
@@ -337,30 +355,28 @@ export class GameEngine {
   ): void {
     if (cosmetics) {
       const updated = this.progression.saveCosmetics(cosmetics);
+      this.lobbyPreviewState.outfitId = updated.outfitId;
       this.lobbyPreviewState.skinColor = updated.skinColor;
       this.lobbyPreviewState.accentColor = updated.accentColor;
       this.lobbyPreviewState.backAccessory = updated.backAccessory;
       this.lobbyCharacterMesh.setCosmetics(
         updated.skinColor,
         updated.accentColor,
-        updated.backAccessory
+        updated.backAccessory,
+        updated.outfitId
       );
+      this.lobbyPreviewRingMat?.color.setHex(updated.accentColor);
+      this.network.sendCosmeticsUpdate(updated);
     }
     if (starterLoadout) {
-      const cat: WeaponCategory =
-        starterLoadout === 'close_quarters'
-          ? 'tactical_shotgun'
-          : starterLoadout === 'sharpshooter'
-            ? 'dmr'
-            : starterLoadout === 'demolition'
-              ? 'burst_rifle'
-              : 'assault_rifle';
-      const wStats = createWeaponStats(cat, 'rare');
+      const loadout = getStarterLoadoutItems(starterLoadout);
+      const cat: WeaponCategory = loadout.primaryCat;
+      const wStats = createWeaponStats(cat, loadout.primaryRarity);
       this.lobbyPreviewState.inventory[0] = {
         weaponId: wStats.id,
         name: wStats.name,
         category: cat,
-        rarity: 'rare',
+        rarity: loadout.primaryRarity,
         clipAmmo: wStats.clipSize,
         maxClipAmmo: wStats.clipSize,
         ammoType: wStats.ammoType,

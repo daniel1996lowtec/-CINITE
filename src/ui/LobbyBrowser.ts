@@ -19,6 +19,7 @@ import {
   type LobbyBrowserSort,
 } from '../network/lobbyBrowserUtils';
 import type { LobbyDirectoryConnectionState } from '../network/LobbyBrowserClient';
+import { OUTFIT_PRESETS } from '../systems/ProgressionSystem';
 
 export type LobbyBrowserTab = 'browse' | 'create' | 'mine';
 
@@ -588,6 +589,34 @@ export class LobbyBrowserUI {
     return item;
   }
 
+  private syncPreviewSquadStatus(): void {
+    const statusEl = element('preview-squad-status');
+    if (!statusEl) return;
+    const snapshot = this.snapshot;
+    if (!snapshot) {
+      statusEl.textContent = 'SQUAD · Create or join a lobby';
+      statusEl.className = 'preview-squad-status';
+      return;
+    }
+
+    const format = teamModeLabel(snapshot.teamMode);
+    if (snapshot.phase === 'active') {
+      statusEl.textContent = `${format.toUpperCase()} · ${snapshot.aliveHumans} ALIVE · ${snapshot.roomCode}`;
+      statusEl.className = 'preview-squad-status active';
+    } else if (snapshot.phase === 'countdown') {
+      statusEl.textContent = `${format.toUpperCase()} · LAUNCHING · ${snapshot.roomCode}`;
+      statusEl.className = 'preview-squad-status ready';
+    } else if (snapshot.phase === 'ended') {
+      statusEl.textContent = `${format.toUpperCase()} · MATCH ENDED · ${snapshot.roomCode}`;
+      statusEl.className = 'preview-squad-status';
+    } else {
+      statusEl.textContent =
+        `${format.toUpperCase()} · ${snapshot.readyHumans}/${snapshot.authenticatedHumans} READY · ` +
+        `${snapshot.connectedHumans}/${snapshot.maxPlayers} PLAYERS`;
+      statusEl.className = `preview-squad-status ${snapshot.canHostStart ? 'ready' : ''}`;
+    }
+  }
+
   private renderMyLobby(): void {
     const empty = element('my-lobby-empty');
     const content = element('my-lobby-content');
@@ -598,8 +627,10 @@ export class LobbyBrowserUI {
     content.classList.toggle('hidden', !snapshot);
     if (!snapshot) {
       this.lastMyLobbySignature = '';
+      this.syncPreviewSquadStatus();
       return;
     }
+    this.syncPreviewSquadStatus();
 
     const signature = JSON.stringify({
       code: snapshot.roomCode,
@@ -624,6 +655,10 @@ export class LobbyBrowserUI {
         player.teamIndex,
         player.isConnected,
         player.alive,
+        player.outfitId,
+        player.skinColor,
+        player.accentColor,
+        player.backAccessory,
       ]),
     });
     if (snapshot.phase !== 'countdown' && signature === this.lastMyLobbySignature) {
@@ -678,6 +713,19 @@ export class LobbyBrowserUI {
       );
     }
 
+    const readyFill = element('my-lobby-ready-fill');
+    if (readyFill) {
+      const readyRatio =
+        snapshot.authenticatedHumans > 0
+          ? Math.min(1, snapshot.readyHumans / snapshot.authenticatedHumans)
+          : 0;
+      readyFill.style.width = `${Math.round(readyRatio * 100)}%`;
+    }
+    const readyLabel = element('my-lobby-ready-label');
+    if (readyLabel) {
+      readyLabel.textContent = `${snapshot.readyHumans}/${snapshot.authenticatedHumans} READY`;
+    }
+
     const roster = element('my-lobby-roster');
     if (roster) {
       roster.replaceChildren();
@@ -695,11 +743,26 @@ export class LobbyBrowserUI {
           'div',
           `my-lobby-player ${player.isReady ? 'ready' : ''} ${player.isConnected ? '' : 'disconnected'}`
         );
+        const initials =
+          player.name.replace(/[^A-Za-z0-9]/g, '').slice(0, 2).toUpperCase() || 'CI';
+        const avatar = makeElement('span', 'my-lobby-player-avatar', initials);
+        const cssColor = (value: number | undefined, fallback: string) =>
+          Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 0xffffff
+            ? `#${Number(value).toString(16).padStart(6, '0')}`
+            : fallback;
+        avatar.style.background = `linear-gradient(135deg, ${cssColor(player.skinColor, '#0284c7')}, ${cssColor(player.accentColor, '#38bdf8')})`;
+        const outfitPreset = OUTFIT_PRESETS.find((preset) => preset.id === player.outfitId);
+        avatar.title = outfitPreset ? outfitPreset.name : 'Operator';
+        row.appendChild(avatar);
+
         const left = makeElement('div', 'my-lobby-player-main');
         left.appendChild(makeElement('strong', 'my-lobby-player-name', player.name));
         const badges = makeElement('span', 'my-lobby-player-badges');
         if (player.isHost) badges.appendChild(makeElement('span', 'mini-badge host', 'HOST'));
         if (player.id === snapshot.selfPlayerId) badges.appendChild(makeElement('span', 'mini-badge you', 'YOU'));
+        if (outfitPreset) {
+          badges.appendChild(makeElement('span', 'mini-badge outfit', outfitPreset.name.toUpperCase()));
+        }
         if (snapshot.teamMode !== 'solo' && player.teamIndex >= 0) {
           badges.appendChild(makeElement('span', 'mini-badge team', `TEAM ${player.teamIndex + 1}`));
         }

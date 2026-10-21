@@ -55,6 +55,52 @@ export interface CosmeticLoadout {
   backAccessory: BackAccessoryType;
 }
 
+export interface StarterLoadoutItems {
+  primaryCat: WeaponCategory;
+  primaryRarity: 'common' | 'uncommon' | 'rare';
+  secondaryCat: WeaponCategory;
+  secondaryRarity: 'common' | 'uncommon' | 'rare';
+  materials: { wood: number; stone: number; metal: number };
+}
+
+export const STARTER_LOADOUT_ITEMS: Record<StarterLoadoutType, StarterLoadoutItems> = {
+  balanced: {
+    primaryCat: 'assault_rifle',
+    primaryRarity: 'uncommon',
+    secondaryCat: 'pistol',
+    secondaryRarity: 'common',
+    materials: { wood: 100, stone: 50, metal: 25 },
+  },
+  close_quarters: {
+    primaryCat: 'tactical_shotgun',
+    primaryRarity: 'uncommon',
+    secondaryCat: 'smg',
+    secondaryRarity: 'common',
+    materials: { wood: 120, stone: 60, metal: 30 },
+  },
+  sharpshooter: {
+    primaryCat: 'dmr',
+    primaryRarity: 'rare',
+    secondaryCat: 'heavy_pistol',
+    secondaryRarity: 'uncommon',
+    materials: { wood: 80, stone: 60, metal: 30 },
+  },
+  demolition: {
+    primaryCat: 'burst_rifle',
+    primaryRarity: 'uncommon',
+    secondaryCat: 'tactical_shotgun',
+    secondaryRarity: 'rare',
+    materials: { wood: 200, stone: 150, metal: 100 },
+  },
+};
+
+export function getStarterLoadoutItems(
+  loadout: StarterLoadoutType
+): StarterLoadoutItems {
+  const items = STARTER_LOADOUT_ITEMS[loadout] || STARTER_LOADOUT_ITEMS.balanced;
+  return { ...items, materials: { ...items.materials } };
+}
+
 export interface AccountCredentialsState {
   accountId: string;
   accountToken: string;
@@ -132,6 +178,7 @@ export interface PlayerState {
   teamId?: string;
   teamIndex?: number;
   aiState?: BotAIState;
+  outfitId?: OutfitPresetId;
   skinColor: number;
   accentColor: number;
   backAccessory?: BackAccessoryType;
@@ -362,6 +409,10 @@ export interface RoomPlayerSummary {
   teamId: string;
   teamIndex: number;
   alive: boolean;
+  outfitId?: OutfitPresetId;
+  skinColor?: number;
+  accentColor?: number;
+  backAccessory?: BackAccessoryType;
 }
 
 export interface RoomSnapshot {

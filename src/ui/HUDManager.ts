@@ -5,9 +5,11 @@ import {
   LootItemState,
   MatchState,
   PlayerState,
-  WeaponCategory,
 } from '../network/schemas';
-import { RARITY_COLORS } from '../weapons/WeaponDefinitions';
+import {
+  RARITY_COLORS,
+  getWeaponVisualProfile,
+} from '../weapons/WeaponDefinitions';
 import { ISLAND_POIS } from '../world/TerrainGenerator';
 import { ISLAND_SETTLEMENTS } from '../world/WorldLayout';
 import { getStormStatusLabel, isFinalStormPhase } from '../systems/StormConfig';
@@ -20,21 +22,6 @@ interface FloatingDamageNumber {
   offsetX: number;
   vx: number;
 }
-
-const WEAPON_ICONS: Record<WeaponCategory, string> = {
-  harvester: '⛏️',
-  pistol: '🔫',
-  heavy_pistol: '🦏',
-  assault_rifle: '🎯',
-  burst_rifle: '⋮⋮⋮',
-  dmr: '◎',
-  shotgun: '💥',
-  tactical_shotgun: '✦',
-  smg: '⚡',
-  sniper: '🔭',
-  medkit: '🩹',
-  shield_potion: '🧪',
-};
 
 export class HUDManager {
   private healthFill: HTMLElement;
@@ -648,7 +635,7 @@ export class HUDManager {
       const barEl = slotEl.querySelector('.slot-rarity-bar') as HTMLElement;
 
       if (item) {
-        iconEl.textContent = WEAPON_ICONS[item.category] || '🔫';
+        iconEl.textContent = getWeaponVisualProfile(item.category).icon;
         nameEl.textContent = item.name.replace(
           /^(Common|Uncommon|Rare|Epic|Legendary)\s+/i,
           ''

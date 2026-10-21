@@ -45,6 +45,120 @@ export const RARITY_COLORS: Record<
   legendary: { hex: '#fbbf24', int: 0xfbbf24, label: 'Legendary', damageMult: 1.35 },
 };
 
+export interface WeaponVisualProfile {
+  icon: string;
+  role: string;
+  silhouette: string;
+  modelLength: number;
+  magazineStyle: 'box' | 'curved' | 'drum' | 'tube' | 'cylinder' | 'none';
+  reloadMotion: 'magazine' | 'cylinder' | 'pump' | 'bolt' | 'slide' | 'none';
+}
+
+export const WEAPON_VISUAL_PROFILES: Record<WeaponCategory, WeaponVisualProfile> = {
+  harvester: {
+    icon: '⛏️',
+    role: 'Harvest & melee',
+    silhouette: 'Energy pickaxe',
+    modelLength: 0.98,
+    magazineStyle: 'none',
+    reloadMotion: 'none',
+  },
+  pistol: {
+    icon: '⌐',
+    role: 'Reliable sidearm',
+    silhouette: 'Compact slide pistol',
+    modelLength: 0.36,
+    magazineStyle: 'box',
+    reloadMotion: 'slide',
+  },
+  heavy_pistol: {
+    icon: '◉',
+    role: 'Hand-cannon backup',
+    silhouette: 'Long-barrel revolver cannon',
+    modelLength: 0.6,
+    magazineStyle: 'cylinder',
+    reloadMotion: 'cylinder',
+  },
+  assault_rifle: {
+    icon: '▰',
+    role: 'Versatile automatic rifle',
+    silhouette: 'Holo-sighted pulse carbine',
+    modelLength: 0.86,
+    magazineStyle: 'curved',
+    reloadMotion: 'magazine',
+  },
+  burst_rifle: {
+    icon: '⋮',
+    role: 'Three-round burst control',
+    silhouette: 'Tri-rail burst rifle',
+    modelLength: 0.92,
+    magazineStyle: 'curved',
+    reloadMotion: 'magazine',
+  },
+  dmr: {
+    icon: '◎',
+    role: 'Semi-auto precision',
+    silhouette: 'Long-handguard marksman rifle',
+    modelLength: 1.04,
+    magazineStyle: 'box',
+    reloadMotion: 'bolt',
+  },
+  shotgun: {
+    icon: '✸',
+    role: 'Pump-action breacher',
+    silhouette: 'Tube-fed scatter pump',
+    modelLength: 0.82,
+    magazineStyle: 'tube',
+    reloadMotion: 'pump',
+  },
+  tactical_shotgun: {
+    icon: '✦',
+    role: 'Rapid tactical shotgun',
+    silhouette: 'Box-fed heat-shield shotgun',
+    modelLength: 0.82,
+    magazineStyle: 'box',
+    reloadMotion: 'magazine',
+  },
+  smg: {
+    icon: '⚡',
+    role: 'Close-range bullet hose',
+    silhouette: 'Drum-fed compact SMG',
+    modelLength: 0.58,
+    magazineStyle: 'drum',
+    reloadMotion: 'magazine',
+  },
+  sniper: {
+    icon: '⌖',
+    role: 'Long-range rail precision',
+    silhouette: 'Scoped rail sniper',
+    modelLength: 1.18,
+    magazineStyle: 'box',
+    reloadMotion: 'bolt',
+  },
+  medkit: {
+    icon: '✚',
+    role: 'Restore 50 health',
+    silhouette: 'Nano medkit',
+    modelLength: 0.38,
+    magazineStyle: 'none',
+    reloadMotion: 'none',
+  },
+  shield_potion: {
+    icon: '⬡',
+    role: 'Restore 50 shield',
+    silhouette: 'Shield flask',
+    modelLength: 0.36,
+    magazineStyle: 'none',
+    reloadMotion: 'none',
+  },
+};
+
+export function getWeaponVisualProfile(
+  category: WeaponCategory
+): WeaponVisualProfile {
+  return WEAPON_VISUAL_PROFILES[category];
+}
+
 export const FIREARM_CATEGORIES = [
   'pistol',
   'heavy_pistol',
@@ -394,6 +508,56 @@ const SHARED_WEAPON_GUNMETAL_MAT = new THREE.MeshStandardMaterial({
   flatShading: true,
 });
 
+function makeRarityAccentMaterial(rarity: WeaponRarity): THREE.MeshStandardMaterial {
+  const color = RARITY_COLORS[rarity].int;
+  return new THREE.MeshStandardMaterial({
+    color,
+    emissive: color,
+    emissiveIntensity: rarity === 'legendary' ? 0.42 : rarity === 'epic' ? 0.36 : 0.3,
+    roughness: rarity === 'legendary' ? 0.16 : 0.22,
+    metalness: rarity === 'legendary' ? 0.46 : 0.28,
+    envMapIntensity: rarity === 'legendary' ? 1.15 : 0.85,
+    flatShading: true,
+  });
+}
+
+const SHARED_RARITY_ACCENT_MATS: Record<WeaponRarity, THREE.MeshStandardMaterial> = {
+  common: makeRarityAccentMaterial('common'),
+  uncommon: makeRarityAccentMaterial('uncommon'),
+  rare: makeRarityAccentMaterial('rare'),
+  epic: makeRarityAccentMaterial('epic'),
+  legendary: makeRarityAccentMaterial('legendary'),
+};
+
+const SHARED_UNIT_BOX_GEO = new THREE.BoxGeometry(1, 1, 1);
+const SHARED_UNIT_CYLINDER_GEO = new THREE.CylinderGeometry(0.5, 0.5, 1, 10);
+const SHARED_UNIT_CONE_GEO = new THREE.ConeGeometry(0.5, 1, 8);
+
+function sharedBoxMesh(
+  material: THREE.Material,
+  sx: number,
+  sy: number,
+  sz: number,
+  name?: string
+): THREE.Mesh {
+  const mesh = new THREE.Mesh(SHARED_UNIT_BOX_GEO, material);
+  mesh.scale.set(sx, sy, sz);
+  if (name) mesh.name = name;
+  return mesh;
+}
+
+function sharedCylinderMesh(
+  material: THREE.Material,
+  radius: number,
+  length: number,
+  name?: string
+): THREE.Mesh {
+  const mesh = new THREE.Mesh(SHARED_UNIT_CYLINDER_GEO, material);
+  mesh.scale.set(radius * 2, length, radius * 2);
+  if (name) mesh.name = name;
+  return mesh;
+}
+
 export function createWeaponMesh(
   category: WeaponCategory,
   rarity: WeaponRarity = 'common'
@@ -405,18 +569,10 @@ export function createWeaponMesh(
   }
 
   const group = new THREE.Group();
-  const rarityColor = RARITY_COLORS[rarity].int;
 
   const darkMat = SHARED_WEAPON_DARK_MAT;
   const gunmetalMat = SHARED_WEAPON_GUNMETAL_MAT;
-  const accentMat = new THREE.MeshStandardMaterial({
-    color: rarityColor,
-    emissive: rarityColor,
-    emissiveIntensity: 0.3,
-    roughness: 0.22,
-    metalness: 0.28,
-    flatShading: true,
-  });
+  const accentMat = SHARED_RARITY_ACCENT_MATS[rarity];
 
   if (category === 'harvester') {
     const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.042, 0.98, 6), darkMat);
@@ -493,6 +649,24 @@ export function createWeaponMesh(
     pistolMag.position.set(0, -0.06, -0.03);
     pistolMag.rotation.x = -0.22;
     pistolMag.name = 'weapon_mag';
+    pistolMag.userData.baseY = -0.06;
+    pistolMag.userData.baseZ = -0.03;
+    const frameRail = sharedBoxMesh(darkMat, 0.055, 0.035, 0.2);
+    frameRail.position.set(0, 0.005, -0.24);
+    const rearSight = sharedBoxMesh(accentMat, 0.055, 0.045, 0.045);
+    rearSight.position.set(0, 0.16, -0.015);
+    const pistolBarrel = sharedCylinderMesh(gunmetalMat, 0.026, 0.18);
+    pistolBarrel.rotation.x = Math.PI / 2;
+    pistolBarrel.position.set(0, 0.08, -0.34);
+    const triggerGuard = sharedBoxMesh(darkMat, 0.024, 0.07, 0.13);
+    triggerGuard.position.set(0, -0.015, -0.14);
+    const hammer = sharedBoxMesh(gunmetalMat, 0.045, 0.06, 0.04);
+    hammer.position.set(0, 0.1, 0.035);
+    hammer.rotation.x = 0.35;
+    const gripPanel = sharedBoxMesh(accentMat, 0.086, 0.11, 0.055);
+    gripPanel.position.set(0, -0.045, -0.028);
+    gripPanel.rotation.x = -0.22;
+    group.add(frameRail, rearSight, pistolBarrel, triggerGuard, hammer, gripPanel);
     const muzzleAnchor = new THREE.Object3D();
     muzzleAnchor.name = 'muzzle_tip';
     muzzleAnchor.position.set(0, 0.08, -0.36);
@@ -501,6 +675,7 @@ export function createWeaponMesh(
       stripe.scale.set(1.18, 1.2, 1.42);
       grip.scale.set(1.18, 1.12, 1.18);
       pistolMag.visible = false;
+      pistolMag.name = 'weapon_mag_inactive';
       const heavyBarrel = new THREE.Mesh(
         new THREE.CylinderGeometry(0.043, 0.043, 0.34, 10),
         gunmetalMat
@@ -513,6 +688,9 @@ export function createWeaponMesh(
       );
       cylinder.rotation.x = Math.PI / 2;
       cylinder.position.set(0, 0.045, -0.16);
+      cylinder.name = 'weapon_mag';
+      cylinder.userData.baseY = 0.045;
+      cylinder.userData.baseZ = -0.16;
       const topRib = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.035, 0.48), accentMat);
       topRib.position.set(0, 0.17, -0.29);
       muzzleAnchor.position.set(0, 0.085, -0.6);
@@ -572,7 +750,30 @@ export function createWeaponMesh(
   mag.position.set(0, -0.09, -length * 0.32);
   mag.rotation.x = 0.22;
   mag.name = 'weapon_mag';
+  mag.userData.baseY = -0.09;
+  mag.userData.baseZ = -length * 0.32;
   group.add(mag);
+
+  const topRail = sharedBoxMesh(gunmetalMat, 0.075, 0.035, length * 0.46);
+  topRail.position.set(0, 0.155, -length * 0.34);
+  const ejectionPort = sharedBoxMesh(accentMat, 0.018, 0.055, 0.13);
+  ejectionPort.position.set(0.058, 0.075, -length * 0.26);
+  const chargingHandle = sharedBoxMesh(darkMat, 0.09, 0.045, 0.07);
+  chargingHandle.position.set(0, 0.105, -0.015);
+  const triggerGuard = sharedBoxMesh(darkMat, 0.026, 0.075, 0.18);
+  triggerGuard.position.set(0, -0.035, -length * 0.2);
+  group.add(topRail, ejectionPort, chargingHandle, triggerGuard);
+  if (category !== 'assault_rifle') {
+    const pistolGrip = sharedBoxMesh(darkMat, 0.07, 0.16, 0.08);
+    pistolGrip.position.set(0, -0.06, -0.08);
+    pistolGrip.rotation.x = -0.25;
+    group.add(pistolGrip);
+  }
+  if (category === 'shotgun' || category === 'smg') {
+    // Their archetype branches below provide the visible tube/drum feed.
+    mag.visible = false;
+    mag.name = 'weapon_mag_inactive';
+  }
 
   if (category === 'sniper') {
     const scopeMountF = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.08, 0.05), darkMat);
@@ -593,6 +794,15 @@ export function createWeaponMesh(
     const bipodR = bipodL.clone();
     bipodR.position.x = 0.05;
     group.add(scopeMountF, scopeMountR, scope, scopeLens, muzzleBrake, bipodL, bipodR);
+    const boltHandle = sharedCylinderMesh(accentMat, 0.02, 0.12);
+    boltHandle.rotation.z = Math.PI / 2;
+    boltHandle.position.set(0.085, 0.075, -0.18);
+    const barrelFluteA = sharedCylinderMesh(darkMat, 0.04, 0.035);
+    barrelFluteA.rotation.x = Math.PI / 2;
+    barrelFluteA.position.set(0, 0.065, -0.82);
+    const barrelFluteB = barrelFluteA.clone();
+    barrelFluteB.position.z = -0.94;
+    group.add(boltHandle, barrelFluteA, barrelFluteB);
   } else if (category === 'assault_rifle') {
     const holoFrame = new THREE.Mesh(new THREE.BoxGeometry(0.085, 0.075, 0.13), gunmetalMat);
     holoFrame.position.set(0, 0.17, -0.22);
@@ -604,6 +814,10 @@ export function createWeaponMesh(
     pistolGrip.position.set(0, -0.06, -0.1);
     pistolGrip.rotation.x = -0.25;
     group.add(holoFrame, holoLens, handguard, pistolGrip);
+    const compensator = sharedCylinderMesh(gunmetalMat, 0.043, 0.11);
+    compensator.rotation.x = Math.PI / 2;
+    compensator.position.set(0, 0.065, -length * 0.93);
+    group.add(compensator);
   } else if (category === 'burst_rifle') {
     const triRail = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.055, 0.42), gunmetalMat);
     triRail.position.set(0, 0.145, -0.46);
@@ -635,7 +849,11 @@ export function createWeaponMesh(
     longHandguard.position.set(0, 0.055, -0.62);
     const cheekRiser = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.06, 0.22), accentMat);
     cheekRiser.position.set(0, 0.12, 0.05);
-    group.add(dmrScope, dmrLens, longHandguard, cheekRiser);
+    const dmrBrake = sharedBoxMesh(gunmetalMat, 0.075, 0.075, 0.13);
+    dmrBrake.position.set(0, 0.065, -length * 0.93);
+    const foldedBipod = sharedBoxMesh(darkMat, 0.055, 0.035, 0.3);
+    foldedBipod.position.set(0, -0.015, -0.72);
+    group.add(dmrScope, dmrLens, longHandguard, cheekRiser, dmrBrake, foldedBipod);
   } else if (category === 'tactical_shotgun') {
     const heatShield = new THREE.Mesh(
       new THREE.CylinderGeometry(0.055, 0.055, 0.44, 8),
@@ -645,20 +863,34 @@ export function createWeaponMesh(
     heatShield.position.set(0, 0.065, -length * 0.68);
     mag.scale.set(1.2, 0.95, 1.65);
     mag.position.set(0, -0.1, -0.3);
+    mag.userData.baseY = -0.1;
+    mag.userData.baseZ = -0.3;
     const tacSight = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.065, 0.1), accentMat);
     tacSight.position.set(0, 0.17, -0.24);
     const sideSaddle = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.09, 0.3), accentMat);
     sideSaddle.position.set(-0.068, 0.06, -0.26);
-    group.add(heatShield, tacSight, sideSaddle);
+    const angledForegrip = sharedBoxMesh(darkMat, 0.055, 0.14, 0.07);
+    angledForegrip.position.set(0, -0.045, -0.5);
+    angledForegrip.rotation.x = 0.42;
+    const breacherMuzzle = sharedCylinderMesh(gunmetalMat, 0.052, 0.11);
+    breacherMuzzle.rotation.x = Math.PI / 2;
+    breacherMuzzle.position.set(0, 0.065, -length * 0.93);
+    group.add(heatShield, tacSight, sideSaddle, angledForegrip, breacherMuzzle);
   } else if (category === 'smg') {
     const drumMag = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 0.09, 10), accentMat);
     drumMag.rotation.z = Math.PI / 2;
-    drumMag.position.set(0, -0.06, -0.22);
+    drumMag.position.set(0, -0.08, -0.22);
+    drumMag.name = 'weapon_mag';
+    drumMag.userData.baseY = -0.08;
+    drumMag.userData.baseZ = -0.22;
     const foreGrip = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.15, 6), darkMat);
     foreGrip.position.set(0, -0.05, -0.36);
     const holo = new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.06, 0.1), gunmetalMat);
     holo.position.set(0, 0.16, -0.18);
-    group.add(drumMag, foreGrip, holo);
+    const suppressor = sharedCylinderMesh(darkMat, 0.042, 0.16);
+    suppressor.rotation.x = Math.PI / 2;
+    suppressor.position.set(0, 0.065, -length * 0.82);
+    group.add(drumMag, foreGrip, holo, suppressor);
   } else if (category === 'shotgun') {
     const underTube = new THREE.Mesh(
       new THREE.CylinderGeometry(0.026, 0.026, length * 0.44, 8),
@@ -673,7 +905,11 @@ export function createWeaponMesh(
     pump.name = 'weapon_slide';
     const shellRack = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.07, 0.22), accentMat);
     shellRack.position.set(0.065, 0.06, -0.24);
-    group.add(underTube, pump, shellRack);
+    const beadSight = sharedBoxMesh(accentMat, 0.025, 0.05, 0.025);
+    beadSight.position.set(0, 0.115, -length * 0.9);
+    const stockPad = sharedBoxMesh(darkMat, 0.1, 0.15, 0.06);
+    stockPad.position.set(0, 0.02, 0.19);
+    group.add(underTube, pump, shellRack, beadSight, stockPad);
   }
 
   const muzzleAnchor = new THREE.Object3D();
