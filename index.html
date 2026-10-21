@@ -1,0 +1,816 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>CI Craft — 3D Battle Royale</title>
+  </head>
+  <body>
+    <div id="game-canvas-container"></div>
+
+    <!-- Development Performance & Frame-Time Monitor (Toggle via F3 or Settings) -->
+    <div id="dev-perf-monitor" class="dev-perf-monitor hidden">
+      <div class="perf-header">
+        <span id="perf-fps-val" class="perf-fps-good">60 FPS</span>
+        <span id="perf-preset-badge" class="perf-badge">HIGH • DPR 1.50</span>
+      </div>
+      <div id="perf-frametime-row" class="perf-row">
+        CPU: 1.8ms avg | 2.4ms p95 | 3.1ms max
+      </div>
+      <div id="perf-subsystems-row" class="perf-row">
+        AI: 0.4ms | Anim: 0.3ms | World: 0.1ms | Render: 0.9ms
+      </div>
+      <div id="perf-renderer-row" class="perf-row">
+        Draws: 180 | Tris: 92.4k | Objs: 420 | Geo: 68 | Heap: 48MB
+      </div>
+    </div>
+
+    <!-- Pre-Match 3-2-1 Drop Countdown Overlay -->
+    <div id="countdown-overlay" class="countdown-overlay hidden">
+      <div id="countdown-mode-pill" class="brand-badge">SOLO BATTLE ROYALE</div>
+      <div class="countdown-label">PREPARE FOR DEPLOYMENT</div>
+      <div id="countdown-number" class="countdown-number">3</div>
+      <div id="countdown-objective" class="countdown-objective">
+        🎯 OBJECTIVE: Scavenge weapons &amp; shields, harvest build materials, stay inside
+        the Safe Zone, and be the last Commander standing!
+      </div>
+    </div>
+
+    <!-- Main Menu / Lobby Overlay -->
+    <div id="lobby-overlay" class="overlay-screen lobby-split-screen">
+      <div class="lobby-card">
+        <div class="lobby-top-bar">
+          <div class="brand-badge">STYLIZED 3D THIRD-PERSON BATTLE ROYALE</div>
+          <button
+            id="btn-lobby-fullscreen"
+            class="mini-util-btn"
+            type="button"
+            title="Toggle Fullscreen"
+          >
+            🖥️ FULLSCREEN
+          </button>
+        </div>
+        <h1 class="game-title">CI <span>CRAFT</span></h1>
+        <p class="game-subtitle">
+          Drop onto the CI Pipeline Island across 8 Named POIs, scavenge 5 rarity tiers of
+          weapons &amp; chests, build tactical fortifications (Wall, Ramp, Floor, Roof), and
+          outlast the shrinking storm!
+        </p>
+
+        <!-- Quick Mode & Menu Navigation Tabs -->
+        <div class="lobby-nav-pills">
+          <button id="btn-mode-solo" class="nav-pill active-pill" type="button">
+            🤖 PLAY SOLO
+          </button>
+          <button id="btn-mode-online" class="nav-pill" type="button">
+            🌐 PLAY ONLINE
+          </button>
+          <button id="btn-open-locker" class="nav-pill" type="button">
+            🎨 LOCKER
+          </button>
+          <button id="btn-open-howto" class="nav-pill" type="button">
+            📖 HOW TO PLAY
+          </button>
+        </div>
+
+        <!-- Career & Progression Strip -->
+        <div id="lobby-career-strip" class="career-strip">
+          <div class="career-header-row">
+            <span id="career-level-badge" class="career-level-badge">
+              ⭐ LVL 1 • Drop Recruit
+            </span>
+            <span id="career-xp-text" class="career-xp-text">0 / 1000 XP</span>
+          </div>
+          <div class="career-xp-track">
+            <div id="career-xp-fill" class="career-xp-fill" style="width: 0%"></div>
+          </div>
+          <div class="career-stats-row">
+            <div class="c-stat">
+              <span>MATCHES</span><strong id="career-matches">0</strong>
+            </div>
+            <div class="c-stat">
+              <span>WINS</span><strong id="career-wins">0</strong>
+            </div>
+            <div class="c-stat">
+              <span>ELIMS</span><strong id="career-elims">0</strong>
+            </div>
+            <div class="c-stat">
+              <span>DAMAGE</span><strong id="career-damage">0</strong>
+            </div>
+            <div class="c-stat">
+              <span>BEST RANK</span><strong id="career-best-rank">—</strong>
+            </div>
+          </div>
+          <div class="career-footer-row">
+            <div id="career-storage-badge" class="career-storage-badge">
+              💾 LOCAL BROWSER PROFILE (Solo / Offline Storage — Server-Verified in Online Rooms)
+            </div>
+            <button
+              id="btn-toggle-account-panel"
+              class="account-link-btn"
+              type="button"
+              title="Manage Persistent Account Passkey & Cross-Device Recovery"
+            >
+              🔑 ACCOUNT PASSKEY
+            </button>
+          </div>
+
+          <!-- Cross-Device Account Passkey & Recovery Panel -->
+          <div id="account-passkey-panel" class="account-passkey-panel hidden">
+            <div class="account-passkey-header">
+              <span id="account-id-badge" class="account-id-badge">
+                ACCOUNT: Provisioning...
+              </span>
+              <button
+                id="btn-copy-passkey"
+                class="copy-code-btn"
+                type="button"
+                title="Copy Cross-Device Passkey"
+              >
+                🔑 COPY PASSKEY
+              </button>
+            </div>
+            <div class="account-restore-row">
+              <input
+                type="text"
+                id="input-restore-passkey"
+                placeholder="Paste Passkey (acc_xxxxxx:XXXX-XXXX-XXXX) to link account..."
+                maxlength="48"
+              />
+              <button
+                id="btn-restore-passkey"
+                class="copy-code-btn accent"
+                type="button"
+              >
+                🔗 LINK ACCOUNT
+              </button>
+            </div>
+            <div id="account-restore-msg" class="account-restore-msg hidden"></div>
+          </div>
+        </div>
+
+        <div class="lobby-form">
+          <div class="form-row">
+            <div class="form-group">
+              <label for="lobby-player-name">Commander Callsign</label>
+              <input
+                type="text"
+                id="lobby-player-name"
+                value="Commander_CI"
+                maxlength="18"
+                placeholder="Enter callsign..."
+              />
+            </div>
+
+            <div class="form-group">
+              <label for="lobby-starter-loadout">Starter Loadout</label>
+              <select id="lobby-starter-loadout">
+                <option value="balanced" selected>Balanced (Pulse Rifle + Cyber Pistol)</option>
+                <option value="close_quarters">Breacher (Scatter Pump + Hyper SMG)</option>
+                <option value="sharpshooter">Recon (Rail Sniper + Cyber Pistol)</option>
+                <option value="demolition">Architect (Hyper SMG + 450 Build Mats)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="lobby-mode">Session Mode</label>
+              <select id="lobby-mode">
+                <option value="solo_bots" selected>Solo Battle Royale (+AI Bots)</option>
+                <option value="online">Online Multiplayer Room Sync (+AI Fill)</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label for="lobby-room-code">Multiplayer Room Code</label>
+              <div class="room-code-input-row">
+                <input
+                  type="text"
+                  id="lobby-room-code"
+                  value="CICRAFT-1"
+                  maxlength="14"
+                  placeholder="CICRAFT-1"
+                />
+                <button
+                  id="btn-generate-room-code"
+                  class="copy-code-btn"
+                  type="button"
+                  title="Generate New Private Room Code"
+                >
+                  🎲 NEW
+                </button>
+                <button
+                  id="btn-copy-room-code"
+                  class="copy-code-btn"
+                  type="button"
+                  title="Copy Room Code"
+                >
+                  📋 COPY
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Multiplayer Room Status & Player Count Bar -->
+          <div id="lobby-room-bar" class="lobby-room-bar">
+            <span id="lobby-conn-status" class="room-status-tag">
+              🟢 READY • SOLO + AI BOTS
+            </span>
+            <span id="lobby-player-count" class="room-players-tag">
+              👥 1 Human + AI Fill
+            </span>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="lobby-bot-count">AI Combatants</label>
+              <select id="lobby-bot-count">
+                <option value="9">10 Players (Fast Skirmish)</option>
+                <option value="14" selected>15 Players (Standard Island)</option>
+                <option value="19">20 Players (Full Chaos)</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label for="lobby-difficulty">Bot AI Skill</label>
+              <select id="lobby-difficulty">
+                <option value="easy">Recruit (Easy)</option>
+                <option value="medium" selected>Veteran (Medium)</option>
+                <option value="hard">Champion (Hard)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-group checkbox-group">
+            <label>
+              <input type="checkbox" id="lobby-skydrop" checked />
+              <span>Start Match with Sky-Drop Glider Deployment</span>
+            </label>
+          </div>
+
+          <div class="lobby-actions-row">
+            <button id="btn-launch-match" class="primary-launch-btn">
+              🚀 DROP INTO ISLAND
+            </button>
+            <button id="btn-open-settings-lobby" class="secondary-action-btn" title="Settings">
+              ⚙️ SETTINGS
+            </button>
+          </div>
+        </div>
+
+        <div class="controls-guide">
+          <h3>TACTICAL CONTROLS</h3>
+          <div class="controls-grid">
+            <div><kbd>WASD</kbd> Move</div>
+            <div><kbd>Shift</kbd> Sprint</div>
+            <div><kbd>Space</kbd> Jump / Glide</div>
+            <div><kbd>L-Click</kbd> Fire / Place Build</div>
+            <div><kbd>R-Click</kbd> Aim (ADS)</div>
+            <div><kbd>R</kbd> Reload</div>
+            <div><kbd>1</kbd>–<kbd>5</kbd> Weapons</div>
+            <div><kbd>F</kbd> Chest / Loot</div>
+            <div><kbd>Q</kbd><kbd>E</kbd><kbd>C</kbd><kbd>V</kbd> Wall/Ramp/Floor/Roof</div>
+            <div><kbd>G</kbd> Cycle Material</div>
+            <div><kbd>N</kbd> Next Spectator</div>
+            <div><kbd>ESC</kbd> Pause / Settings</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right-Side Live 3D Character Preview Stage Dock -->
+      <div id="lobby-preview-dock" class="lobby-preview-dock">
+        <div class="preview-dock-header">
+          <span class="preview-tag">LIVE 3D OPERATOR PREVIEW</span>
+          <strong id="preview-outfit-name">CI Vanguard</strong>
+        </div>
+        <div class="preview-dock-controls">
+          <button id="btn-rot-left" class="preview-ctrl-btn" type="button" title="Rotate Left">
+            ⟲ Rotate
+          </button>
+          <button id="btn-dock-locker" class="preview-ctrl-btn accent" type="button">
+            🎨 Customize Outfit
+          </button>
+          <button id="btn-rot-right" class="preview-ctrl-btn" type="button" title="Rotate Right">
+            Rotate ⟳
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- In-Match HUD Overlay -->
+    <div id="hud-overlay" class="hidden">
+      <div id="storm-vignette"></div>
+      <div id="damage-numbers-layer"></div>
+
+      <!-- FPS Counter -->
+      <div id="hud-fps-counter" class="hud-fps-counter hidden">60 FPS</div>
+
+      <!-- Top Center Compass Bearing Bar -->
+      <div id="hud-compass-pill" class="hud-compass-pill">🧭 N • 0°</div>
+
+      <!-- POI Discovery Toast -->
+      <div id="hud-poi-toast" class="hud-poi-toast hidden">📍 ENTERING PIPELINE PLAZA</div>
+
+      <!-- Local Elimination Callout Banner -->
+      <div id="hud-elim-banner" class="hud-elim-banner hidden">
+        ⚡ ELIMINATED <strong>Target</strong>
+      </div>
+
+      <!-- Spectator Mode Banner -->
+      <div id="hud-spectator-banner" class="hud-spectator-banner hidden">
+        <span>👁️ SPECTATING: <strong id="spectator-target-name">Bot</strong></span>
+        <button id="btn-spectator-next" class="spec-mini-btn">[N] Next Target</button>
+        <button id="btn-spectator-menu" class="spec-mini-btn">[ESC] Leave</button>
+      </div>
+
+      <!-- Top Left: Minimap & Storm Status -->
+      <div class="hud-top-left">
+        <div class="minimap-wrapper">
+          <canvas id="minimap-canvas" width="176" height="176"></canvas>
+        </div>
+        <div class="storm-banner">
+          <span id="hud-storm-phase">STORM PHASE 1</span>
+          <span id="hud-storm-timer">0:40</span>
+        </div>
+      </div>
+
+      <!-- Top Right: Alive Count, Eliminations, Network Badge & Kill Feed -->
+      <div class="hud-top-right">
+        <div class="match-counters">
+          <div id="hud-net-status" class="net-status-pill online">LOCAL ENGINE</div>
+          <div class="counter-pill">
+            <span class="counter-label">ALIVE</span>
+            <span id="hud-alive-val" class="counter-val">15</span>
+          </div>
+          <div class="counter-pill">
+            <span class="counter-label">ELIMS</span>
+            <span id="hud-kills-val" class="counter-val">0</span>
+          </div>
+          <button id="hud-mute-btn" class="hud-icon-btn" title="Mute / Unmute Audio (M)">
+            🔊
+          </button>
+          <button id="hud-pause-btn" class="hud-icon-btn" title="Pause / Settings (ESC)">
+            ⚙️
+          </button>
+        </div>
+        <div id="hud-killfeed" class="killfeed-list"></div>
+      </div>
+
+      <!-- Center Screen: Dynamic Crosshair, Hitmarker & Interaction Prompts -->
+      <div class="hud-center">
+        <div id="hud-crosshair" class="crosshair">
+          <span class="ch-dot"></span>
+          <span class="ch-line ch-top"></span>
+          <span class="ch-line ch-bottom"></span>
+          <span class="ch-line ch-left"></span>
+          <span class="ch-line ch-right"></span>
+        </div>
+        <div id="hud-hitmarker" class="hitmarker hidden"></div>
+        <div id="hud-hit-badge" class="hit-badge hidden">HEADSHOT</div>
+        <div id="hud-reload-banner" class="center-Status-tag hidden">
+          <span>RELOADING...</span>
+          <div class="reload-bar-track">
+            <div id="hud-reload-fill" class="reload-bar-fill"></div>
+          </div>
+        </div>
+        <div id="hud-pickup-prompt" class="pickup-prompt hidden">
+          Press <kbd>F</kbd> to Pick Up
+        </div>
+        <div id="hud-loot-toast" class="loot-toast hidden"></div>
+      </div>
+
+      <!-- Bottom Left: Shield & Health Bars -->
+      <div class="hud-bottom-left">
+        <div class="vital-row shield-row">
+          <span class="vital-icon">🛡️</span>
+          <div class="vital-bar-bg">
+            <div id="hud-shield-fill" class="vital-bar-fill shield-fill"></div>
+          </div>
+          <span id="hud-shield-text" class="vital-text">50 / 100</span>
+        </div>
+        <div class="vital-row health-row">
+          <span class="vital-icon">➕</span>
+          <div class="vital-bar-bg">
+            <div id="hud-health-fill" class="vital-bar-fill health-fill"></div>
+          </div>
+          <span id="hud-health-text" class="vital-text">100 / 100</span>
+        </div>
+      </div>
+
+      <!-- Bottom Right: Active Weapon Ammo, Materials & 5-Slot Hotbar -->
+      <div class="hud-bottom-right">
+        <div class="weapon-materials-strip">
+          <div class="active-ammo-card">
+            <div id="hud-weapon-title" class="weapon-title">Pulse Rifle</div>
+            <div class="ammo-numbers">
+              <span id="hud-ammo-clip" class="ammo-clip">30</span>
+              <span id="hud-ammo-res" class="ammo-res">/ 90</span>
+            </div>
+          </div>
+
+          <div class="materials-card">
+            <div id="mat-chip-wood" class="mat-chip selected-mat" title="Wood ([G] to switch)">
+              🪵 <span id="mat-wood-val">100</span>
+            </div>
+            <div id="mat-chip-stone" class="mat-chip" title="Stone ([G] to switch)">
+              🪨 <span id="mat-stone-val">50</span>
+            </div>
+            <div id="mat-chip-metal" class="mat-chip" title="Metal ([G] to switch)">
+              🔩 <span id="mat-metal-val">25</span>
+            </div>
+            <div id="build-btn-wall" class="build-hint-pill" title="Toggle Wall Preview [Q]">
+              <kbd>Q</kbd> Wall
+            </div>
+            <div id="build-btn-ramp" class="build-hint-pill" title="Toggle Ramp Preview [E]">
+              <kbd>E</kbd> Ramp
+            </div>
+            <div id="build-btn-floor" class="build-hint-pill" title="Toggle Floor Preview [C]">
+              <kbd>C</kbd> Floor
+            </div>
+            <div id="build-btn-roof" class="build-hint-pill" title="Toggle Roof Preview [V]">
+              <kbd>V</kbd> Roof
+            </div>
+          </div>
+        </div>
+
+        <div class="hotbar-row">
+          <div id="hotbar-slot-0" class="hotbar-slot">
+            <span class="slot-key">1</span>
+            <span class="slot-icon">⛏️</span>
+            <span class="slot-name">Harvester</span>
+            <span class="slot-ammo">MELEE</span>
+            <div class="slot-rarity-bar"></div>
+          </div>
+          <div id="hotbar-slot-1" class="hotbar-slot active">
+            <span class="slot-key">2</span>
+            <span class="slot-icon">🎯</span>
+            <span class="slot-name">Pulse Rifle</span>
+            <span class="slot-ammo">30/30</span>
+            <div class="slot-rarity-bar"></div>
+          </div>
+          <div id="hotbar-slot-2" class="hotbar-slot">
+            <span class="slot-key">3</span>
+            <span class="slot-icon">🔫</span>
+            <span class="slot-name">Cyber Pistol</span>
+            <span class="slot-ammo">15/15</span>
+            <div class="slot-rarity-bar"></div>
+          </div>
+          <div id="hotbar-slot-3" class="hotbar-slot">
+            <span class="slot-key">4</span>
+            <span class="slot-icon">·</span>
+            <span class="slot-name">Empty</span>
+            <span class="slot-ammo"></span>
+            <div class="slot-rarity-bar"></div>
+          </div>
+          <div id="hotbar-slot-4" class="hotbar-slot">
+            <span class="slot-key">5</span>
+            <span class="slot-icon">·</span>
+            <span class="slot-name">Empty</span>
+            <span class="slot-ammo"></span>
+            <div class="slot-rarity-bar"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Mobile / Touch Virtual Controls -->
+      <div id="mobile-touch-controls" class="mobile-controls">
+        <div id="touch-joystick-zone" class="joystick-zone">
+          <div id="touch-joystick-knob" class="joystick-knob"></div>
+        </div>
+        <div class="touch-action-buttons">
+          <button id="touch-fire-btn" class="touch-btn fire">FIRE</button>
+          <button id="touch-aim-btn" class="touch-btn">ADS</button>
+          <button id="touch-jump-btn" class="touch-btn">JUMP</button>
+          <button id="touch-loot-btn" class="touch-btn">LOOT</button>
+          <button id="touch-wall-btn" class="touch-btn">WALL</button>
+          <button id="touch-ramp-btn" class="touch-btn">RAMP</button>
+          <button id="touch-floor-btn" class="touch-btn">FLOOR</button>
+          <button id="touch-roof-btn" class="touch-btn">ROOF</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Pause Menu Overlay -->
+    <div id="pause-overlay" class="overlay-screen hidden">
+      <div class="end-card">
+        <h2 class="end-title victory" style="font-size: 2rem">MATCH PAUSED</h2>
+        <p class="end-subtitle">Adjust your tactical settings or return to the battle.</p>
+        <div class="pause-actions-stack">
+          <button id="btn-resume-match" class="primary-launch-btn">▶️ RESUME MATCH</button>
+          <button id="btn-open-settings-pause" class="secondary-action-btn">
+            ⚙️ GAME SETTINGS
+          </button>
+          <button id="btn-open-howto-pause" class="secondary-action-btn">
+            📖 HOW TO PLAY &amp; CONTROLS
+          </button>
+          <button id="btn-restart-match" class="secondary-action-btn">
+            🔄 RESTART MATCH
+          </button>
+          <button id="btn-return-menu" class="secondary-action-btn danger">
+            🏠 RETURN TO MAIN MENU
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Cosmetic Locker Overlay (Split View so 3D Character Preview stays visible) -->
+    <div id="locker-overlay" class="overlay-screen lobby-split-screen hidden">
+      <div class="lobby-card locker-card">
+        <div class="brand-badge">VISUAL-ONLY OPERATOR CUSTOMIZATION</div>
+        <h2 class="end-title victory" style="font-size: 1.85rem">🎨 OPERATOR LOCKER</h2>
+        <p class="game-subtitle" style="margin-bottom: 12px">
+          Customize your Outfit, Armor Plating, Visor Optics, and Back Accessory. Cosmetics are
+          100% visual-only and never alter hitboxes, movement speed, or damage.
+        </p>
+
+        <div class="locker-section">
+          <label class="locker-label">OUTFIT PRESETS</label>
+          <div id="locker-outfit-grid" class="locker-outfit-grid">
+            <button class="outfit-btn active" data-outfit="vanguard_blue" type="button">
+              CI Vanguard
+            </button>
+            <button class="outfit-btn" data-outfit="solar_phoenix" type="button">
+              Solar Phoenix
+            </button>
+            <button class="outfit-btn" data-outfit="neon_phantom" type="button">
+              Neon Phantom
+            </button>
+            <button class="outfit-btn" data-outfit="emerald_ranger" type="button">
+              Emerald Ranger
+            </button>
+            <button class="outfit-btn" data-outfit="arctic_sentinel" type="button">
+              Arctic Sentinel
+            </button>
+            <button class="outfit-btn" data-outfit="crimson_striker" type="button">
+              Crimson Striker
+            </button>
+          </div>
+        </div>
+
+        <div class="locker-section">
+          <label class="locker-label">ARMOR PLATING COLOR</label>
+          <div id="locker-armor-swatches" class="swatch-row"></div>
+        </div>
+
+        <div class="locker-section">
+          <label class="locker-label">VISOR &amp; ENERGY ACCENT COLOR</label>
+          <div id="locker-accent-swatches" class="swatch-row"></div>
+        </div>
+
+        <div class="locker-section">
+          <label class="locker-label">BACK ACCESSORY</label>
+          <div id="locker-back-grid" class="locker-back-grid">
+            <button class="back-acc-btn active" data-back="jump_pack" type="button">
+              🚀 Thruster Jump-Pack
+            </button>
+            <button class="back-acc-btn" data-back="energy_wings" type="button">
+              ⚡ Holo-Valkyrie Wings
+            </button>
+            <button class="back-acc-btn" data-back="tactical_shield" type="button">
+              🛡️ Aegis Crest Buckler
+            </button>
+            <button class="back-acc-btn" data-back="none" type="button">
+              ✨ Sleek Minimalist
+            </button>
+          </div>
+        </div>
+
+        <div class="lobby-actions-row" style="margin-top: 14px">
+          <button id="btn-close-locker" class="primary-launch-btn" type="button">
+            ✅ EQUIP &amp; RETURN TO LOBBY
+          </button>
+        </div>
+      </div>
+
+      <div class="lobby-preview-dock">
+        <div class="preview-dock-header">
+          <span class="preview-tag">LIVE 3D LOCKER PREVIEW</span>
+          <strong id="locker-preview-label">Drag or Click to Rotate</strong>
+        </div>
+        <div class="preview-dock-controls">
+          <button id="btn-locker-rot-left" class="preview-ctrl-btn" type="button">
+            ⟲ Rotate Left
+          </button>
+          <button id="btn-locker-rot-right" class="preview-ctrl-btn" type="button">
+            Rotate Right ⟳
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- How to Play & Tactical Controls Reference Modal -->
+    <div id="howto-overlay" class="overlay-screen hidden">
+      <div class="end-card howto-card">
+        <div class="brand-badge">FIELD MANUAL &amp; TACTICAL GUIDE</div>
+        <h2 class="end-title victory" style="font-size: 1.85rem">📖 HOW TO PLAY</h2>
+
+        <div class="howto-sections">
+          <div class="howto-box">
+            <h4>🏆 1. BATTLE ROYALE OBJECTIVE</h4>
+            <p>
+              Drop from the sky onto CI Pipeline Island, scavenge weapons and shield potions from
+              Supply Chests across 8 Named POIs, stay inside the shrinking Safe Zone, and be the
+              last Commander standing!
+            </p>
+          </div>
+
+          <div class="howto-box">
+            <h4>🔫 2. WEAPON RARITIES &amp; COMBAT</h4>
+            <p>
+              Weapons scale across 5 tiers: <strong>Common (Grey)</strong>,
+              <strong>Uncommon (Green)</strong>, <strong>Rare (Blue)</strong>,
+              <strong>Epic (Purple)</strong>, and <strong>Legendary (Gold)</strong>. Aim Down
+              Sights (<kbd>Right-Click</kbd>) to tighten spread and recoil.
+            </p>
+          </div>
+
+          <div class="howto-box">
+            <h4>🧱 3. HARVESTING &amp; TACTICAL BUILDING</h4>
+            <p>
+              Equip your <strong>CI Harvester (<kbd>1</kbd>)</strong> to harvest
+              <strong>Wood</strong>, <strong>Stone</strong>, and <strong>Metal</strong> from
+              trees, rocks, and crates. Press <kbd>Q</kbd> (Wall), <kbd>E</kbd> (Ramp),
+              <kbd>C</kbd> (Floor), or <kbd>V</kbd> (Roof) to preview and place cover!
+            </p>
+          </div>
+
+          <div class="howto-box">
+            <h4>🎮 4. DESKTOP &amp; MOBILE CONTROLS</h4>
+            <p>
+              <strong>Move:</strong> <kbd>WASD</kbd> • <strong>Sprint:</strong> <kbd>Shift</kbd> •
+              <strong>Jump/Glide:</strong> <kbd>Space</kbd> • <strong>Loot/Chest:</strong>
+              <kbd>F</kbd> • <strong>Reload:</strong> <kbd>R</kbd> • <strong>Mute:</strong>
+              <kbd>M</kbd> • <strong>Switch Material:</strong> <kbd>G</kbd>. On mobile/tablet,
+              use the on-screen virtual joystick and touch action buttons.
+            </p>
+          </div>
+        </div>
+
+        <button id="btn-close-howto" class="primary-launch-btn" type="button">
+          ✅ GOT IT — BACK TO GAME
+        </button>
+      </div>
+    </div>
+
+    <!-- Settings Modal Overlay -->
+    <div id="settings-overlay" class="overlay-screen hidden">
+      <div class="end-card settings-card">
+        <h2 class="end-title victory" style="font-size: 1.85rem">⚙️ SETTINGS</h2>
+        <div class="lobby-form" style="margin-top: 16px">
+          <div class="form-group">
+            <label for="setting-sensitivity">
+              Mouse Aim Sensitivity: <span id="val-sensitivity">1.0x</span>
+            </label>
+            <input
+              type="range"
+              id="setting-sensitivity"
+              min="0.3"
+              max="2.5"
+              step="0.1"
+              value="1.0"
+            />
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="setting-volume">
+                Master Volume: <span id="val-volume">80%</span>
+              </label>
+              <input
+                type="range"
+                id="setting-volume"
+                min="0"
+                max="100"
+                step="5"
+                value="80"
+              />
+            </div>
+
+            <div class="form-group">
+              <label for="setting-sfx-volume">
+                SFX &amp; Combat Volume: <span id="val-sfx-volume">90%</span>
+              </label>
+              <input
+                type="range"
+                id="setting-sfx-volume"
+                min="0"
+                max="100"
+                step="5"
+                value="90"
+              />
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="setting-graphics">Graphics Quality</label>
+              <select id="setting-graphics">
+                <option value="low">Low (Fastest)</option>
+                <option value="medium">Medium (Balanced)</option>
+                <option value="high" selected>High (Shadows + Foliage)</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label for="setting-timeofday">Island Lighting / Time</label>
+              <select id="setting-timeofday">
+                <option value="day" selected>☀️ Bright Day</option>
+                <option value="sunset">🌇 Golden Sunset</option>
+                <option value="night">🌙 Cyber Night</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group checkbox-group">
+              <label>
+                <input type="checkbox" id="setting-show-fps" />
+                <span>Show Live FPS &amp; Perf Monitor (F3)</span>
+              </label>
+            </div>
+
+            <div class="form-group checkbox-group">
+              <label>
+                <input type="checkbox" id="setting-mute" />
+                <span>Mute All Game Audio (M)</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <button id="btn-toggle-fullscreen" class="secondary-action-btn" type="button">
+                🖥️ TOGGLE FULLSCREEN
+              </button>
+            </div>
+          </div>
+
+          <button id="btn-close-settings" class="primary-launch-btn">
+            ✅ SAVE &amp; CLOSE
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Victory Royale / Elimination End-of-Match Overlay -->
+    <div id="end-overlay" class="overlay-screen hidden">
+      <div id="victory-confetti-layer" class="victory-confetti-layer"></div>
+      <div class="end-card victory-end-card">
+        <div id="end-crown-badge" class="end-crown-badge">🏆 #1 ISLAND CHAMPION</div>
+        <h1 id="end-banner-title" class="end-title victory">👑 VICTORY ROYALE!</h1>
+        <p id="end-banner-subtitle" class="end-subtitle">
+          You conquered the CI Craft Island!
+        </p>
+
+        <div id="end-xp-summary" class="end-xp-summary">
+          ⭐ <strong>+350 XP EARNED</strong> — <strong>LEVEL 1</strong>
+        </div>
+
+        <div class="stats-grid">
+          <div class="stat-box">
+            <span class="stat-label">PLACEMENT</span>
+            <span id="stat-rank" class="stat-value">#1</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-label">ELIMINATIONS</span>
+            <span id="stat-kills" class="stat-value">0</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-label">DAMAGE DEALT</span>
+            <span id="stat-dmg" class="stat-value">0</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-label">ACCURACY</span>
+            <span id="stat-accuracy" class="stat-value">0%</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-label">STRUCTURES BUILT</span>
+            <span id="stat-builds" class="stat-value">0</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-label">SURVIVAL TIME</span>
+            <span id="stat-time" class="stat-value">0m 0s</span>
+          </div>
+        </div>
+
+        <div class="lobby-actions-row">
+          <button id="btn-play-again" class="primary-launch-btn">
+            🔄 PLAY AGAIN
+          </button>
+          <button id="btn-spectate-match" class="secondary-action-btn hidden">
+            👁️ SPECTATE LIVE
+          </button>
+          <button id="btn-end-main-menu" class="secondary-action-btn">
+            🏠 MAIN MENU
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
