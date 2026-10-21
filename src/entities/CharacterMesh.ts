@@ -510,6 +510,8 @@ export class CharacterMesh {
   private reloadAnimClock: number = 0;
   private attackSwingTimer: number = 0;
   private muzzleFlashTimer: number = 0;
+  private muzzleFlashDuration: number = 0.06;
+  private readonly muzzleFlashBaseScale = new THREE.Vector3(1, 1, 1);
   private hitFlashTimer: number = 0;
   private hitReactionTimer: number = 0;
   private isHeadshotFlinch: boolean = false;
@@ -747,21 +749,53 @@ export class CharacterMesh {
     this.muzzleFlashMesh = new THREE.Group();
     const coreFlash = new THREE.Mesh(
       new THREE.OctahedronGeometry(0.22, 0),
-      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.96 })
+      new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0.96,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        fog: false,
+      })
     );
     const outerFlash = new THREE.Mesh(
       new THREE.OctahedronGeometry(0.36, 0),
-      new THREE.MeshBasicMaterial({ color: 0xfacc15, transparent: true, opacity: 0.78 })
+      new THREE.MeshBasicMaterial({
+        color: 0xfacc15,
+        transparent: true,
+        opacity: 0.78,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        fog: false,
+      })
     );
     outerFlash.scale.set(1.25, 1.25, 1.9);
     const flashSpikeH = new THREE.Mesh(
       new THREE.BoxGeometry(0.62, 0.06, 0.06),
-      new THREE.MeshBasicMaterial({ color: 0xfef08a, transparent: true, opacity: 0.85 })
+      new THREE.MeshBasicMaterial({
+        color: 0xfef08a,
+        transparent: true,
+        opacity: 0.85,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        fog: false,
+      })
     );
     const flashSpikeV = new THREE.Mesh(
       new THREE.BoxGeometry(0.06, 0.62, 0.06),
-      new THREE.MeshBasicMaterial({ color: 0xfef08a, transparent: true, opacity: 0.85 })
+      new THREE.MeshBasicMaterial({
+        color: 0xfef08a,
+        transparent: true,
+        opacity: 0.85,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        fog: false,
+      })
     );
+    coreFlash.userData.baseOpacity = 0.96;
+    outerFlash.userData.baseOpacity = 0.78;
+    flashSpikeH.userData.baseOpacity = 0.85;
+    flashSpikeV.userData.baseOpacity = 0.85;
     this.muzzleFlashMesh.add(coreFlash, outerFlash, flashSpikeH, flashSpikeV);
     this.muzzleFlashMesh.position.set(0, 0.06, -0.82);
     this.muzzleFlashMesh.visible = false;
@@ -1126,7 +1160,9 @@ export class CharacterMesh {
     this.attackSwingTimer = 0.22;
     if (isFirearm) {
       const cat = this.activeWeaponCategory;
-      this.muzzleFlashTimer = cat === 'shotgun' || cat === 'sniper' ? 0.085 : 0.06;
+      this.muzzleFlashDuration =
+        cat === 'shotgun' || cat === 'sniper' ? 0.085 : 0.06;
+      this.muzzleFlashTimer = this.muzzleFlashDuration;
       this.muzzleFlashMesh.visible = true;
       this.muzzleFlashMesh.rotation.z = Math.random() * Math.PI;
       const baseScale =
@@ -1141,7 +1177,8 @@ export class CharacterMesh {
           : 0.95;
       const scale = baseScale + Math.random() * 0.45;
       const zStretch = cat === 'sniper' ? 2.2 : cat === 'shotgun' ? 1.35 : 1.55;
-      this.muzzleFlashMesh.scale.set(scale, scale, scale * zStretch);
+      this.muzzleFlashBaseScale.set(scale, scale, scale * zStretch);
+      this.muzzleFlashMesh.scale.copy(this.muzzleFlashBaseScale);
 
       const outer = this.muzzleFlashMesh.children[1] as THREE.Mesh | undefined;
       if (outer && outer.material) {
@@ -1234,6 +1271,24 @@ export class CharacterMesh {
 
     if (this.muzzleFlashTimer > 0) {
       this.muzzleFlashTimer = Math.max(0, this.muzzleFlashTimer - dt);
+      const flashRatio = THREE.MathUtils.clamp(
+        this.muzzleFlashTimer / Math.max(0.001, this.muzzleFlashDuration),
+        0,
+        1
+      );
+      this.muzzleFlashMesh.scale
+        .copy(this.muzzleFlashBaseScale)
+        .multiplyScalar(0.72 + flashRatio * 0.28);
+      for (const child of this.muzzleFlashMesh.children) {
+        const mesh = child as THREE.Mesh;
+        const mat = mesh.material as THREE.MeshBasicMaterial | undefined;
+        if (!mat) continue;
+        const baseOpacity =
+          typeof mesh.userData.baseOpacity === 'number'
+            ? mesh.userData.baseOpacity
+            : 0.85;
+        mat.opacity = baseOpacity * flashRatio;
+      }
       if (this.muzzleFlashTimer <= 0) {
         this.muzzleFlashMesh.visible = false;
       }

@@ -1,6 +1,13 @@
 import * as THREE from 'three';
 import { TimeOfDayPreset } from '../network/schemas';
 import {
+  SKY_DOME_RADIUS,
+  STARFIELD_RADIUS,
+  SUN_DISTANCE,
+  getSunDirection,
+  getSurfaceVariation,
+} from './VisualAtmosphere';
+import {
   EXPANSION_BUILDINGS,
   EXPANSION_LANDMARKS,
   ISLAND_ROAD_SEGMENTS,
@@ -152,6 +159,7 @@ export class TerrainGenerator {
   public lakeInnerRippleRing!: THREE.Mesh;
   public terrainMesh!: THREE.Mesh;
   public cloudsGroup = new THREE.Group();
+  public skyGroup = new THREE.Group();
   public distantIslandsGroup = new THREE.Group();
   public starfieldPoints!: THREE.Points;
   public atmosphereMotes!: THREE.Points;
@@ -160,6 +168,7 @@ export class TerrainGenerator {
   public sunHaloMesh!: THREE.Mesh;
   public waterfallMesh!: THREE.Mesh;
   private waterTexture: THREE.CanvasTexture | null = null;
+  private waterBumpTexture: THREE.CanvasTexture | null = null;
   private terrainDetailTexture: THREE.CanvasTexture | null = null;
   private time = 0;
 
@@ -214,27 +223,70 @@ export class TerrainGenerator {
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
 
-    ctx.fillStyle = '#ffffff';
+    ctx.fillStyle = '#f8f8f3';
     ctx.fillRect(0, 0, 256, 256);
 
-    // Subtle organic grass/soil micro-variation
-    for (let i = 0; i < 950; i++) {
-      const x = (i * 97) % 256;
-      const y = (i * 53) % 256;
-      ctx.fillStyle =
+    // Deterministic organic micro-detail. This is a colour multiplier over
+    // the existing vertex-colour terrain, so it breaks up beaches, roads,
+    // grass, and rock without adding geometry, draw calls, or collision.
+    let seed = 48151623;
+    const rand = (): number => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return seed / 4294967296;
+    };
+
+    for (let i = 0; i < 72; i++) {
+      const x = rand() * 256;
+      const y = rand() * 256;
+      const radius = 10 + rand() * 30;
+      const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius);
+      const tint =
         i % 3 === 0
-          ? 'rgba(15, 23, 42, 0.045)'
+          ? 'rgba(15, 23, 42, 0.032)'
           : i % 3 === 1
-          ? 'rgba(255, 255, 255, 0.065)'
-          : 'rgba(22, 101, 52, 0.035)';
-      ctx.fillRect(x, y, 3, 5);
+            ? 'rgba(255, 255, 255, 0.04)'
+            : 'rgba(101, 67, 33, 0.028)';
+      gradient.addColorStop(0, tint);
+      gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    for (let i = 0; i < 2300; i++) {
+      const x = rand() * 256;
+      const y = rand() * 256;
+      const length = 2 + rand() * 5;
+      ctx.strokeStyle =
+        i % 4 === 0
+          ? 'rgba(255, 255, 255, 0.055)'
+          : i % 4 === 1
+            ? 'rgba(15, 23, 42, 0.05)'
+            : i % 4 === 2
+              ? 'rgba(22, 101, 52, 0.042)'
+              : 'rgba(120, 72, 32, 0.04)';
+      ctx.lineWidth = 0.7 + rand() * 0.8;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + (rand() - 0.5) * 2.5, y - length);
+      ctx.stroke();
+    }
+
+    for (let i = 0; i < 240; i++) {
+      ctx.fillStyle =
+        i % 2 === 0 ? 'rgba(71, 85, 105, 0.075)' : 'rgba(255, 255, 255, 0.06)';
+      ctx.beginPath();
+      ctx.arc(rand() * 256, rand() * 256, 0.6 + rand() * 1.5, 0, Math.PI * 2);
+      ctx.fill();
     }
 
     const tex = new THREE.CanvasTexture(canvas);
     tex.wrapS = THREE.RepeatWrapping;
     tex.wrapT = THREE.RepeatWrapping;
-    tex.repeat.set(52, 52);
-    tex.anisotropy = 4;
+    tex.repeat.set(64, 64);
+    tex.anisotropy = 8;
+    tex.colorSpace = THREE.SRGBColorSpace;
     return tex;
   }
 
@@ -277,6 +329,8 @@ export class TerrainGenerator {
     tex.wrapS = THREE.RepeatWrapping;
     tex.wrapT = THREE.RepeatWrapping;
     tex.repeat.set(42, 42);
+    tex.anisotropy = 4;
+    tex.colorSpace = THREE.SRGBColorSpace;
     return tex;
   }
 
@@ -602,6 +656,11 @@ export class TerrainGenerator {
         color.lerp(cliffRockColor, rockWeight * 0.85);
       }
 
+      // Smooth, deterministic tonal variation softens the intentionally
+      // readable biome/checker colours at landscape scale. Heights and all
+      // gameplay placement remain untouched.
+      color.offsetHSL(0, 0, getSurfaceVariation(vx, vz) * 0.024);
+
       colors.push(color.r, color.g, color.b);
     }
 
@@ -613,8 +672,8 @@ export class TerrainGenerator {
       vertexColors: true,
       map: this.terrainDetailTexture,
       flatShading: true,
-      roughness: 0.76,
-      metalness: 0.04,
+      roughness: 0.84,
+      metalness: 0.0,
     });
 
     this.terrainMesh = new THREE.Mesh(geo, terrainMat);
@@ -625,19 +684,27 @@ export class TerrainGenerator {
     const waterGeo = new THREE.PlaneGeometry(1600, 1600, 64, 64);
     waterGeo.rotateX(-Math.PI / 2);
     this.waterTexture = this.createWaterRippleTexture();
+    this.waterBumpTexture = this.waterTexture?.clone() ?? null;
+    if (this.waterBumpTexture) {
+      this.waterBumpTexture.colorSpace = THREE.NoColorSpace;
+      this.waterBumpTexture.needsUpdate = true;
+    }
     const waterMat = new THREE.MeshStandardMaterial({
-      color: 0x0ea5e9,
+      color: 0x0799d8,
       map: this.waterTexture,
-      emissive: 0x0284c7,
-      emissiveIntensity: 0.28,
-      roughness: 0.12,
-      metalness: 0.32,
+      bumpMap: this.waterBumpTexture,
+      bumpScale: 0.18,
+      emissive: 0x0369a1,
+      emissiveIntensity: 0.16,
+      roughness: 0.08,
+      metalness: 0.02,
       transparent: true,
-      opacity: 0.88,
+      opacity: 0.9,
       flatShading: true,
     });
     this.waterMesh = new THREE.Mesh(waterGeo, waterMat);
     this.waterMesh.position.y = -0.28;
+    this.waterMesh.receiveShadow = true;
     scene.add(this.waterMesh);
 
     // Animated Shoreline Foam Rings (Coastline, Mirror Lake Perimeter & Central Islet)
@@ -696,7 +763,10 @@ export class TerrainGenerator {
   }
 
   private buildAtmosphericSky(scene: THREE.Scene): void {
-    const skyGeo = new THREE.SphereGeometry(720, 32, 20);
+    this.skyGroup.name = 'CameraCentredSky';
+    scene.add(this.skyGroup);
+
+    const skyGeo = new THREE.SphereGeometry(SKY_DOME_RADIUS, 40, 24);
     const pos = skyGeo.attributes.position;
     const skyColors: number[] = [];
     for (let i = 0; i < pos.count; i++) {
@@ -708,56 +778,75 @@ export class TerrainGenerator {
       vertexColors: true,
       side: THREE.BackSide,
       depthWrite: false,
+      fog: false,
     });
     this.skyDome = new THREE.Mesh(skyGeo, skyMat);
-    scene.add(this.skyDome);
+    this.skyDome.name = 'AtmosphericSkyDome';
+    this.skyDome.frustumCulled = false;
+    this.skyDome.renderOrder = -100;
+    this.skyGroup.add(this.skyDome);
 
-    // Starfield Dome (visible at Sunset & Night)
+    // Starfield Dome (visible at Sunset & Night). A fixed seed keeps world
+    // generation deterministic and the camera-centred radius keeps stars in
+    // front of the far plane on Low as well as High.
     const starCount = 450;
     const starPositions = new Float32Array(starCount * 3);
+    let starSeed = 24681357;
+    const starRand = (): number => {
+      starSeed = (starSeed * 1664525 + 1013904223) >>> 0;
+      return starSeed / 4294967296;
+    };
     for (let i = 0; i < starCount; i++) {
-      const theta = Math.random() * Math.PI * 2;
-      const phi = Math.random() * Math.PI * 0.46;
-      const r = 680;
-      starPositions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
-      starPositions[i * 3 + 1] = r * Math.cos(phi) + 40;
-      starPositions[i * 3 + 2] = r * Math.sin(phi) * Math.sin(theta);
+      const theta = starRand() * Math.PI * 2;
+      const phi = Math.acos(1 - starRand() * 0.92);
+      starPositions[i * 3] = STARFIELD_RADIUS * Math.sin(phi) * Math.cos(theta);
+      starPositions[i * 3 + 1] = STARFIELD_RADIUS * Math.cos(phi);
+      starPositions[i * 3 + 2] = STARFIELD_RADIUS * Math.sin(phi) * Math.sin(theta);
     }
     const starGeo = new THREE.BufferGeometry();
     starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
     const starMat = new THREE.PointsMaterial({
       color: 0xf8fafc,
-      size: 2.6,
+      size: 1.15,
       transparent: true,
       opacity: 0.0,
       depthWrite: false,
+      fog: false,
     });
     this.starfieldPoints = new THREE.Points(starGeo, starMat);
-    scene.add(this.starfieldPoints);
+    this.starfieldPoints.name = 'AtmosphericStarfield';
+    this.starfieldPoints.frustumCulled = false;
+    this.starfieldPoints.renderOrder = -99;
+    this.skyGroup.add(this.starfieldPoints);
 
-    // Sun Disc + Glowing Corona Halo
-    const sunGeo = new THREE.CircleGeometry(36, 28);
+    // Sun Disc + Glowing Corona Halo, positioned by applyTimeOfDaySky on
+    // the same directional-light vector used for scene shadows.
+    const sunGeo = new THREE.CircleGeometry(13, 28);
     const sunMat = new THREE.MeshBasicMaterial({
       color: 0xfef08a,
       side: THREE.DoubleSide,
+      fog: false,
     });
     this.sunMesh = new THREE.Mesh(sunGeo, sunMat);
-    this.sunMesh.position.set(220, 310, 180);
-    this.sunMesh.lookAt(0, 0, 0);
-    scene.add(this.sunMesh);
+    this.sunMesh.name = 'AtmosphericSun';
+    this.sunMesh.frustumCulled = false;
+    this.sunMesh.renderOrder = -98;
+    this.skyGroup.add(this.sunMesh);
 
-    const haloGeo = new THREE.RingGeometry(36, 68, 28);
+    const haloGeo = new THREE.RingGeometry(13.4, 26, 28);
     const haloMat = new THREE.MeshBasicMaterial({
       color: 0xfde047,
       side: THREE.DoubleSide,
       transparent: true,
-      opacity: 0.28,
+      opacity: 0.24,
       depthWrite: false,
+      fog: false,
     });
     this.sunHaloMesh = new THREE.Mesh(haloGeo, haloMat);
-    this.sunHaloMesh.position.copy(this.sunMesh.position);
-    this.sunHaloMesh.lookAt(0, 0, 0);
-    scene.add(this.sunHaloMesh);
+    this.sunHaloMesh.name = 'AtmosphericSunHalo';
+    this.sunHaloMesh.frustumCulled = false;
+    this.sunHaloMesh.renderOrder = -98;
+    this.skyGroup.add(this.sunHaloMesh);
 
     this.applyTimeOfDaySky('day');
 
@@ -789,6 +878,7 @@ export class TerrainGenerator {
         82 + (i % 3) * 14,
         Math.sin(angle) * dist
       );
+      cluster.userData.baseY = cluster.position.y;
       cluster.rotation.y = angle;
       this.cloudsGroup.add(cluster);
     }
@@ -824,9 +914,9 @@ export class TerrainGenerator {
 
   private buildDistantSceneryIslands(scene: THREE.Scene): void {
     const distantMat = new THREE.MeshStandardMaterial({
-      color: 0x334155,
+      color: 0x64748b,
       flatShading: true,
-      roughness: 0.9,
+      roughness: 0.92,
     });
     const snowCapMat = new THREE.MeshStandardMaterial({
       color: 0xe2e8f0,
@@ -836,7 +926,7 @@ export class TerrainGenerator {
 
     for (let i = 0; i < 8; i++) {
       const angle = (i / 8) * Math.PI * 2 + 0.3;
-      const dist = 410 + (i % 3) * 45;
+      const dist = 340 + (i % 3) * 38;
       const ix = Math.cos(angle) * dist;
       const iz = Math.sin(angle) * dist;
       const h = 38 + (i % 3) * 18;
@@ -865,16 +955,46 @@ export class TerrainGenerator {
     const cHorizon = new THREE.Color(
       preset === 'day' ? 0xbae6fd : preset === 'sunset' ? 0xf97316 : 0x1e293b
     );
+    const cGround = new THREE.Color(
+      preset === 'day' ? 0x365314 : preset === 'sunset' ? 0x451a03 : 0x020617
+    );
+    const cSunGlow = new THREE.Color(
+      preset === 'day' ? 0xfef3c7 : preset === 'sunset' ? 0xffd9a0 : 0xbfdbfe
+    );
+    const sunDirection = getSunDirection(preset);
+    const sunHorizontalLength = Math.hypot(sunDirection.x, sunDirection.z) || 1;
+    const sunAzimuthX = sunDirection.x / sunHorizontalLength;
+    const sunAzimuthZ = sunDirection.z / sunHorizontalLength;
+    const sunGlowStrength =
+      preset === 'sunset' ? 0.42 : preset === 'day' ? 0.18 : 0.06;
     const tmp = new THREE.Color();
 
     for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i);
       const y = pos.getY(i);
-      const t = Math.max(0, Math.min(1, y / 720));
-      if (t > 0.35) {
-        tmp.lerpColors(cMid, cZenith, (t - 0.35) / 0.65);
+      const z = pos.getZ(i);
+      const elevation = THREE.MathUtils.clamp(y / SKY_DOME_RADIUS, -1, 1);
+      if (elevation >= 0.28) {
+        tmp.lerpColors(cMid, cZenith, (elevation - 0.28) / 0.72);
+      } else if (elevation >= 0) {
+        tmp.lerpColors(cHorizon, cMid, elevation / 0.28);
       } else {
-        tmp.lerpColors(cHorizon, cMid, t / 0.35);
+        tmp.lerpColors(cHorizon, cGround, Math.min(1, -elevation / 0.42));
       }
+
+      // A broad sun-side atmospheric glow ties the visible sun, directional
+      // light, and horizon together without a post-processing pass.
+      const horizontalLength = Math.hypot(x, z) || 1;
+      const azimuthDot = Math.max(
+        0,
+        (x / horizontalLength) * sunAzimuthX +
+          (z / horizontalLength) * sunAzimuthZ
+      );
+      const horizonBand = Math.max(0, 1 - Math.abs(elevation + 0.03) / 0.48);
+      tmp.lerp(
+        cSunGlow,
+        Math.pow(azimuthDot, 3) * horizonBand * sunGlowStrength
+      );
       colAttr.setXYZ(i, tmp.r, tmp.g, tmp.b);
     }
     colAttr.needsUpdate = true;
@@ -889,22 +1009,46 @@ export class TerrainGenerator {
       sunMat.color.setHex(
         preset === 'day' ? 0xfef08a : preset === 'sunset' ? 0xfb923c : 0xe2e8f0
       );
-      this.sunMesh.position.set(220, preset === 'sunset' ? 115 : 310, 180);
-      this.sunMesh.lookAt(0, 0, 0);
+      const sunPosition = new THREE.Vector3(
+        sunDirection.x,
+        sunDirection.y,
+        sunDirection.z
+      ).multiplyScalar(SUN_DISTANCE);
+      const facing = sunPosition.clone().multiplyScalar(-1).normalize();
+      const orientation = new THREE.Quaternion().setFromUnitVectors(
+        new THREE.Vector3(0, 0, 1),
+        facing
+      );
+      this.sunMesh.position.copy(sunPosition);
+      this.sunMesh.quaternion.copy(orientation);
       if (this.sunHaloMesh) {
-        this.sunHaloMesh.position.copy(this.sunMesh.position);
-        this.sunHaloMesh.lookAt(0, 0, 0);
+        const haloMat = this.sunHaloMesh.material as THREE.MeshBasicMaterial;
+        haloMat.color.setHex(
+          preset === 'day' ? 0xfde047 : preset === 'sunset' ? 0xfb923c : 0x93c5fd
+        );
+        haloMat.opacity = preset === 'sunset' ? 0.32 : 0.22;
+        this.sunHaloMesh.position.copy(sunPosition);
+        this.sunHaloMesh.quaternion.copy(orientation);
       }
     }
   }
 
-  public update(dt: number): void {
+  public update(dt: number, cameraPosition?: THREE.Vector3): void {
     this.time += dt;
+    if (cameraPosition) {
+      // Sky, sun, and stars are directional backdrop elements. Following the
+      // camera prevents parallax/clipping as the player crosses the island.
+      this.skyGroup.position.copy(cameraPosition);
+    }
     if (this.waterMesh) {
       this.waterMesh.position.y = -0.28 + Math.sin(this.time * 1.8) * 0.12;
       if (this.waterTexture) {
         this.waterTexture.offset.x = (this.time * 0.032) % 1;
         this.waterTexture.offset.y = (this.time * 0.02) % 1;
+      }
+      if (this.waterBumpTexture) {
+        this.waterBumpTexture.offset.x = (this.time * 0.032) % 1;
+        this.waterBumpTexture.offset.y = (this.time * 0.02) % 1;
       }
     }
     if (this.shorelineFoamRing) {
@@ -921,6 +1065,13 @@ export class TerrainGenerator {
     }
     if (this.cloudsGroup && this.cloudsGroup.visible) {
       this.cloudsGroup.rotation.y += dt * 0.006;
+      for (let i = 0; i < this.cloudsGroup.children.length; i++) {
+        const cluster = this.cloudsGroup.children[i];
+        const baseY = typeof cluster.userData.baseY === 'number'
+          ? cluster.userData.baseY
+          : cluster.position.y;
+        cluster.position.y = baseY + Math.sin(this.time * 0.16 + i * 0.73) * 1.15;
+      }
     }
     if (this.atmosphereMotes) {
       this.atmosphereMotes.rotation.y += dt * 0.015;

@@ -27,17 +27,21 @@ async function loadWorldModules() {
 
   try {
     emit('src/world/WorldLayout.ts', 'WorldLayout.mjs');
+    emit('src/world/VisualAtmosphere.ts', 'VisualAtmosphere.mjs');
     emit('src/world/TerrainGenerator.ts', 'TerrainGenerator.mjs', [
       [/import\s+\{\s*TimeOfDayPreset\s*\}\s+from\s+['"]\.\.\/network\/schemas['"];?\n?/, ''],
+      ["from './VisualAtmosphere'", "from './VisualAtmosphere.mjs'"],
       ["from './WorldLayout'", "from './WorldLayout.mjs'"],
     ]);
     emit('src/world/MapExpansionBuilder.ts', 'MapExpansionBuilder.mjs', [
       ["from './TerrainGenerator'", "from './TerrainGenerator.mjs'"],
+      ["from './VisualAtmosphere'", "from './VisualAtmosphere.mjs'"],
       ["from './WorldLayout'", "from './WorldLayout.mjs'"],
     ]);
     emit('src/world/IslandWorld.ts', 'IslandWorld.mjs', [
       ["from './TerrainGenerator'", "from './TerrainGenerator.mjs'"],
       ["from './MapExpansionBuilder'", "from './MapExpansionBuilder.mjs'"],
+      ["from './VisualAtmosphere'", "from './VisualAtmosphere.mjs'"],
       ["from './WorldLayout'", "from './WorldLayout.mjs'"],
       [/import\s+\{\s*BuildablePieceState,[\s\S]*?\}\s+from\s+['"]\.\.\/network\/schemas['"];?\n?/, ''],
     ]);
@@ -265,6 +269,24 @@ test('generated world: deterministic expansion, safe loot/props, and performance
   assert.ok(
     world.boxColliders.length + world.cylinderColliders.length <= 1220,
     'collider budget exceeded'
+  );
+
+  const skyDome = first.scene.getObjectByName('AtmosphericSkyDome');
+  const skySun = first.scene.getObjectByName('AtmosphericSun');
+  assert.ok(skyDome, 'expected a generated atmospheric sky dome');
+  assert.ok(skySun, 'expected a generated atmospheric sun');
+  skyDome.geometry.computeBoundingSphere();
+  approx(skyDome.geometry.boundingSphere.radius, 285, 0.01, 'sky dome radius');
+  assert.equal(skyDome.material.fog, false);
+  const cameraPosition = new THREE.Vector3(12, 34, -56);
+  world.update(0.016, cameraPosition);
+  assert.deepEqual(
+    [
+      world.terrain.skyGroup.position.x,
+      world.terrain.skyGroup.position.y,
+      world.terrain.skyGroup.position.z,
+    ],
+    [cameraPosition.x, cameraPosition.y, cameraPosition.z]
   );
 
   const lootViolations = [];

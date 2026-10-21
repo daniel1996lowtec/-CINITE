@@ -536,6 +536,7 @@ export class HUDManager {
         this.currentPoiName = poi.name;
         if (this.poiToastEl) {
           this.poiToastEl.textContent = `📍 ENTERING ${poi.name.toUpperCase()}`;
+          this.poiToastEl.style.setProperty('--poi-accent', poi.color);
           this.poiToastEl.classList.remove('hidden');
           this.poiToastTimer = 2.8;
         }

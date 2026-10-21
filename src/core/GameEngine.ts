@@ -19,6 +19,15 @@ import {
   ServerHitEvent,
 } from '../network/NetworkManager';
 import { IslandWorld } from '../world/IslandWorld';
+import {
+  getCameraFarForQuality,
+  getEnvironmentPreset,
+  getSunOffset,
+  resolveGraphicsQuality,
+  setFoliageWindStrength,
+  type DeviceCapabilitySignals,
+  type ResolvedGraphicsQuality,
+} from '../world/VisualAtmosphere';
 import { CharacterMesh } from '../entities/CharacterMesh';
 import { ThirdPersonCamera } from '../camera/ThirdPersonCamera';
 import { clampNumber, combineMoveInput } from '../input/touchInputMath';
@@ -42,6 +51,12 @@ export class GameEngine {
   private dirLightTarget!: THREE.Object3D;
   private fillLight!: THREE.DirectionalLight;
   private hemiLight!: THREE.HemisphereLight;
+  private readonly sunOffset = new THREE.Vector3(115, 165, 95);
+  private environmentCanvas: HTMLCanvasElement | null = null;
+  private environmentTexture: THREE.CanvasTexture | null = null;
+  private environmentRenderTarget: THREE.WebGLRenderTarget | null = null;
+  private environmentPmrem: THREE.PMREMGenerator | null = null;
+  private environmentPreset: TimeOfDayPreset | null = null;
 
   public network: NetworkManager;
   public world: IslandWorld;
@@ -118,7 +133,7 @@ export class GameEngine {
     touchSensitivity: 1.0,
     audioVolume: 0.8,
     sfxVolume: 0.9,
-    graphicsQuality: 'high',
+    graphicsQuality: 'auto',
     timeOfDay: 'day',
     showFps: false,
   };
@@ -144,6 +159,9 @@ export class GameEngine {
   public basePixelRatio = 1.5;
   public adaptiveResolutionScale = 1.0;
   private adaptiveScaleTimer = 0;
+  private adaptiveSlowChecks = 0;
+  private adaptiveDetailReduced = false;
+  private resolvedGraphicsQuality: ResolvedGraphicsQuality = 'high';
   private shadowCenterTick = 0;
 
   constructor(container: HTMLElement) {
@@ -161,6 +179,7 @@ export class GameEngine {
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.08;
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.container.appendChild(this.renderer.domElement);
 
     this.scene = new THREE.Scene();
@@ -168,6 +187,7 @@ export class GameEngine {
     this.scene.fog = new THREE.FogExp2(0x7dd3fc, 0.0022);
 
     this.setupLighting();
+    this.setupEnvironmentLighting();
 
     this.tpCamera = new ThirdPersonCamera(
       initialViewport.width / initialViewport.height
@@ -185,6 +205,10 @@ export class GameEngine {
     this.hud = new HUDManager();
     this.progression = new ProgressionSystem();
     this.perfMonitor = new PerfMonitor();
+
+    // Resolve the new Auto default before the first frame. Explicit Low /
+    // Medium / High selections in Settings continue to be honoured exactly.
+    this.applySettings({});
 
     this.setupLobbyPreviewStage();
     this.setupMultiplayerCallbacks();
@@ -755,7 +779,9 @@ export class GameEngine {
     this.scene.add(this.hemiLight);
 
     this.dirLight = new THREE.DirectionalLight(0xfffbeb, 1.54);
-    this.dirLight.position.set(115, 165, 95);
+    const initialSun = getSunOffset('day');
+    this.sunOffset.set(initialSun.x, initialSun.y, initialSun.z);
+    this.dirLight.position.copy(this.sunOffset);
     this.dirLight.castShadow = true;
     this.dirLight.shadow.mapSize.width = 1536;
     this.dirLight.shadow.mapSize.height = 1536;
@@ -766,7 +792,8 @@ export class GameEngine {
     this.dirLight.shadow.camera.right = d;
     this.dirLight.shadow.camera.top = d;
     this.dirLight.shadow.camera.bottom = -d;
-    this.dirLight.shadow.bias = -0.0005;
+    this.dirLight.shadow.bias = -0.00035;
+    this.dirLight.shadow.normalBias = 0.035;
     this.dirLightTarget = new THREE.Object3D();
     this.scene.add(this.dirLightTarget);
     this.dirLight.target = this.dirLightTarget;
@@ -776,6 +803,130 @@ export class GameEngine {
     this.fillLight = new THREE.DirectionalLight(0x7dd3fc, 0.42);
     this.fillLight.position.set(-120, 95, -110);
     this.scene.add(this.fillLight);
+  }
+
+  private setupEnvironmentLighting(): void {
+    if (typeof document === 'undefined') return;
+    this.environmentCanvas = document.createElement('canvas');
+    this.environmentCanvas.width = 512;
+    this.environmentCanvas.height = 256;
+    this.environmentTexture = new THREE.CanvasTexture(this.environmentCanvas);
+    this.environmentTexture.mapping = THREE.EquirectangularReflectionMapping;
+    this.environmentTexture.colorSpace = THREE.SRGBColorSpace;
+    this.environmentPmrem = new THREE.PMREMGenerator(this.renderer);
+    this.environmentPmrem.compileEquirectangularShader();
+    this.updateEnvironmentLighting(this.settings.timeOfDay);
+  }
+
+  private updateEnvironmentLighting(preset: TimeOfDayPreset): void {
+    const environment = getEnvironmentPreset(preset);
+    this.renderer.toneMappingExposure = environment.exposure;
+    this.scene.environmentIntensity = environment.intensity;
+
+    if (
+      this.environmentPreset === preset ||
+      !this.environmentCanvas ||
+      !this.environmentTexture ||
+      !this.environmentPmrem
+    ) {
+      this.environmentPreset = preset;
+      return;
+    }
+    this.environmentPreset = preset;
+
+    const ctx = this.environmentCanvas.getContext('2d');
+    if (!ctx) return;
+    const width = this.environmentCanvas.width;
+    const height = this.environmentCanvas.height;
+    const css = (hex: number): string => `#${hex.toString(16).padStart(6, '0')}`;
+
+    const vertical = ctx.createLinearGradient(0, 0, 0, height);
+    vertical.addColorStop(0, css(environment.zenith));
+    vertical.addColorStop(0.47, css(environment.horizon));
+    vertical.addColorStop(0.54, css(environment.ground));
+    vertical.addColorStop(1, css(environment.ground));
+    ctx.fillStyle = vertical;
+    ctx.fillRect(0, 0, width, height);
+
+    // Draw the bright directional source three times so its PMREM highlight
+    // wraps cleanly at the equirect seam.
+    const sunX = environment.sunU * width;
+    const sunY = environment.sunV * height;
+    for (const offsetX of [-width, 0, width]) {
+      const glow = ctx.createRadialGradient(
+        sunX + offsetX,
+        sunY,
+        0,
+        sunX + offsetX,
+        sunY,
+        92
+      );
+      glow.addColorStop(0, css(environment.sun));
+      glow.addColorStop(0.16, css(environment.sun));
+      glow.addColorStop(1, 'rgba(255, 255, 255, 0)');
+      ctx.fillStyle = glow;
+      ctx.fillRect(sunX + offsetX - 92, sunY - 92, 184, 184);
+    }
+
+    this.environmentTexture.needsUpdate = true;
+    const nextRenderTarget = this.environmentPmrem.fromEquirectangular(
+      this.environmentTexture
+    );
+    const previousRenderTarget = this.environmentRenderTarget;
+    this.environmentRenderTarget = nextRenderTarget;
+    this.scene.environment = nextRenderTarget.texture;
+    previousRenderTarget?.dispose();
+  }
+
+  private getDeviceCapabilitySignals(): DeviceCapabilitySignals {
+    if (typeof window === 'undefined' || typeof navigator === 'undefined') {
+      return { coarsePointer: false };
+    }
+    const nav = navigator as Navigator & {
+      deviceMemory?: number;
+      connection?: { saveData?: boolean };
+    };
+    let coarsePointer = false;
+    try {
+      coarsePointer = window.matchMedia('(pointer: coarse)').matches;
+    } catch {
+      coarsePointer = false;
+    }
+    return {
+      coarsePointer,
+      hardwareConcurrency: nav.hardwareConcurrency,
+      deviceMemoryGb: nav.deviceMemory,
+      devicePixelRatio: window.devicePixelRatio || 1,
+      saveData: nav.connection?.saveData === true,
+    };
+  }
+
+  private getResolvedGraphicsQuality(): ResolvedGraphicsQuality {
+    this.resolvedGraphicsQuality = resolveGraphicsQuality(
+      this.settings.graphicsQuality,
+      this.getDeviceCapabilitySignals()
+    );
+    return this.resolvedGraphicsQuality;
+  }
+
+  private setAdaptiveDetailReduced(reduced: boolean): void {
+    if (this.adaptiveDetailReduced === reduced) return;
+    this.adaptiveDetailReduced = reduced;
+    const quality = this.getResolvedGraphicsQuality();
+
+    if (quality === 'high') {
+      this.world.detailFoliageGroup.visible = !reduced;
+      this.world.expansionDetailGroup.visible = !reduced;
+      if (this.world.terrain.atmosphereMotes) {
+        this.world.terrain.atmosphereMotes.visible = !reduced;
+      }
+      this.setShadowMapSize(reduced ? 1024 : 1536);
+    } else if (quality === 'medium') {
+      // Medium already omits detail foliage. Under sustained pressure, shed
+      // the soft shadow pass before reducing combat readability or HUD work.
+      this.dirLight.castShadow = !reduced;
+      this.renderer.shadowMap.needsUpdate = true;
+    }
   }
 
   public getEffectivePixelRatio(): number {
@@ -824,8 +975,15 @@ export class GameEngine {
 
     const deviceDpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
     this.adaptiveResolutionScale = 1.0;
+    this.adaptiveSlowChecks = 0;
+    this.adaptiveDetailReduced = false;
+    const quality = this.getResolvedGraphicsQuality();
+    setFoliageWindStrength(quality === 'high' ? 1 : quality === 'medium' ? 0.65 : 0);
+    this.particles?.setQualityScale(
+      quality === 'high' ? 1 : quality === 'medium' ? 0.8 : 0.55
+    );
 
-    if (this.settings.graphicsQuality === 'low') {
+    if (quality === 'low') {
       this.basePixelRatio = 1.0;
       this.renderer.setPixelRatio(this.getEffectivePixelRatio());
       this.renderer.shadowMap.enabled = false;
@@ -837,9 +995,10 @@ export class GameEngine {
       this.world.foliageGroup.visible = false;
       this.world.detailFoliageGroup.visible = false;
       this.world.expansionDetailGroup.visible = false;
-      this.tpCamera.camera.far = 310;
+      this.world.terrain.distantIslandsGroup.visible = false;
+      this.tpCamera.camera.far = getCameraFarForQuality(quality);
       this.tpCamera.camera.updateProjectionMatrix();
-    } else if (this.settings.graphicsQuality === 'medium') {
+    } else if (quality === 'medium') {
       this.basePixelRatio = Math.min(deviceDpr, 1.25);
       this.renderer.setPixelRatio(this.getEffectivePixelRatio());
       this.renderer.shadowMap.enabled = true;
@@ -853,7 +1012,8 @@ export class GameEngine {
       this.world.foliageGroup.visible = true;
       this.world.detailFoliageGroup.visible = false;
       this.world.expansionDetailGroup.visible = false;
-      this.tpCamera.camera.far = 380;
+      this.world.terrain.distantIslandsGroup.visible = true;
+      this.tpCamera.camera.far = getCameraFarForQuality(quality);
       this.tpCamera.camera.updateProjectionMatrix();
     } else {
       this.basePixelRatio = Math.min(deviceDpr, 1.5);
@@ -869,7 +1029,8 @@ export class GameEngine {
       this.world.foliageGroup.visible = true;
       this.world.detailFoliageGroup.visible = true;
       this.world.expansionDetailGroup.visible = true;
-      this.tpCamera.camera.far = 460;
+      this.world.terrain.distantIslandsGroup.visible = true;
+      this.tpCamera.camera.far = getCameraFarForQuality(quality);
       this.tpCamera.camera.updateProjectionMatrix();
     }
     this.renderer.shadowMap.needsUpdate = true;
@@ -888,6 +1049,9 @@ export class GameEngine {
 
   public applyTimeOfDay(preset: TimeOfDayPreset): void {
     this.settings.timeOfDay = preset;
+    const sun = getSunOffset(preset);
+    this.sunOffset.set(sun.x, sun.y, sun.z);
+    this.updateEnvironmentLighting(preset);
     this.world.terrain.applyTimeOfDaySky(preset);
 
     const fog = this.scene.fog as THREE.FogExp2;
@@ -900,7 +1064,7 @@ export class GameEngine {
       this.hemiLight.intensity = 0.82;
       this.dirLight.color.setHex(0xfdba74);
       this.dirLight.intensity = 1.42;
-      this.dirLight.position.set(150, 75, 110);
+      this.dirLight.position.copy(this.dirLightTarget.position).add(this.sunOffset);
       if (this.fillLight) {
         this.fillLight.color.setHex(0xc084fc);
         this.fillLight.intensity = 0.36;
@@ -914,7 +1078,7 @@ export class GameEngine {
       this.hemiLight.intensity = 0.56;
       this.dirLight.color.setHex(0x93c5fd);
       this.dirLight.intensity = 0.92;
-      this.dirLight.position.set(-90, 150, -80);
+      this.dirLight.position.copy(this.dirLightTarget.position).add(this.sunOffset);
       if (this.fillLight) {
         this.fillLight.color.setHex(0x38bdf8);
         this.fillLight.intensity = 0.28;
@@ -928,7 +1092,7 @@ export class GameEngine {
       this.hemiLight.intensity = 0.96;
       this.dirLight.color.setHex(0xfffbeb);
       this.dirLight.intensity = 1.54;
-      this.dirLight.position.set(115, 165, 95);
+      this.dirLight.position.copy(this.dirLightTarget.position).add(this.sunOffset);
       if (this.fillLight) {
         this.fillLight.color.setHex(0x7dd3fc);
         this.fillLight.intensity = 0.42;
@@ -1441,7 +1605,7 @@ export class GameEngine {
       this.renderer,
       this.scene,
       this.getEffectivePixelRatio(),
-      this.settings.graphicsQuality
+      this.resolvedGraphicsQuality
     );
 
     if (snap && this.settings.showFps) {
@@ -1466,6 +1630,21 @@ export class GameEngine {
             Math.round((this.adaptiveResolutionScale + 0.05) * 100) / 100
           );
           this.renderer.setPixelRatio(this.getEffectivePixelRatio());
+        }
+
+        // If resolution is already near its floor and the frame is still
+        // over budget for two consecutive checks, shed cinematic detail.
+        // Restoration uses a lower threshold to avoid visible oscillation.
+        if (avgMs > 21 && this.adaptiveResolutionScale <= 0.7) {
+          this.adaptiveSlowChecks++;
+          if (this.adaptiveSlowChecks >= 2) {
+            this.setAdaptiveDetailReduced(true);
+          }
+        } else if (avgMs < 14) {
+          this.adaptiveSlowChecks = 0;
+          this.setAdaptiveDetailReduced(false);
+        } else {
+          this.adaptiveSlowChecks = 0;
         }
       }
     }
@@ -1639,7 +1818,7 @@ export class GameEngine {
       const tz = Math.round(cameraTarget.position.z / 8) * 8;
       this.dirLightTarget.position.set(tx, 0, tz);
       this.dirLightTarget.updateMatrixWorld();
-      this.dirLight.position.set(tx + 115, 165, tz + 95);
+      this.dirLight.position.copy(this.dirLightTarget.position).add(this.sunOffset);
     }
 
     // Smoothly interpolate remote human players at 60Hz+ render rate
@@ -1665,7 +1844,7 @@ export class GameEngine {
 
     // Storm update: if connected to an authoritative online room, server drives storm coordinates
     if (this.network.isOnlineRoom && this.network.roomConnected) {
-      this.stormSystem.syncVisuals(state);
+      this.stormSystem.syncVisuals(state, dt);
     } else {
       this.stormSystem.update(dt, state);
     }

@@ -238,14 +238,14 @@ export function createWeaponStats(
 const weaponTemplateCache = new Map<string, THREE.Group>();
 const SHARED_WEAPON_DARK_MAT = new THREE.MeshStandardMaterial({
   color: 0x1e293b,
-  roughness: 0.45,
-  metalness: 0.45,
+  roughness: 0.38,
+  metalness: 0.55,
   flatShading: true,
 });
 const SHARED_WEAPON_GUNMETAL_MAT = new THREE.MeshStandardMaterial({
   color: 0x475569,
-  roughness: 0.35,
-  metalness: 0.6,
+  roughness: 0.27,
+  metalness: 0.72,
   flatShading: true,
 });
 
@@ -268,7 +268,8 @@ export function createWeaponMesh(
     color: rarityColor,
     emissive: rarityColor,
     emissiveIntensity: 0.3,
-    roughness: 0.3,
+    roughness: 0.22,
+    metalness: 0.28,
     flatShading: true,
   });
 

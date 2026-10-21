@@ -6,6 +6,10 @@ import type {
   WalkableSurface,
 } from './IslandWorld';
 import { ISLAND_POIS } from './TerrainGenerator';
+import {
+  applyFoliageWind,
+  type FoliageWindOptions,
+} from './VisualAtmosphere';
 import type {
   AxisAlignedFootprint,
   CardinalDirection,
@@ -2349,13 +2353,15 @@ export class MapExpansionBuilder {
 
     const createInstances = (
       geometry: THREE.BufferGeometry,
-      material: THREE.Material,
+      material: THREE.MeshStandardMaterial,
       count: number,
       attempts: number,
       placer: (x: number, z: number, y: number) => boolean,
       applyTransform: (x: number, y: number, z: number) => void,
-      colors?: number[]
+      colors?: number[],
+      wind?: FoliageWindOptions
     ) => {
+      if (wind) applyFoliageWind(material, wind);
       const inst = new THREE.InstancedMesh(geometry, material, Math.max(1, count));
       inst.instanceMatrix.setUsage(THREE.StaticDrawUsage);
       inst.castShadow = false;
@@ -2392,7 +2398,8 @@ export class MapExpansionBuilder {
       4200,
       (x, z, y) => y > 1.7 && y < 12.5 && this.isDetailFoliageClear(x, z, 4.3),
       () => dummy.scale.setScalar(0.8 + rand() * 0.85),
-      [0x15803d, 0x16a34a, 0x22c55e, 0x65a30d]
+      [0x15803d, 0x16a34a, 0x22c55e, 0x65a30d],
+      { strength: 0.062, baseY: 0, height: 0.78 }
     );
 
     const undergrowthGeo = new THREE.DodecahedronGeometry(0.42, 0);
@@ -2405,7 +2412,8 @@ export class MapExpansionBuilder {
       1900,
       (x, z, y) => y > 1.8 && y < 13.5 && this.isDetailFoliageClear(x, z, 4.8),
       () => dummy.scale.setScalar(0.75 + rand() * 0.9),
-      [0x14532d, 0x166534, 0x15803d]
+      [0x14532d, 0x166534, 0x15803d],
+      { strength: 0.024, baseY: 0.02, height: 0.52 }
     );
 
     const bushGeo = new THREE.DodecahedronGeometry(0.66, 0);
@@ -2418,7 +2426,8 @@ export class MapExpansionBuilder {
       1300,
       (x, z, y) => y > 1.8 && y < 13.0 && this.isDetailFoliageClear(x, z, 5.0),
       () => dummy.scale.setScalar(0.8 + rand() * 0.85),
-      [0x15803d, 0x16a34a, 0x4d7c0f]
+      [0x15803d, 0x16a34a, 0x4d7c0f],
+      { strength: 0.026, baseY: -0.09, height: 1.06 }
     );
 
     const flowerGeo = new THREE.DodecahedronGeometry(0.2, 0);
@@ -2430,7 +2439,8 @@ export class MapExpansionBuilder {
       1500,
       (x, z, y) => y > 1.9 && y < 11.5 && this.isDetailFoliageClear(x, z, 4.4),
       () => dummy.scale.setScalar(0.75 + rand() * 0.65),
-      [0xf472b6, 0xfacc15, 0xc084fc, 0xfb7185, 0xffffff]
+      [0xf472b6, 0xfacc15, 0xc084fc, 0xfb7185, 0xffffff],
+      { strength: 0.032, baseY: 0.05, height: 0.4 }
     );
 
     const pebbleGeo = new THREE.DodecahedronGeometry(0.3, 0);
@@ -2468,7 +2478,9 @@ export class MapExpansionBuilder {
         dummy.rotation.x = (rand() - 0.5) * 0.18;
         dummy.rotation.z = (rand() - 0.5) * 0.18;
         dummy.scale.setScalar(0.8 + rand() * 0.6);
-      }
+      },
+      undefined,
+      { strength: 0.075, baseY: 0, height: 1.25 }
     );
 
     const logGeo = new THREE.CylinderGeometry(0.24, 0.3, 2.8, 6);
@@ -2496,17 +2508,18 @@ export class MapExpansionBuilder {
     const standardMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       flatShading: true,
-      roughness: 0.74,
-      metalness: 0.03,
+      roughness: 0.67,
+      metalness: 0.08,
     });
     const glassMat = new THREE.MeshStandardMaterial({
       color: 0x7dd3fc,
       emissive: 0x0284c7,
-      emissiveIntensity: 0.32,
+      emissiveIntensity: 0.28,
       flatShading: true,
-      roughness: 0.32,
+      roughness: 0.12,
+      metalness: 0.14,
       transparent: true,
-      opacity: 0.68,
+      opacity: 0.62,
     });
     const glowMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
 
@@ -2538,9 +2551,20 @@ export class MapExpansionBuilder {
       inst.instanceMatrix.setUsage(THREE.StaticDrawUsage);
       inst.castShadow = shapeName !== 'glass' && shapeName !== 'glow';
       inst.receiveShadow = shapeName !== 'glow';
+      const displayColor = new THREE.Color();
       specs.forEach((spec, index) => {
         inst.setMatrixAt(index, spec.matrix);
-        inst.setColorAt(index, spec.color);
+        if (shapeName === 'glass' || shapeName === 'glow') {
+          inst.setColorAt(index, spec.color);
+        } else {
+          // A stable per-panel tonal shift gives large flat instanced walls
+          // and roofs a hand-finished read without unique textures/materials.
+          const e = spec.matrix.elements;
+          const hash = Math.sin(e[12] * 12.9898 + e[13] * 78.233 + e[14] * 37.719) * 43758.5453;
+          const variation = 0.945 + (hash - Math.floor(hash)) * 0.09;
+          displayColor.copy(spec.color).multiplyScalar(variation);
+          inst.setColorAt(index, displayColor);
+        }
       });
       if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
       inst.computeBoundingSphere();
