@@ -9,9 +9,11 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 process.env.ACCOUNT_TOKEN_SECRET =
   process.env.ACCOUNT_TOKEN_SECRET || 'test-account-token-secret-0123456789abcdef';
@@ -188,6 +190,42 @@ test('DATABASE_URL set but unreachable: init fails fast instead of silent SQLite
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('db:migrate CLI defers to startup migrations instead of failing hosting builds (--strict stays fatal)', async () => {
+  const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const runMigrate = (extraArgs) =>
+    new Promise((resolve, reject) => {
+      const child = spawn(
+        process.execPath,
+        ['server/migrate.mjs', ...extraArgs],
+        {
+          cwd: rootDir,
+          env: {
+            ...process.env,
+            DATABASE_URL: 'postgresql://user:pass@127.0.0.1:1/cicraft',
+            DATABASE_CONNECT_RETRIES: '1',
+            DATABASE_RETRY_DELAY_MS: '1',
+            DATABASE_FALLBACK_SQLITE: '',
+            ACCOUNT_TOKEN_SECRET: 'test-account-token-secret-0123456789abcdef',
+          },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        }
+      );
+      let out = '';
+      child.stdout.on('data', (d) => (out += d));
+      child.stderr.on('data', (d) => (out += d));
+      child.once('error', reject);
+      child.once('exit', (code) => resolve({ code, out }));
+    });
+
+  const lenient = await runMigrate([]);
+  assert.equal(lenient.code, 0);
+  assert.match(lenient.out, /Migrations will run automatically at server startup/);
+
+  const strict = await runMigrate(['--strict']);
+  assert.equal(strict.code, 1);
+  assert.match(strict.out, /strict mode/);
 });
 
 test('DATABASE_FALLBACK_SQLITE opt-in still falls back to SQLite', async () => {
