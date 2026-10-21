@@ -392,27 +392,32 @@ test('production server: HTTP APIs + authoritative two-client multiplayer over i
     await fourthBurstWatcher;
     assert.equal(fourthBurstSeen, false);
 
-    // Loot: first collector wins, second is rejected server-side.
+    // Registered map loot: first collector wins, second is rejected server-side.
+    const lootTemplate = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'server/worldLootManifest.json'), 'utf8'))
+      .items.find(item => item.id === 'loot_init_0');
+    wsA.send(JSON.stringify({ type: 'player_sync', position: lootTemplate.position,
+      velocity: { x:0, y:0, z:0 }, isGrounded:true }));
+    await new Promise(resolve => setTimeout(resolve, 100));
     const lootBroadcast = waitForMessage(wsB, (m) => m.type === 'loot_collected');
     wsA.send(
       JSON.stringify({
         type: 'collect_loot',
-        lootId: 'chest_test_1',
+        lootId: 'loot_init_0',
         itemType: 'weapon',
         position: { x: 1, y: 10, z: 1 },
       })
     );
     const loot = await lootBroadcast;
-    assert.equal(loot.lootId, 'chest_test_1');
+    assert.equal(loot.lootId, 'loot_init_0');
 
     const lootRejected = waitForMessage(
       wsB,
-      (m) => m.type === 'loot_collect_rejected' && m.lootId === 'chest_test_1'
+      (m) => m.type === 'loot_collect_rejected' && m.lootId === 'loot_init_0'
     );
     wsB.send(
       JSON.stringify({
         type: 'collect_loot',
-        lootId: 'chest_test_1',
+        lootId: 'loot_init_0',
         itemType: 'weapon',
         position: { x: 5, y: 10, z: 5 },
       })

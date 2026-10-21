@@ -15,48 +15,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-async function loadWorldModules() {
-  const tmpDir = fs.mkdtempSync(path.join(ROOT_DIR, '.world-expansion-test-'));
-  const emit = (source, output, replacements = []) => {
-    let code = stripTypeScriptTypes(fs.readFileSync(path.join(ROOT_DIR, source), 'utf8'));
-    for (const [pattern, replacement] of replacements) {
-      code = code.replace(pattern, replacement);
-    }
-    fs.writeFileSync(path.join(tmpDir, output), code);
-  };
-
-  try {
-    emit('src/world/WorldLayout.ts', 'WorldLayout.mjs');
-    emit('src/world/VisualAtmosphere.ts', 'VisualAtmosphere.mjs');
-    emit('src/world/TerrainGenerator.ts', 'TerrainGenerator.mjs', [
-      [/import\s+\{\s*TimeOfDayPreset\s*\}\s+from\s+['"]\.\.\/network\/schemas['"];?\n?/, ''],
-      ["from './VisualAtmosphere'", "from './VisualAtmosphere.mjs'"],
-      ["from './WorldLayout'", "from './WorldLayout.mjs'"],
-    ]);
-    emit('src/world/MapExpansionBuilder.ts', 'MapExpansionBuilder.mjs', [
-      ["from './TerrainGenerator'", "from './TerrainGenerator.mjs'"],
-      ["from './VisualAtmosphere'", "from './VisualAtmosphere.mjs'"],
-      ["from './WorldLayout'", "from './WorldLayout.mjs'"],
-    ]);
-    emit('src/world/IslandWorld.ts', 'IslandWorld.mjs', [
-      ["from './TerrainGenerator'", "from './TerrainGenerator.mjs'"],
-      ["from './MapExpansionBuilder'", "from './MapExpansionBuilder.mjs'"],
-      ["from './VisualAtmosphere'", "from './VisualAtmosphere.mjs'"],
-      ["from './WorldLayout'", "from './WorldLayout.mjs'"],
-      [/import\s+\{\s*BuildablePieceState,[\s\S]*?\}\s+from\s+['"]\.\.\/network\/schemas['"];?\n?/, ''],
-    ]);
-
-    const THREE = await import('three');
-    const layout = await import(pathToFileURL(path.join(tmpDir, 'WorldLayout.mjs')).href);
-    const terrainModule = await import(
-      pathToFileURL(path.join(tmpDir, 'TerrainGenerator.mjs')).href
-    );
-    const worldModule = await import(pathToFileURL(path.join(tmpDir, 'IslandWorld.mjs')).href);
-    return { THREE, layout, terrainModule, IslandWorld: worldModule.IslandWorld };
-  } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  }
-}
+import { loadWorldModules } from '../scripts/headlessWorld.mjs';
 
 function approx(actual, expected, epsilon, message) {
   assert.ok(
@@ -267,7 +226,7 @@ test('generated world: deterministic expansion, safe loot/props, and performance
   assert.ok(stats.triangles <= 300000, `triangle budget exceeded: ${stats.triangles}`);
   assert.ok(first.generationMs < 6000, `world generation too slow: ${first.generationMs}ms`);
   assert.ok(
-    world.boxColliders.length + world.cylinderColliders.length <= 1360,
+    world.boxColliders.length + world.cylinderColliders.length <= 1450,
     'collider budget exceeded'
   );
 
@@ -465,10 +424,10 @@ test('aurora heights: switchback floors, balconies, roofs and skybridge are navi
   const highrises = layout.EXPANSION_BUILDINGS.filter(
     (building) => building.kind === 'highrise'
   );
-  assert.equal(highrises.length, 4);
+  assert.equal(highrises.length, 6);
   assert.deepEqual(
     highrises.map((building) => building.floors).sort((a, b) => a - b),
-    [4, 5, 6, 6]
+    [4, 5, 5, 6, 6, 7]
   );
   assert.ok(
     layout.ISLAND_SETTLEMENTS.some(
@@ -544,6 +503,17 @@ test('aurora heights: switchback floors, balconies, roofs and skybridge are navi
       0.12,
       `${building.id} roof route height`
     );
+
+    if (['aurora_exchange', 'aurora_observatory'].includes(building.id)) {
+      const cacheY = baseY + layout.getHighRiseFloorTop(3);
+      const cacheRoute = [[0, 0], [0, -4.7], [3.3, -4.7]]
+        .map(([x,z]) => layout.buildingLocalToWorld(building,x,z));
+      const cacheArrival = walkWorldPath(cacheRoute, cacheY);
+      assert.ok(cacheArrival.error < 0.12, `${building.id} maintenance cache must be reachable`);
+      approx(cacheArrival.y, cacheY, 0.12, `${building.id} cache walkable floor`);
+      const escape = walkWorldPath(cacheRoute.toReversed(), cacheY);
+      assert.ok(escape.error < 0.12, `${building.id} cache must not be a trap`);
+    }
 
     const balconyLevel = building.floors - 1;
     const balconyPoint = layout.buildingLocalToWorld(

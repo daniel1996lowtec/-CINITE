@@ -4056,3 +4056,25 @@ input:disabled {
 .outfit-btn[data-rarity-style] { border-bottom: 2px solid var(--outfit-rarity); }
 .outfit-btn[data-rarity-style].active { box-shadow: inset 0 -2px 0 var(--outfit-rarity); }
 #preview-asset-status { display: block; color: #94a3b8; font-size: 10px; letter-spacing: .04em; }
+
+/* Brief event-only feedback leaves the crosshair and touch regions unobstructed. */
+#hud-combat-cue { position: absolute; top: 22%; left: 50%; transform: translateX(-50%);
+  pointer-events: none; z-index: 45; font-size: clamp(10px, 1.2vw, 14px); font-weight: 800;
+  padding: 5px 12px; border-radius: 5px; background: rgba(15,23,42,.8); white-space: nowrap; }
+.final-zone { color: #67e8f9 !important; }
+.end-winner { color: #fbbf24; font-weight: 800; margin: 6px 0; }
+#end-standings { max-height: 100px; overflow-y: auto; font-size: 12px; }
+.end-standing-row { padding: 4px 10px; border-bottom: 1px solid #ffffff16; }
+@media (max-height: 450px) and (orientation: landscape) {
+  #end-standings { max-height: 56px; font-size: 10px; }
+  #hud-combat-cue { top: 18%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .victory-spark { animation: none !important; display: none; }
+}
+
+#my-lobby-event { color: #67e8f9; font-size: 11px; min-height: 1em; margin: 5px 0; }
+
+.active-ammo-card.weapon-switch-feedback { outline: 1px solid #67e8f9; }
+.active-ammo-card.is-reloading { background-image: linear-gradient(90deg,#38bdf8 var(--reload-progress),#ffffff16 var(--reload-progress));
+  background-repeat: no-repeat; background-position: bottom; background-size: 100% 3px; }

@@ -503,6 +503,7 @@ export class ParticleSystem {
     end: THREE.Vector3,
     colorHex: number = 0xfef08a
   ): void {
+    while (this.tracers.length > 46) this.releaseTracerMesh(this.tracers.shift()!.mesh);
     const dist = start.distanceTo(end);
     if (dist < 0.4) return;
 
@@ -529,6 +530,10 @@ export class ParticleSystem {
     targetScale: number = 2.0,
     duration: number = 0.28
   ): void {
+    // Hard ceiling even during concurrent chest/shotgun bursts.
+    while (this.rings.length >= Math.round(24 * this.effectScale)) {
+      this.releaseRingMesh(this.rings.shift()!.mesh);
+    }
     const mesh = this.acquireRingMesh(colorHex, 0.85);
     mesh.position.copy(pos);
     mesh.rotation.x = Math.PI / 2 + (Math.random() - 0.5) * 0.4;

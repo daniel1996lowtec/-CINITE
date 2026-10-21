@@ -1104,3 +1104,81 @@ test('reserved human room codes preserve human-only mode across a server restart
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('3.2 four humans: contested registered chest, forged loot rejection, synchronized winner and eliminations', async () => {
+  const port = await getFreePort();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cicraft-four-human-'));
+  const server = await startServer({port, sqlitePath:path.join(tmpDir,'game.sqlite')});
+  const sockets = [];
+  try {
+    const {data:room} = await postJson(server.base,'/api/room/create',{roomMode:'human_only_private'});
+    const accounts = [], joins = [];
+    for (let i=0;i<4;i++) {
+      const account = await createAccount(server.base,`Four_${i}`); accounts.push(account);
+      const ws = await connectClient(port); sockets.push(ws);
+      joins.push(await joinHumanRoom(ws,joinPayload({roomCode:room.roomCode,roomMode:'human_only_private',
+        sessionToken:`session_four_${i}`,account,playerName:`Four_${i}`,position:{x:i*2,y:10,z:0}})));
+    }
+    const starts = sockets.map(ws=>waitForMessage(ws,m=>m.type==='match_started'));
+    const registries = sockets.map(ws=>waitForMessage(ws,m=>m.type==='room_loot_sync'));
+    sockets.forEach(ws=>sendJson(ws,{type:'set_ready',ready:true}));
+    for (const started of await Promise.all(starts)) {
+      assert.equal(started.matchParticipantCount,4); assert.equal(started.botCount,0);
+      assert.equal(started.players.filter(p=>p.isParticipant).length,4);
+    }
+    const syncs = await Promise.all(registries);
+    assert.deepEqual(syncs[0].spawnedItems,syncs[3].spawnedItems);
+    const chest = syncs[0].spawnedItems.find(item=>item.itemType==='chest');
+    assert.ok(chest && syncs[0].spawnedItems.length>200);
+    for (const ws of sockets.slice(0,2)) sendJson(ws,{type:'player_sync',position:chest.position,isGrounded:true});
+    await new Promise(r=>setTimeout(r,100));
+    const accepted = waitForMessage(sockets[2],m=>m.type==='loot_collected'&&m.lootId===chest.id);
+    const rejectA = waitForMessage(sockets[0],m=>m.type==='loot_collect_rejected'&&m.lootId===chest.id,1500).catch(()=>null);
+    const rejectB = waitForMessage(sockets[1],m=>m.type==='loot_collect_rejected'&&m.lootId===chest.id,1500).catch(()=>null);
+    for (const ws of sockets.slice(0,2)) sendJson(ws,{type:'collect_loot',lootId:chest.id,itemType:'weapon',
+      spawnedDrops:[{id:'evil_injected',weaponCategory:'sniper',rarity:'legendary',amount:999}]});
+    const award=await accepted;
+    assert.equal(award.itemType,'chest'); assert.equal(award.authoritative,true);
+    assert.equal(award.spawnedDrops.length,3);
+    assert.ok(award.spawnedDrops.every(item=>item.serverAuthoritative&&item.id!=='evil_injected'));
+    const rejects = await Promise.all([rejectA,rejectB]); assert.equal(rejects.filter(Boolean).length,1);
+    const collectorIndex=joins.findIndex(j=>j.selfPlayerId===award.collectorId);
+    const receipt=waitForMessage(sockets[collectorIndex],m=>m.type==='loot_collected'&&m.lootId===chest.id);
+    sendJson(sockets[collectorIndex],{type:'collect_loot',lootId:chest.id});
+    assert.deepEqual((await receipt).spawnedDrops,award.spawnedDrops,'retries replay the original award, never new rewards');
+    const forged=waitForMessage(sockets[0],m=>m.type==='loot_collect_rejected'&&m.lootId==='evil_injected');
+    sendJson(sockets[0],{type:'collect_loot',lootId:'evil_injected',position:chest.position});
+    assert.match((await forged).reason,/server-registered/);
+    const farItem=syncs[0].spawnedItems.find(item=>item.itemType==='weapon'&&Math.hypot(
+      item.position.x-chest.position.x,item.position.z-chest.position.z)>30);
+    const range=waitForMessage(sockets[0],m=>m.type==='loot_collect_rejected'&&m.lootId===farItem.id);
+    sendJson(sockets[0],{type:'collect_loot',lootId:farItem.id,position:chest.position});
+    assert.match((await range).reason,/range/);
+
+    // End the real four-human match using the unchanged server weapon catalogue.
+    sockets.forEach((ws,i)=>sendJson(ws,{type:'player_sync',position:{x:i*2,y:10,z:0},isGrounded:true}));
+    await new Promise(r=>setTimeout(r,100));
+    const endings = sockets.map(ws=>waitForMessage(ws,m=>m.type==='match_ended',7000));
+    for(let i=1;i<4;i++) {
+      const hitPromise=waitForMessage(sockets[0],m=>m.type==='server_hit'&&m.victimId===joins[i].selfPlayerId);
+      const hitPoint={x:i*2,y:11.7,z:0};
+      sendJson(sockets[0],{type:'fire_weapon',category:'sniper',rarity:'legendary',muzzlePos:{x:0,y:11,z:0},hitPoint});
+      sendJson(sockets[0],{type:'combat_hit',hitId:`four_final_${i}`,targetId:joins[i].selfPlayerId,
+        weaponCategory:'sniper',weaponRarity:'legendary',hitPoint,damage:999999});
+      const hit=await hitPromise;
+      assert.equal(hit.damage,226); assert.equal(hit.attackerEliminations,i);
+      if(i<3) await new Promise(r=>setTimeout(r,1100));
+    }
+    const results=await Promise.all(endings);
+    for(const result of results) {
+      assert.equal(result.winnerId,joins[0].selfPlayerId); assert.equal(result.winnerName,'Four_0');
+      assert.equal(result.players.find(p=>p.id===joins[0].selfPlayerId).eliminations,3);
+      assert.equal(result.placements[joins[0].selfPlayerId],1);
+      assert.equal(result.placements[joins[3].selfPlayerId],2);
+      assert.equal(result.matchParticipantCount,4); assert.equal(result.aliveHumans,1);
+      assertNoSecrets(JSON.stringify(result),accounts.map(a=>a.accountToken),'four-human final result');
+    }
+  } finally {
+    sockets.forEach(ws=>ws.close()); await server.stop(); fs.rmSync(tmpDir,{recursive:true,force:true});
+  }
+});

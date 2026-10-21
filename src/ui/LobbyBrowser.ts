@@ -137,6 +137,30 @@ export class LobbyBrowserUI {
 
   public setCurrentSnapshot(snapshot: RoomSnapshot | null): void {
     const previousRoomCode = this.snapshot?.roomCode || '';
+    const previous = this.snapshot;
+    if (snapshot && previous?.roomCode === snapshot.roomCode) {
+      const events: string[] = [];
+      for (const player of snapshot.players) {
+        const old = previous.players.find(p => p.id === player.id);
+        if (player.isConnected && (!old || !old.isConnected)) events.push(`${player.name} joined`);
+        else if (old?.isReady !== player.isReady && snapshot.phase === 'lobby')
+          events.push(`${player.name} ${player.isReady ? 'is ready' : 'is not ready'}`);
+        if (old?.isConnected && !player.isConnected) events.push(`${player.name} disconnected`);
+      }
+      for (const player of previous.players) {
+        if (!snapshot.players.some(p => p.id === player.id)) events.push(`${player.name} left`);
+      }
+      if (previous.phase !== snapshot.phase) events.push(snapshot.phase === 'countdown'
+        ? 'Squad locked — match starting' : snapshot.phase === 'active' ? 'Match live — good luck'
+        : snapshot.phase === 'ended' ? `Match complete · ${snapshot.winnerName || 'No winner'}` : 'Waiting for ready players');
+      if (events.length) {
+        const status = element('my-lobby-event');
+        if (status) status.textContent = events.slice(-2).join(' · ');
+      }
+    } else {
+      const status = element('my-lobby-event');
+      if (status) status.textContent = snapshot ? 'Connected to the live human roster' : '';
+    }
     this.snapshot = snapshot;
     this.renderMyLobby();
     // Room state arrives at 20 Hz during a match. Cards only depend on

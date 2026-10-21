@@ -33,6 +33,7 @@ import { createWeaponStats } from '../weapons/WeaponDefinitions';
 import { createInitialStormState } from '../systems/StormConfig';
 
 export interface ServerHitEvent {
+  attackerEliminations?: number;
   eventId?: string;
   attackerId: string;
   attackerName: string;
@@ -193,6 +194,7 @@ function normalizeRoomSnapshot(
           (player): RoomPlayerSummary => ({
             id: String(player.id || ''),
             name: String(player.name || 'Commander_CI'),
+            eliminations: Math.max(0, Math.floor(Number(player.eliminations) || 0)),
             participantType: 'human',
             isBot: false,
             isAuthenticated: Boolean(player.isAuthenticated),
@@ -401,7 +403,8 @@ export class NetworkManager {
   ) => void;
   public onAuthoritativeLootCollected?: (
     item: LootItemState,
-    swappedDrop?: LootItemState
+    swappedDrop?: LootItemState,
+    spawnedDrops?: LootItemState[]
   ) => void;
   public onRoomLootSync?: (
     collectedIds: string[],
@@ -1297,6 +1300,7 @@ export class NetworkManager {
           if (id === this.localPlayerId || id === this.serverPlayerId) {
             const localPlayer = this.state.players.get(this.localPlayerId);
             if (localPlayer) {
+              localPlayer.eliminations = Math.max(0, Math.floor(Number(rp.eliminations) || 0));
               localPlayer.isReady = Boolean(rp.isReady);
               localPlayer.isParticipant = Boolean(rp.isParticipant);
               localPlayer.isConnected = Boolean(rp.isConnected ?? true);
@@ -1713,7 +1717,8 @@ export class NetworkManager {
           if (msg.authoritativeItem && typeof msg.authoritativeItem === 'object') {
             this.onAuthoritativeLootCollected?.(
               msg.authoritativeItem as LootItemState,
-              msg.swappedDrop ? (msg.swappedDrop as LootItemState) : undefined
+              msg.swappedDrop ? (msg.swappedDrop as LootItemState) : undefined,
+              Array.isArray(msg.spawnedDrops) ? msg.spawnedDrops as LootItemState[] : undefined
             );
           }
           break;
@@ -1988,7 +1993,7 @@ export class NetworkManager {
   }
 
   /**
-   * Requests (rather than optimistically performs) a Legendary Tower vault
+   * Requests (rather than optimistically performs) a server-registered
    * pickup. Returns false when no live room socket can carry the request.
    */
   public sendAuthoritativeLootCollectRequest(

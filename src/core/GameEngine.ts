@@ -201,7 +201,7 @@ export class GameEngine {
     this.playerController = new PlayerController();
     this.botController = new BotAIController();
     this.lootSystem = new LootSystem(this.scene);
-    this.stormSystem = new StormSystem(this.scene);
+    this.stormSystem = new StormSystem(this.scene, (x,z) => this.world.terrain.getTerrainHeight(x,z));
     this.particles = new ParticleSystem(this.scene);
     this.sound = new SoundManager();
     this.hud = new HUDManager();
@@ -508,7 +508,7 @@ export class GameEngine {
       predictedSwappedDrop
     ) => this.network.sendAuthoritativeLootCollectRequest(item, predictedSwappedDrop);
 
-    this.network.onAuthoritativeLootCollected = (item, swappedDrop) => {
+    this.network.onAuthoritativeLootCollected = (item, swappedDrop, spawnedDrops) => {
       const lp = this.network.state.players.get(this.network.localPlayerId);
       if (!lp) return;
       this.lootSystem.applyAuthoritativeLootCollected(
@@ -517,7 +517,8 @@ export class GameEngine {
         item,
         this.particles,
         this.sound,
-        swappedDrop
+        swappedDrop,
+        spawnedDrops
       );
     };
 
@@ -690,6 +691,8 @@ export class GameEngine {
       }
 
       if (isLocalVictim) {
+        if (ev.attackerId === 'storm') this.hud.showCombatCue(`STORM DAMAGE −${Math.round(ev.damage)} HP`, '#c084fc');
+        else if (isShieldBreak) this.hud.showCombatCue('SHIELD BROKEN — FIND COVER', '#67e8f9');
         this.sound.playDamageTaken();
         this.hud.triggerDamageTakenFlash();
         this.hud.spawnDamageNumber(
@@ -719,10 +722,12 @@ export class GameEngine {
         );
       }
 
-      if (ev.eliminated && victim.alive) {
+      // The 20Hz snapshot can mark a victim dead before the delayed combat
+      // event arrives. eventId was deduplicated above; do not suppress its FX.
+      if (ev.eliminated) {
         victim.alive = false;
         if (isLocalAttacker && localPlayer) {
-          localPlayer.eliminations++;
+          localPlayer.eliminations = ev.attackerEliminations ?? (localPlayer.eliminations + 1);
           this.sound.playHitmarker(ev.isHeadshot, false, true);
           this.sound.playElimination();
           this.hud.showHitmarker(ev.isHeadshot, false, true, isShieldBreak);
@@ -1251,13 +1256,15 @@ export class GameEngine {
     snapshot: RoomSnapshot,
     placements: Record<string, number>
   ): void {
-    if (!this.isRunningMatch || this.matchResultRecorded) return;
+    if (!this.isRunningMatch) return;
 
     const localPlayer = this.network.state.players.get(this.network.localPlayerId);
     if (!localPlayer) return;
 
     this.network.state.phase = 'ENDED';
-    this.network.state.winnerName = snapshot.winnerName || localPlayer.name;
+    this.network.state.winnerName = snapshot.winnerName || 'No winner recorded';
+    const finalSelf = snapshot.players.find(p => p.id === this.network.serverPlayerId);
+    if (finalSelf) localPlayer.eliminations = finalSelf.eliminations ?? localPlayer.eliminations;
     const isVictory =
       snapshot.winnerId === this.network.serverPlayerId ||
       snapshot.winnerIds.includes(this.network.serverPlayerId);
@@ -1267,7 +1274,8 @@ export class GameEngine {
       : Number(serverPlacement || this.localEliminationPlacement || 0) ||
         Math.max(2, this.network.state.aliveCount + 1);
 
-    if (isVictory) this.sound.playVictory();
+    this.hud.showFinalStandings(snapshot, placements);
+    if (isVictory && !this.matchResultRecorded) this.sound.playVictory();
     this.showEndScreen(
       isVictory,
       placement,
@@ -1295,6 +1303,7 @@ export class GameEngine {
       cosmetics: config.cosmetics || this.progression.cosmetics,
     };
     this.sound.resume();
+    this.hud.clearFinalStandings();
     this.isPaused = false;
     this.clearTransientInput();
     this.activeBuildPreview = null;
@@ -1317,6 +1326,7 @@ export class GameEngine {
     }
     this.characterMeshes.clear();
     this.particles.clear();
+    this.stormSystem.resetPresentation();
     this.world.resetDynamicStructures();
 
     let spawnX = (Math.random() - 0.5) * 40;
@@ -1351,8 +1361,8 @@ export class GameEngine {
     this.createCharacterMeshForPlayer(localPlayer);
 
     this.lootSystem.populateWorldLoot(this.network.state, this.world, {
-      // Online clients must not create the unique vault items themselves;
-      // the room server sends that registry in room_loot_sync.
+      // Online clients never mint map loot themselves; the room server
+      // sends ground items, chests and vault rewards in room_loot_sync.
       includeLegendaryTowerVaultLoot: !this.network.isOnlineRoom,
     });
 
@@ -1473,6 +1483,7 @@ export class GameEngine {
     }
     this.characterMeshes.clear();
     this.particles.clear();
+    this.stormSystem.resetPresentation();
     this.world.resetDynamicStructures();
 
     if (this.lobbyPreviewGroup) this.lobbyPreviewGroup.visible = true;
@@ -2204,7 +2215,7 @@ export class GameEngine {
     if (spectateBtn) {
       spectateBtn.classList.toggle(
         'hidden',
-        isVictory || this.network.state.aliveCount < 2
+        isVictory || this.network.state.phase === 'ENDED' || this.network.state.aliveCount < 2
       );
     }
 

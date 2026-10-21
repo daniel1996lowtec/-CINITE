@@ -1,3 +1,4 @@
+import type { RoomSnapshot } from '../network/schemas';
 import * as THREE from 'three';
 import {
   AmmoType,
@@ -24,6 +25,9 @@ interface FloatingDamageNumber {
 }
 
 export class HUDManager {
+  private combatCueTimer = 0;
+  private previousWeaponKey = '';
+  private weaponSwitchFlash = 0;
   private healthFill: HTMLElement;
   private healthText: HTMLElement;
   private shieldFill: HTMLElement;
@@ -147,6 +151,10 @@ export class HUDManager {
   }
 
   public resetHUD(): void {
+    this.combatCueTimer = 0;
+    this.previousWeaponKey = '';
+    this.weaponSwitchFlash = 0;
+    document.getElementById('hud-combat-cue')?.classList.add('hidden');
     this.hitmarkerTimer = 0;
     this.lootToastTimer = 0;
     this.reloadFlashTimer = 0;
@@ -166,6 +174,36 @@ export class HUDManager {
     if (this.killfeedContainer) this.killfeedContainer.innerHTML = '';
     if (this.damageLayer) this.damageLayer.innerHTML = '';
     this.floatingDamages = [];
+  }
+
+  public showCombatCue(message: string, color: string): void {
+    const element = document.getElementById('hud-combat-cue');
+    if (!element) return;
+    element.textContent = message;
+    element.style.color = color;
+    element.classList.remove('hidden');
+    this.combatCueTimer = 1.1;
+  }
+
+  public clearFinalStandings(): void {
+    document.getElementById('end-standings')?.replaceChildren();
+    document.getElementById('end-winner')?.replaceChildren();
+  }
+
+  public showFinalStandings(snapshot: RoomSnapshot, placements: Record<string, number>): void {
+    const winner = document.getElementById('end-winner');
+    if (winner) winner.textContent = snapshot.winnerName ? `WINNER · ${snapshot.winnerName}` : 'MATCH COMPLETE';
+    const list = document.getElementById('end-standings');
+    if (!list) return;
+    list.replaceChildren();
+    const participants = snapshot.players.filter(p => p.isParticipant)
+      .sort((a,b) => (placements[a.id] || 999) - (placements[b.id] || 999));
+    for (const player of participants) {
+      const row = document.createElement('div');
+      row.className = 'end-standing-row';
+      row.textContent = `#${placements[player.id] || '—'} · ${player.name} · ${player.eliminations ?? 0} ELIMS`;
+      list.appendChild(row);
+    }
   }
 
   public updateConnectionBadge(statusText: string, connected: boolean): void {
@@ -578,14 +616,22 @@ export class HUDManager {
     // Storm Status: phaseTimer is preparation time while waiting and
     // remaining movement time while shrinking; label that distinction so
     // players can plan rotations through tall districts.
+    if (this.combatCueTimer > 0) {
+      this.combatCueTimer = Math.max(0, this.combatCueTimer - dt);
+      if (this.combatCueTimer === 0) document.getElementById('hud-combat-cue')?.classList.add('hidden');
+    }
     const displayPhase = Math.min(8, Math.max(1, match.storm.phase));
-    this.stormPhaseEl.textContent = `PHASE ${displayPhase} · ${getStormStatusLabel(match.storm)}`;
+    const finalZone = match.storm.phase >= 6;
+    this.stormPhaseEl.textContent = `${finalZone ? 'FINAL ZONES' : 'PHASE'} ${displayPhase} · ${getStormStatusLabel(match.storm)}`;
+    this.stormPhaseEl.classList.toggle('final-zone', finalZone);
     const sec = Math.max(0, Math.ceil(match.storm.phaseTimer));
     const m = Math.floor(sec / 60);
     const s = sec % 60;
+    const distance = Math.max(0, Math.ceil(Math.hypot(player.position.x - match.storm.targetCenterX,
+      player.position.z - match.storm.targetCenterZ) - match.storm.targetRadius));
     this.stormTimerEl.textContent = isFinalStormPhase(match.storm)
-      ? 'CLOSED'
-      : `${m}:${s < 10 ? '0' : ''}${s}`;
+      ? `FINAL · ${Math.round(match.storm.currentRadius)}m`
+      : `${m}:${s < 10 ? '0' : ''}${s}${isOutsideStorm ? ` · SAFE ${distance}m` : ''}`;
     this.stormVignette.classList.toggle('active', isOutsideStorm);
 
     // Materials & Selected Material Highlight
@@ -607,6 +653,17 @@ export class HUDManager {
 
     // Active Weapon & Hotbar Slots
     const activeItem = player.inventory[player.activeSlot];
+    const weaponKey = `${player.id}:${player.activeSlot}:${activeItem?.weaponId || ''}`;
+    if (weaponKey !== this.previousWeaponKey) {
+      if (this.previousWeaponKey) this.weaponSwitchFlash = 0.22;
+      this.previousWeaponKey = weaponKey;
+    }
+    this.weaponSwitchFlash = Math.max(0, this.weaponSwitchFlash - dt);
+    this.activeAmmoCardEl?.classList.toggle('weapon-switch-feedback', this.weaponSwitchFlash > 0);
+    this.activeAmmoCardEl?.classList.toggle('is-reloading', player.isReloading);
+    const reloadProgress = player.isReloading && player.reloadDuration > 0
+      ? Math.max(0, Math.min(1, 1-player.reloadTimer/player.reloadDuration)) : 0;
+    this.activeAmmoCardEl?.style.setProperty('--reload-progress', `${Math.round(reloadProgress * 100)}%`);
     if (activeItem) {
       this.activeWeaponName.textContent = activeItem.name;
       this.activeWeaponName.style.color = RARITY_COLORS[activeItem.rarity].hex;
@@ -619,7 +676,7 @@ export class HUDManager {
       } else {
         const res = this.getReserveAmmo(player, activeItem.ammoType);
         this.activeAmmoClip.textContent = `${activeItem.clipAmmo}`;
-        this.activeAmmoRes.textContent = `/ ${res}`;
+        this.activeAmmoRes.textContent = player.isReloading ? `LOAD ${Math.max(0,player.reloadTimer).toFixed(1)}s` : `/ ${res}`;
       }
     }
 

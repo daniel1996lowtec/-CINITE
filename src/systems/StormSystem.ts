@@ -8,10 +8,14 @@ export class StormSystem {
   private stormLatticeMesh: THREE.LineSegments;
   private safeZoneRingMesh: THREE.Mesh;
   private currentZoneRingMesh: THREE.Mesh;
+  private finalZoneBeacon: THREE.Mesh;
   private animTime: number = 0;
+  private terrainSampleTimer = 1;
+  private readonly terrainHeight: (x: number, z: number) => number;
 
-  constructor(scene: THREE.Scene) {
+  constructor(scene: THREE.Scene, terrainHeight: (x: number, z: number) => number = () => 0) {
     this.scene = scene;
+    this.terrainHeight = terrainHeight;
 
     const wallGeo = new THREE.CylinderGeometry(1, 1, 140, 48, 3, true);
     const wallMat = new THREE.MeshBasicMaterial({
@@ -32,10 +36,12 @@ export class StormSystem {
       opacity: 0.36,
       fog: false,
     });
+    const latticeSource = new THREE.CylinderGeometry(1, 1, 140, 24, 2, true);
     this.stormLatticeMesh = new THREE.LineSegments(
-      new THREE.WireframeGeometry(new THREE.CylinderGeometry(1, 1, 140, 24, 2, true)),
+      new THREE.WireframeGeometry(latticeSource),
       latticeMat
     );
+    latticeSource.dispose();
     this.stormLatticeMesh.position.y = 65;
     this.scene.add(this.stormLatticeMesh);
 
@@ -72,6 +78,13 @@ export class StormSystem {
     this.currentZoneRingMesh.position.y = 0.72;
     this.currentZoneRingMesh.renderOrder = 6;
     this.scene.add(this.currentZoneRingMesh);
+    // One unlit, depth-tested landmark column; no point lights or screenspace fog.
+    this.finalZoneBeacon = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 90, 8, 1, true),
+      new THREE.MeshBasicMaterial({ color: 0x67e8f9, transparent: true, opacity: 0.18,
+        depthWrite: false, side: THREE.DoubleSide, fog: false }));
+    this.finalZoneBeacon.name = 'FinalSafeZoneBeacon';
+    this.finalZoneBeacon.visible = false;
+    scene.add(this.finalZoneBeacon);
   }
 
   public update(dt: number, state: MatchState): void {
@@ -86,10 +99,17 @@ export class StormSystem {
     this.animTime += dt;
     const storm = state.storm;
     const r = Math.max(1, storm.currentRadius);
+    const intensity = THREE.MathUtils.clamp((storm.phase - 5) / 3, 0, 1);
+    this.finalZoneBeacon.visible = state.phase === 'ACTIVE' && storm.phase >= 6;
+    this.finalZoneBeacon.position.set(storm.targetCenterX, 44, storm.targetCenterZ);
+    (this.finalZoneBeacon.material as THREE.MeshBasicMaterial).opacity =
+      0.12 + intensity * 0.07 + Math.sin(this.animTime * 1.4) * 0.025;
+    (this.safeZoneRingMesh.material as THREE.MeshBasicMaterial).color.setHex(
+      storm.phase >= 6 ? 0x67e8f9 : 0xf0abfc);
     this.stormWallMesh.position.set(storm.currentCenterX, 65, storm.currentCenterZ);
     this.stormWallMesh.scale.set(r, 1, r);
     (this.stormWallMesh.material as THREE.MeshBasicMaterial).opacity =
-      0.22 + Math.sin(this.animTime * 2.1) * 0.035;
+      0.22 + intensity * 0.035 + Math.sin(this.animTime * 2.1) * 0.035;
 
     this.stormLatticeMesh.position.set(storm.currentCenterX, 65, storm.currentCenterZ);
     this.stormLatticeMesh.scale.set(r, 1, r);
@@ -107,8 +127,33 @@ export class StormSystem {
 
     this.currentZoneRingMesh.position.set(storm.currentCenterX, 0.72, storm.currentCenterZ);
     this.currentZoneRingMesh.scale.set(r, 1, r);
+    this.terrainSampleTimer += dt;
+    if (this.terrainSampleTimer >= 0.2) {
+      this.terrainSampleTimer = 0;
+      for (const ring of [this.safeZoneRingMesh, this.currentZoneRingMesh]) {
+        const points = ring.geometry.getAttribute('position');
+        for (let i = 0; i < points.count; i++) {
+          points.setY(i, this.terrainHeight(ring.position.x + points.getX(i) * ring.scale.x,
+            ring.position.z + points.getZ(i) * ring.scale.z) + 0.16 - ring.position.y);
+        }
+        points.needsUpdate = true;
+        ring.geometry.computeBoundingSphere();
+      }
+    }
     (this.currentZoneRingMesh.material as THREE.MeshBasicMaterial).opacity =
       0.8 + Math.sin(this.animTime * 3.1) * 0.12;
+  }
+
+  public resetPresentation(): void {
+    this.finalZoneBeacon.visible = false;
+  }
+
+  public dispose(): void {
+    for (const object of [this.stormWallMesh, this.stormLatticeMesh, this.safeZoneRingMesh,
+      this.currentZoneRingMesh, this.finalZoneBeacon]) {
+      object.removeFromParent(); object.geometry.dispose();
+      (object.material as THREE.Material).dispose();
+    }
   }
 
   public isPositionInStorm(state: MatchState, x: number, z: number): boolean {

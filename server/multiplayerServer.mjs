@@ -8,6 +8,7 @@
  * 4. Server-authoritative combat hit validation, shield/health deduction, loot deduplication & XP calculation
  * 5. WebSocket payload size limits, rate limiting, room garbage collection & graceful SIGTERM/SIGINT shutdown
  */
+import { createWorldLootMap, getChestRewards, resetLootOwnership, ownsLootDrop, transferLootOwnership, validateLootClaim } from './worldLoot.mjs';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -196,6 +197,7 @@ function consumeServerShot(player, stats, now = Date.now()) {
   if (!player || !stats) return false;
   if (typeof player.serverShotTokens !== 'number') {
     resetServerCombatState(player);
+    resetLootOwnership(player);
   }
 
   if (stats.burstCount && stats.burstCount > 1) {
@@ -277,17 +279,17 @@ function cloneLegendaryTowerLootItem(item) {
   return { ...item, position: { ...item.position } };
 }
 
-function createLegendaryTowerLootMap() {
+function createRoomLootMap() {
   return new Map(
-    LEGENDARY_TOWER_LOOT_TEMPLATES.map((item) => [
+    [...createWorldLootMap().values(), ...LEGENDARY_TOWER_LOOT_TEMPLATES].map((item) => [
       item.id,
       cloneLegendaryTowerLootItem(item),
     ])
   );
 }
 
-function resetLegendaryTowerLoot(room) {
-  for (const [id, item] of createLegendaryTowerLootMap()) {
+function resetRoomLootRegistry(room) {
+  for (const [id, item] of createRoomLootMap()) {
     room.spawnedLootItems.set(id, item);
   }
 }
@@ -364,8 +366,8 @@ function serverWeaponDisplayName(category, rarity) {
 }
 
 /**
- * A pickup swap is the only client-proposed drop accepted beside a vault
- * claim. Rebuild it from validated fields and never let it mint one of the
+ * A pickup swap is the only client-proposed drop accepted beside a registered
+ * claim. Reserve the swap_ namespace so it cannot shadow future chest rewards. Rebuild it from validated fields and never let it mint one of the
  * three unique vault weapons unless the server's ownership ledger proves
  * this collector previously received that category from the vault (or from
  * a registered, server-broadcast swap drop).
@@ -373,7 +375,7 @@ function serverWeaponDisplayName(category, rarity) {
 function sanitizeLootSwappedDrop(rawDrop, collector) {
   if (!rawDrop || typeof rawDrop !== 'object') return undefined;
   const id = String(rawDrop.id || '').slice(0, 64);
-  if (!/^[A-Za-z0-9_-]+$/.test(id) || isLegendaryTowerLootId(id)) return undefined;
+  if (!/^swap_[A-Za-z0-9_-]+$/.test(id)) return undefined;
   const category = String(rawDrop.weaponCategory || '');
   const rarity = String(rawDrop.rarity || '');
   if (!LOOT_WEAPON_CATEGORIES.has(category) || !LOOT_RARITIES.has(rarity)) {
@@ -420,18 +422,6 @@ function sanitizeLootSwappedDrop(rawDrop, collector) {
     position,
     opened: false,
   };
-}
-
-function sanitizeClientSpawnedDrops(rawDrops, room) {
-  if (!Array.isArray(rawDrops)) return undefined;
-  const drops = [];
-  for (const drop of rawDrops.slice(0, 6)) {
-    if (!drop || typeof drop !== 'object') continue;
-    const id = String(drop.id || '');
-    if (!id || isLegendaryTowerLootId(id) || room.collectedLootIds.has(id)) continue;
-    drops.push(drop);
-  }
-  return drops.length > 0 ? drops : undefined;
 }
 
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
@@ -1112,7 +1102,8 @@ function getOrCreateRoom(
       players: new Map(),
       buildables: new Map(),
     collectedLootIds: new Set(),
-    spawnedLootItems: createLegendaryTowerLootMap(),
+    lootReceipts: new Map(),
+    spawnedLootItems: createRoomLootMap(),
     legendaryTowerSwapDrops: new Map(),
       processedHitIds: new Set(),
       hitEventSeq: 0,
@@ -1579,9 +1570,10 @@ async function startLobbyMatch(room) {
   room.storm = createInitialStorm();
   room.buildables.clear();
   room.collectedLootIds.clear();
+  room.lootReceipts.clear();
   room.spawnedLootItems.clear();
   getLegendaryTowerSwapDrops(room).clear();
-  resetLegendaryTowerLoot(room);
+  resetRoomLootRegistry(room);
   room.processedHitIds.clear();
   room.hitEventSeq = 0;
   room.lastStormDamageAt = Date.now();
@@ -1605,6 +1597,7 @@ async function startLobbyMatch(room) {
     player.eliminations = 0;
     clearLegendaryTowerWeaponOwnership(player);
     resetServerCombatState(player);
+    resetLootOwnership(player);
     if (isParticipant) {
       room.matchParticipantIds.add(player.id);
     }
@@ -2879,6 +2872,7 @@ server.on('upgrade', (req, socket) => {
               teamId: '',
               teamIndex: -1,
               name: cleanCallsign,
+              starterLoadout: ['balanced','close_quarters','sharpshooter','demolition'].includes(msg.starterLoadout) ? msg.starterLoadout : 'balanced',
               position: sanitizePosition(msg.position, { x: 0, y: 10, z: 0 }),
               velocity: { x: 0, y: 0, z: 0 },
               yaw: 0,
@@ -2913,6 +2907,7 @@ server.on('upgrade', (req, socket) => {
               backAccessory: roomCosmetics.backAccessory,
               socket,
             };
+            resetLootOwnership(player);
             room.players.set(currentSessionToken, player);
           } else {
             if (player.socket && player.socket !== socket && !player.socket.destroyed) {
@@ -2947,6 +2942,7 @@ server.on('upgrade', (req, socket) => {
               player.eliminations = 0;
               clearLegendaryTowerWeaponOwnership(player);
               resetServerCombatState(player);
+              resetLootOwnership(player);
               player.position = sanitizePosition(msg.position, player.position);
             } else if (msg.resetPlayer && lobbyManagedRoom && room.phase === 'lobby') {
               player.health = 100;
@@ -2955,6 +2951,7 @@ server.on('upgrade', (req, socket) => {
               player.eliminations = 0;
               clearLegendaryTowerWeaponOwnership(player);
               resetServerCombatState(player);
+              resetLootOwnership(player);
               player.isParticipant = false;
               player.position = sanitizePosition(msg.position, player.position);
             }
@@ -3494,6 +3491,7 @@ server.on('upgrade', (req, socket) => {
             eventId,
             attackerId: attacker.id,
             attackerName: attacker.name,
+            attackerEliminations: attacker.eliminations,
             victimId: victim.id,
             victimName: victim.name,
             damage: rawDamage,
@@ -3541,6 +3539,13 @@ server.on('upgrade', (req, socket) => {
           const lootId = String(msg.lootId || '').slice(0, 64);
           if (!lootId) continue;
 
+          const previousReceipt = currentRoom.lootReceipts.get(lootId);
+          if (previousReceipt?.collectorId === collector.id) {
+            // Replay only to its original authenticated seat: no second transfer
+            // and no duplicate room broadcast after a transient lost connection.
+            socket.write(encodeWsFrame(previousReceipt));
+            continue;
+          }
           // Authoritative double-collection prevention
           if (currentRoom.collectedLootIds.has(lootId)) {
             socket.write(
@@ -3580,66 +3585,32 @@ server.on('upgrade', (req, socket) => {
               registeredLootItem.weaponCategory
               ? registeredLootItem.weaponCategory
               : undefined;
-          let authoritativeItem;
-          let towerSwappedDrop;
-          if (towerTemplate) {
-            if (!registeredLootItem) {
-              socket.write(
-                encodeWsFrame({
-                  type: 'loot_collect_rejected',
-                  lootId,
-                  reason: 'Legendary Tower loot is no longer available.',
-                })
-              );
-              continue;
-            }
-            const distanceToTowerLoot = Math.hypot(
-              Number(collector.position?.x || 0) - towerTemplate.position.x,
-              Number(collector.position?.y || 0) - towerTemplate.position.y,
-              Number(collector.position?.z || 0) - towerTemplate.position.z
-            );
-            if (distanceToTowerLoot > 6.0) {
-              socket.write(
-                encodeWsFrame({
-                  type: 'loot_collect_rejected',
-                  lootId,
-                  reason: 'Out of interaction range.',
-                })
-              );
-              continue;
-            }
-            authoritativeItem = cloneLegendaryTowerLootItem(towerTemplate);
-            towerSwappedDrop = sanitizeLootSwappedDrop(msg.swappedDrop, collector);
-          } else if (msg.position && collector.position) {
-            // Range sanity check against collector's authoritative position
-            const dx = Number(msg.position.x || 0) - Number(collector.position.x || 0);
-            const dz = Number(msg.position.z || 0) - Number(collector.position.z || 0);
-            if (Math.hypot(dx, dz) > 14.0) {
-              socket.write(
-                encodeWsFrame({
-                  type: 'loot_collect_rejected',
-                  lootId,
-                  reason: 'Out of interaction range.',
-                })
-              );
-              continue;
-            }
+          const claim = validateLootClaim(currentRoom, collector, lootId);
+          if (!claim.item) {
+            socket.write(encodeWsFrame({ type: 'loot_collect_rejected', lootId, reason: claim.reason }));
+            continue;
           }
-
+          const authoritativeItem = { ...claim.item, position: { ...claim.item.position }, serverAuthoritative: true };
+          const itemType = authoritativeItem.itemType;
+          const spawnedDrops = itemType === 'chest' ? getChestRewards(lootId) : undefined;
+          let swappedDrop = itemType === 'weapon' || itemType === 'consumable'
+            ? sanitizeLootSwappedDrop(msg.swappedDrop, collector) : undefined;
+          if (swappedDrop && (!ownsLootDrop(collector, swappedDrop) || swappedDrop.itemType !== 'weapon' ||
+              currentRoom.spawnedLootItems.has(swappedDrop.id) || currentRoom.collectedLootIds.has(swappedDrop.id))) {
+            swappedDrop = undefined;
+          }
+          if (swappedDrop) {
+            // Use the registered interaction point, never a client-authored offset
+            // that could put the drop in a wall or on another floor.
+            swappedDrop.position = { ...authoritativeItem.position };
+            swappedDrop.serverAuthoritative = true;
+          }
+          // All mutation is synchronous before broadcasting: simultaneous claims
+          // can award this registered object to exactly one human.
           currentRoom.collectedLootIds.add(lootId);
           currentRoom.spawnedLootItems.delete(lootId);
           getLegendaryTowerSwapDrops(currentRoom).delete(lootId);
-
-          const itemType = towerTemplate
-            ? towerTemplate.itemType
-            : String(msg.itemType || 'weapon').slice(0, 24);
-          // Clients can never mint tower items through chest/spawn payloads.
-          const spawnedDrops = towerTemplate
-            ? undefined
-            : sanitizeClientSpawnedDrops(msg.spawnedDrops, currentRoom);
-          const swappedDrop = towerTemplate
-            ? towerSwappedDrop
-            : sanitizeLootSwappedDrop(msg.swappedDrop, collector);
+          transferLootOwnership(collector, authoritativeItem, swappedDrop);
 
           // Transfer the unique-weapon ledger exactly once for this
           // accepted collection: dropping a proven tower weapon consumes
@@ -3678,7 +3649,7 @@ server.on('upgrade', (req, socket) => {
             }
           }
 
-          broadcastToRoom(currentRoom, {
+          const receipt = {
             type: 'loot_collected',
             collectorId: collector.id,
             lootId,
@@ -3687,7 +3658,9 @@ server.on('upgrade', (req, socket) => {
             swappedDrop,
             authoritative: Boolean(authoritativeItem),
             authoritativeItem,
-          });
+          };
+          currentRoom.lootReceipts.set(lootId, receipt);
+          broadcastToRoom(currentRoom, receipt);
         } else if (msg.type === 'place_build' && currentRoom && currentSessionToken) {
           const builder = currentRoom.players.get(currentSessionToken);
           if (!builder || !builder.alive) continue;

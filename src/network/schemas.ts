@@ -397,6 +397,7 @@ export function effectiveBotCountForMode(
 }
 
 export interface RoomPlayerSummary {
+  eliminations?: number;
   id: string;
   name: string;
   participantType: 'human';

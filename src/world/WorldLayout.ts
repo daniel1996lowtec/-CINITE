@@ -278,6 +278,7 @@ export const ISLAND_ROAD_SEGMENTS: RoadSegmentDefinition[] = [
   { id: 'centre_to_inner_east', fromX: 0, fromZ: 0, toX: 55, toZ: 35, kind: 'secondary' },
   { id: 'centre_to_aurora_west', fromX: 0, fromZ: 0, toX: 45, toZ: -17, kind: 'secondary' },
   { id: 'aurora_west_link', fromX: 45, fromZ: -17, toX: 68, toZ: 2, kind: 'secondary' },
+  { id: 'aurora_annex_avenue', fromX: 97, fromZ: 3.5, toX: 97, toZ: -64, kind: 'secondary' },
   { id: 'aurora_east_link', fromX: 68, fromZ: 2, toX: 97, toZ: 3.5, kind: 'secondary' },
   { id: 'inner_east_to_silos', fromX: 55, fromZ: 35, toX: 95, toZ: 90, kind: 'secondary' },
   { id: 'silos_to_southeast', fromX: 95, fromZ: 90, toX: 155, toZ: 95, kind: 'secondary' },
@@ -407,6 +408,9 @@ export const EXPANSION_BUILDINGS: ExpansionBuildingPlacement[] = [
 
   // Aurora Heights — four enterable towers with switchback floors, front
   // balconies, rooftop cover and a same-height northern skybridge.
+  // Northern annex: unequal crowns and two street-level entrances each.
+  building('aurora_exchange', 'aurora_heights', 'highrise', 110, -64, 18, 16, 25, 'south', 0xfef3c7, 0xb45309, { accentColor: 0xfbbf24, floors: 5, lootTier: 'high', rearDoor: true }),
+  building('aurora_observatory', 'aurora_heights', 'highrise', 110, -43, 18, 16, 35, 'south', 0xe0e7ff, 0x3730a3, { accentColor: 0x818cf8, floors: 7, lootTier: 'high', rearDoor: true }),
   building('aurora_northwest_tower', 'aurora_heights', 'highrise', 84, -13, 18, 16, 30, 'south', 0xdbeafe, 0x0369a1, { accentColor: 0x22d3ee, floors: 6, lootTier: 'high', rearDoor: true }),
   building('aurora_northeast_tower', 'aurora_heights', 'highrise', 110, -13, 18, 16, 30, 'south', 0xfee2e2, 0x9a3412, { accentColor: 0xfb923c, floors: 6, lootTier: 'high', rearDoor: true }),
   building('aurora_southwest_tower', 'aurora_heights', 'highrise', 84, 18, 16, 15, 20, 'north', 0xccfbf1, 0x0f766e, { accentColor: 0x2dd4bf, floors: 4, lootTier: 'high', rearDoor: true }),

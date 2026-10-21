@@ -1785,14 +1785,14 @@ export class MapExpansionBuilder {
             ((side > 0 && (level === 0 || balconyLevels.includes(level))) ||
               (side < 0 && placement.rearDoor && level === 0));
           if (isDoorBay) continue;
-          const wx = fraction * placement.width;
+          const wx = fraction * hw;
           box(wx, windowY, side * (hd + 0.06), 1.62, 2.18, 0.07, 0x7dd3fc, {
             shape: 'glass',
             tier: 'detail',
           });
         }
         for (const fraction of [-0.3, 0, 0.3]) {
-          const wz = fraction * placement.depth;
+          const wz = fraction * hd;
           box(side * (hw + 0.06), windowY, wz, 0.07, 2.1, 1.5, 0x7dd3fc, {
             shape: 'glass',
             tier: 'detail',
@@ -1803,7 +1803,7 @@ export class MapExpansionBuilder {
     for (const side of [-1, 1]) {
       for (const fraction of [-0.58, 0.58]) {
         box(
-          fraction * placement.width,
+          fraction * hw,
           floorTop(0) + wallHeight / 2,
           side * (hd + 0.14),
           0.3,
@@ -1815,7 +1815,7 @@ export class MapExpansionBuilder {
         box(
           side * (hw + 0.14),
           floorTop(0) + wallHeight / 2,
-          fraction * placement.depth,
+          fraction * hd,
           0.22,
           wallHeight,
           0.3,
@@ -1839,6 +1839,27 @@ export class MapExpansionBuilder {
       box(coverX, top + 0.52, coverZ, 3.0, 1.04, 0.72, level % 2 ? placement.roofColor : 0x475569);
       collider(`floor_${level}_cover`, coverX, top + 0.52, coverZ, 3.0, 1.04, 0.72);
       box(0, top + 4.72, 0, 1.5, 0.12, 0.5, 0xfef08a, { shape: 'glass', tier: 'detail' });
+    }
+
+    // Annex interiors: retail counter, office desks and a recessed maintenance
+    // cache. Walls have two broad ends open; neither central aisle nor ramp
+    // landing is blocked. Furniture uses the existing instanced box batches.
+    if (placement.id === 'aurora_exchange' || placement.id === 'aurora_observatory') {
+      for (const level of [0, 1, 3]) {
+        const top = floorTop(level);
+        const side = level === 1 ? -1 : 1;
+        box(side * 3.2, top + 1.25, -3.8, 3.1, 2.5, 0.18, placement.wallColor);
+        collider(`suite_${level}_divider`, side * 3.2, top + 1.25, -3.8, 3.1, 2.5, 0.18);
+        box(side * 3.1, top + 0.45, -5.6, 1.8, 0.9, 0.7, level === 0 ? 0x92400e : 0x475569);
+        collider(`suite_${level}_desk`, side * 3.1, top + 0.45, -5.6, 1.8, 0.9, 0.7);
+        box(side * 3.1, top + 1.05, -5.6, 0.7, 0.32, 0.08, placement.accentColor, { shape: 'glass', tier: 'detail' });
+      }
+      const cache = buildingLocalToWorld(placement, 3.3, -4.7);
+      this.world.chestSpawnPoints.push(new THREE.Vector3(cache.x, baseY + floorTop(3) + 0.18, cache.z));
+      // Offset rooftop shelter identifies the crown and offers actual cover.
+      box(0, roofTop + 1.05, 3.8, 3.5, 2.1, 0.35, placement.accentColor);
+      collider('crown_cover', 0, roofTop + 1.05, 3.8, 3.5, 2.1, 0.35);
+      box(0, roofTop + 2.2, 3.8, 4.0, 0.2, 2.0, placement.roofColor, { tier: 'detail' });
     }
 
     // Front balconies are exits back through the same facade doors, never
@@ -3083,7 +3104,7 @@ export class MapExpansionBuilder {
     const boxGeo = new THREE.BoxGeometry(1, 1, 1);
     const coneGeo = new THREE.ConeGeometry(0.5, 1, 8);
     const cylinderGeo = new THREE.CylinderGeometry(0.5, 0.5, 1, 8);
-    const glowGeo = new THREE.SphereGeometry(0.5, 8, 6);
+    const glowGeo = new THREE.IcosahedronGeometry(0.5, 0);
 
     const standardMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,

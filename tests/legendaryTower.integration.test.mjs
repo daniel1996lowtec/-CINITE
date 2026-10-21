@@ -409,8 +409,8 @@ test('legendary tower vault: server seeding, one-time claims, forged-drop reject
 
     // Tower IDs also cannot be injected as drops from a generic chest.
     const forgeBroadcastPromise = waitForMessage(
-      wsRoof,
-      (msg) => msg.type === 'loot_collected' && msg.lootId === 'chest_forge_test',
+      wsFar,
+      (msg) => msg.type === 'loot_collect_rejected' && msg.lootId === 'chest_forge_test',
       7000,
       'generic chest forge broadcast'
     );
@@ -441,10 +441,7 @@ test('legendary tower vault: server seeding, one-time claims, forged-drop reject
       ],
     });
     const forgeBroadcast = await forgeBroadcastPromise;
-    assert.deepEqual(
-      forgeBroadcast.spawnedDrops.map((drop) => drop.id),
-      ['ordinary_chest_ammo']
-    );
+    assert.match(forgeBroadcast.reason, /not server-registered/);
 
     // A late/reconnecting client gets the two collected vault IDs, the 11
     // remaining server items, and the sanitized swap—but no forged tower ID.
@@ -507,9 +504,9 @@ test('legendary tower vault: server seeding, one-time claims, forged-drop reject
     // collecting the registered generic item, this player may not use it
     // to authorize a unique tower-weapon swap.
     const genericChestBroadcastPromise = waitForMessage(
-      wsRoof,
+      wsFar,
       (msg) =>
-        msg.type === 'loot_collected' &&
+        msg.type === 'loot_collect_rejected' &&
         msg.lootId === 'generic_provenance_chest',
       7000,
       'generic provenance chest broadcast'
@@ -533,9 +530,9 @@ test('legendary tower vault: server seeding, one-time claims, forged-drop reject
     });
     await genericChestBroadcastPromise;
     const genericSniperBroadcastPromise = waitForMessage(
-      wsRoof,
+      wsFar,
       (msg) =>
-        msg.type === 'loot_collected' &&
+        msg.type === 'loot_collect_rejected' &&
         msg.lootId === 'generic_forged_sniper',
       7000,
       'generic forged sniper pickup'
@@ -577,13 +574,13 @@ test('legendary tower vault: server seeding, one-time claims, forged-drop reject
       wsRoof,
       (msg) =>
         msg.type === 'loot_collected' &&
-        msg.lootId === 'generic_transfer_test',
+        msg.lootId === 'legendary_tower_medkit_1',
       7000,
       'transferred tower-weapon swap'
     );
     sendJson(wsFar, {
       type: 'collect_loot',
-      lootId: 'generic_transfer_test',
+      lootId: 'legendary_tower_medkit_1',
       itemType: 'material',
       position: { x: 3, y: 51, z: 2.8 },
       swappedDrop: {
@@ -610,13 +607,13 @@ test('legendary tower vault: server seeding, one-time claims, forged-drop reject
       wsRoof,
       (msg) =>
         msg.type === 'loot_collected' &&
-        msg.lootId === 'generic_transfer_test_2',
+        msg.lootId === 'legendary_tower_medkit_2',
       7000,
       'consumed tower-weapon ownership rejection'
     );
     sendJson(wsFar, {
       type: 'collect_loot',
-      lootId: 'generic_transfer_test_2',
+      lootId: 'legendary_tower_medkit_2',
       itemType: 'material',
       position: { x: 3, y: 51, z: 2.8 },
       swappedDrop: {

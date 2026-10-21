@@ -568,6 +568,7 @@
                 <div class="my-lobby-header">
                   <span>MY CURRENT LOBBY</span>
                   <h3 id="my-lobby-title">CI Island Lobby</h3>
+                  <p id="my-lobby-event" role="status" aria-live="polite"></p>
                   <p id="my-lobby-status" class="my-lobby-status">Waiting for players…</p>
                 </div>
 
@@ -728,7 +729,8 @@
 
     <!-- In-Match HUD Overlay -->
     <div id="hud-overlay" class="hidden">
-      <div id="storm-vignette"></div>
+      <div id="hud-combat-cue" class="hidden" role="status" aria-live="polite"></div>
+    <div id="storm-vignette"></div>
       <div id="damage-numbers-layer"></div>
 
       <!-- FPS Counter -->
@@ -1258,6 +1260,8 @@
       <div id="victory-confetti-layer" class="victory-confetti-layer"></div>
       <div class="end-card victory-end-card">
         <div id="end-crown-badge" class="end-crown-badge">🏆 #1 ISLAND CHAMPION</div>
+        <p id="end-winner" class="end-winner"></p>
+        <div id="end-standings" aria-label="Server-confirmed standings"></div>
         <h1 id="end-banner-title" class="end-title victory">👑 VICTORY ROYALE!</h1>
         <p id="end-banner-subtitle" class="end-subtitle">
           You conquered the CI Craft Island!
