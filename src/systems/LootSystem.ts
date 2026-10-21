@@ -902,18 +902,24 @@ export class LootSystem {
         const oldSlot = player.inventory[targetSlot];
         if (oldSlot) {
           swappedOutName = oldSlot.name;
-          swappedDrop =
-            authoritativeOptions?.swappedDropAlreadySpawned ||
-            this.spawnWeaponOrConsumableDrop(
-              state,
-              oldSlot.category,
-              oldSlot.rarity,
-              player.position.x + 0.8,
-              player.position.y,
-              player.position.z + 0.8,
-              `swap_${player.id}_${Date.now().toString(36)}`,
-              true
-            );
+          // A confirmed server-authoritative pickup may only materialize
+          // the swap drop the server actually accepted and broadcast. If
+          // the server omitted it (for example because the client could not
+          // prove ownership of a unique tower weapon), spawning a local
+          // fallback here would create an invisible, unsynchronized item
+          // that only this client could pick up again.
+          swappedDrop = authoritativeOptions?.confirmed
+            ? authoritativeOptions.swappedDropAlreadySpawned
+            : this.spawnWeaponOrConsumableDrop(
+                state,
+                oldSlot.category,
+                oldSlot.rarity,
+                player.position.x + 0.8,
+                player.position.y,
+                player.position.z + 0.8,
+                `swap_${player.id}_${Date.now().toString(36)}`,
+                true
+              );
         }
       }
 

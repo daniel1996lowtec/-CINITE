@@ -636,6 +636,7 @@ export class MapExpansionBuilder {
       const run = Math.abs(highAlong - lowAlong);
       const rise = highY - lowY;
       const slopeLength = Math.hypot(run, rise);
+      const centreAlong = (lowAlong + highAlong) / 2;
       const centreOut = (outMin + outMax) / 2;
       const outWidth = outMax - outMin;
       const slopeOptions: ShapeOptions =
@@ -646,7 +647,7 @@ export class MapExpansionBuilder {
       // Sloped stringer below a visibly stepped tread run.
       addSideBox(
         side,
-        0,
+        centreAlong,
         (lowY + highY) / 2 - 0.22,
         centreOut,
         slopeLength,
@@ -657,7 +658,7 @@ export class MapExpansionBuilder {
       );
       addSideBox(
         side,
-        0,
+        centreAlong,
         (lowY + highY) / 2 + 0.08,
         outMin + 0.16,
         slopeLength,
@@ -1120,6 +1121,101 @@ export class MapExpansionBuilder {
       }
       addSideBox(deck.side, alongCentre, y - 0.52, 14.45, alongLength, 0.12, 0.14, cyan, {
         shape: 'glass',
+        tier: 'detail',
+      });
+    }
+
+    // Two inclined skybridges connect the level-1 south balcony to the
+    // original southern Pipeline Plaza rooftops. They reuse the ramp
+    // walkable/instancing path, pass with several metres of clearance over
+    // or under the south exterior spiral below, and give the tower two
+    // elevated escape/re-entry routes instead of forcing every fight back
+    // through the ground-floor doors. The south-east house already has a
+    // ground-to-roof ramp, so that bridge is fully bidirectional on foot.
+    const southDeckY = floorY(1);
+    const skybridges: Array<{
+      id: string;
+      houseCentreX: number;
+      lowAlong: number;
+      highAlong: number;
+      roofY: number;
+    }> = [
+      {
+        id: 'legendary_tower_skybridge_southeast_plaza',
+        houseCentreX: 18,
+        lowAlong: 12.35,
+        highAlong: 6.7,
+        roofY: this.world.terrain.getTerrainHeight(18, 16) + 4.92,
+      },
+      {
+        id: 'legendary_tower_skybridge_southwest_plaza',
+        houseCentreX: -18,
+        lowAlong: -12.85,
+        highAlong: -6.7,
+        roofY: this.world.terrain.getTerrainHeight(-18, 16) + 4.72,
+      },
+    ];
+    for (const bridge of skybridges) {
+      addRamp(
+        bridge.id,
+        'south',
+        11.75,
+        14.25,
+        bridge.lowAlong,
+        bridge.highAlong,
+        bridge.roofY,
+        southDeckY,
+        0x6b5136
+      );
+
+      const centreAlong = (bridge.lowAlong + bridge.highAlong) / 2;
+      const centreY = (bridge.roofY + southDeckY) / 2;
+      const slopeLength = Math.hypot(
+        bridge.highAlong - bridge.lowAlong,
+        southDeckY - bridge.roofY
+      );
+      const railRotation = Math.atan(
+        (southDeckY - bridge.roofY) / (bridge.highAlong - bridge.lowAlong)
+      );
+      for (const railOut of [11.92, 14.08]) {
+        addSideBox(
+          'south',
+          centreAlong,
+          centreY + 0.58,
+          railOut,
+          slopeLength,
+          0.14,
+          0.18,
+          darkMetal,
+          { rotationZ: railRotation, tier: 'detail' }
+        );
+      }
+
+      const supportX = cx + centreAlong;
+      const supportZ = cz + 13;
+      const supportBaseY = this.world.terrain.getTerrainHeight(supportX, supportZ);
+      const supportTopY = centreY - 0.28;
+      addBox(
+        supportX,
+        (supportBaseY + supportTopY) / 2,
+        supportZ,
+        0.58,
+        supportTopY - supportBaseY,
+        0.58,
+        darkMetal,
+        { shape: 'cylinder' }
+      );
+      this.addWorldCylinderCollider(
+        `${bridge.id}_support`,
+        supportX,
+        supportZ,
+        0.36,
+        supportBaseY,
+        supportTopY
+      );
+
+      const landingX = cx + bridge.lowAlong + (bridge.houseCentreX > 0 ? 0.35 : -0.35);
+      addBox(landingX, bridge.roofY + 0.04, cz + 13, 1.15, 0.1, 2.7, gold, {
         tier: 'detail',
       });
     }

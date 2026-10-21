@@ -463,6 +463,174 @@ test('legendary tower vault: server seeding, one-time claims, forged-drop reject
     assert.ok(late.sync.spawnedItems.some((item) => item.id === 'swap_tower_test_1'));
     assert.ok(!late.sync.spawnedItems.some((item) => item.id === 'legendary_tower_injected'));
 
+    // The roof player legitimately received the server's Legendary Rail
+    // Sniper above. Its server-side ownership entry therefore authorizes
+    // exactly one broadcast swap when that same player claims the shotgun
+    // with a full inventory; client-controlled name/amount are rebuilt.
+    await syncPosition(wsRoof, { x: 3, y: 51, z: 2.8 });
+    const shotgunCollected = waitForMessage(
+      wsLate,
+      (msg) =>
+        msg.type === 'loot_collected' &&
+        msg.lootId === 'legendary_tower_shotgun',
+      7000,
+      'owned tower-weapon swap broadcast'
+    );
+    sendJson(wsRoof, {
+      type: 'collect_loot',
+      authoritative: true,
+      lootId: 'legendary_tower_shotgun',
+      itemType: 'weapon',
+      position: { x: 3, y: 51, z: 2.8 },
+      swappedDrop: {
+        id: 'swap_tower_sniper_owned',
+        itemType: 'weapon',
+        weaponCategory: 'sniper',
+        rarity: 'legendary',
+        name: 'Client Controlled Sniper',
+        amount: 999,
+        position: { x: 3, y: 51, z: 2.8 },
+      },
+    });
+    const shotgunBroadcast = await shotgunCollected;
+    assert.equal(shotgunBroadcast.swappedDrop.id, 'swap_tower_sniper_owned');
+    assert.equal(shotgunBroadcast.swappedDrop.name, 'Legendary Rail Sniper');
+    assert.equal(shotgunBroadcast.swappedDrop.amount, 1);
+    assert.equal(shotgunBroadcast.swappedDrop.rarity, 'legendary');
+
+    // Picking up that registered swap transfers the one-time ownership
+    // entry to the second player. They may broadcast it once as a later
+    // swap, but the consumed entry cannot authorize a second copy.
+    await syncPosition(wsFar, { x: 3, y: 51, z: 2.8 });
+
+    // A lookalike generic chest drop is not tower provenance: even after
+    // collecting the registered generic item, this player may not use it
+    // to authorize a unique tower-weapon swap.
+    const genericChestBroadcastPromise = waitForMessage(
+      wsRoof,
+      (msg) =>
+        msg.type === 'loot_collected' &&
+        msg.lootId === 'generic_provenance_chest',
+      7000,
+      'generic provenance chest broadcast'
+    );
+    sendJson(wsFar, {
+      type: 'collect_loot',
+      lootId: 'generic_provenance_chest',
+      itemType: 'chest',
+      position: { x: 3, y: 51, z: 2.8 },
+      spawnedDrops: [
+        {
+          id: 'generic_forged_sniper',
+          itemType: 'weapon',
+          weaponCategory: 'sniper',
+          rarity: 'legendary',
+          name: 'Legendary Rail Sniper',
+          amount: 1,
+          position: { x: 3, y: 51, z: 2.8 },
+        },
+      ],
+    });
+    await genericChestBroadcastPromise;
+    const genericSniperBroadcastPromise = waitForMessage(
+      wsRoof,
+      (msg) =>
+        msg.type === 'loot_collected' &&
+        msg.lootId === 'generic_forged_sniper',
+      7000,
+      'generic forged sniper pickup'
+    );
+    sendJson(wsFar, {
+      type: 'collect_loot',
+      lootId: 'generic_forged_sniper',
+      itemType: 'weapon',
+      position: { x: 3, y: 51, z: 2.8 },
+      swappedDrop: {
+        id: 'swap_generic_forged_sniper',
+        itemType: 'weapon',
+        weaponCategory: 'sniper',
+        rarity: 'legendary',
+        name: 'Legendary Rail Sniper',
+        amount: 1,
+        position: { x: 3, y: 51, z: 2.8 },
+      },
+    });
+    assert.equal((await genericSniperBroadcastPromise).swappedDrop, undefined);
+
+    const registeredSwapCollected = waitForMessage(
+      wsLate,
+      (msg) =>
+        msg.type === 'loot_collected' &&
+        msg.lootId === 'swap_tower_sniper_owned',
+      7000,
+      'registered tower-weapon swap pickup'
+    );
+    sendJson(wsFar, {
+      type: 'collect_loot',
+      lootId: 'swap_tower_sniper_owned',
+      itemType: 'weapon',
+      position: { x: 3, y: 51, z: 2.8 },
+    });
+    await registeredSwapCollected;
+
+    const transferredSwapBroadcastPromise = waitForMessage(
+      wsRoof,
+      (msg) =>
+        msg.type === 'loot_collected' &&
+        msg.lootId === 'generic_transfer_test',
+      7000,
+      'transferred tower-weapon swap'
+    );
+    sendJson(wsFar, {
+      type: 'collect_loot',
+      lootId: 'generic_transfer_test',
+      itemType: 'material',
+      position: { x: 3, y: 51, z: 2.8 },
+      swappedDrop: {
+        id: 'swap_tower_sniper_transferred',
+        itemType: 'weapon',
+        weaponCategory: 'sniper',
+        rarity: 'legendary',
+        name: 'Client Controlled Sniper',
+        amount: 999,
+        position: { x: 3, y: 51, z: 2.8 },
+      },
+    });
+    const transferredSwapBroadcast = await transferredSwapBroadcastPromise;
+    assert.equal(
+      transferredSwapBroadcast.swappedDrop.id,
+      'swap_tower_sniper_transferred'
+    );
+    assert.equal(
+      transferredSwapBroadcast.swappedDrop.name,
+      'Legendary Rail Sniper'
+    );
+
+    const consumedSwapBroadcastPromise = waitForMessage(
+      wsRoof,
+      (msg) =>
+        msg.type === 'loot_collected' &&
+        msg.lootId === 'generic_transfer_test_2',
+      7000,
+      'consumed tower-weapon ownership rejection'
+    );
+    sendJson(wsFar, {
+      type: 'collect_loot',
+      lootId: 'generic_transfer_test_2',
+      itemType: 'material',
+      position: { x: 3, y: 51, z: 2.8 },
+      swappedDrop: {
+        id: 'swap_tower_sniper_consumed',
+        itemType: 'weapon',
+        weaponCategory: 'sniper',
+        rarity: 'legendary',
+        name: 'Second Forged Sniper',
+        amount: 1,
+        position: { x: 3, y: 51, z: 2.8 },
+      },
+    });
+    assert.equal((await consumedSwapBroadcastPromise).swappedDrop, undefined);
+
     // A fresh room/match gets a fresh complete vault registry.
     const { data: freshRoom } = await postJson(server.base, '/api/room/create');
     const wsFresh = await connectClient(port, sockets);

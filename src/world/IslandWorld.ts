@@ -433,36 +433,47 @@ export class IslandWorld {
     group.name = 'LegendaryTowerBeaconFx';
     group.position.set(LEGENDARY_TOWER.x, roofY, LEGENDARY_TOWER.z);
 
+    // The beacon is intentionally exempt from scene fog and frustum
+    // culling. Its two low-segment additive cylinders cost almost nothing,
+    // while fog:false keeps the gold column readable from the island coast
+    // (about 230 m away) on every graphics tier instead of letting distance
+    // fog wash it into the sky colour.
     const goldBeamMat = new THREE.MeshBasicMaterial({
       color: 0xfacc15,
-      transparent: true,
-      opacity: 0.16,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-    });
-    const goldBeam = new THREE.Mesh(
-      new THREE.CylinderGeometry(1.35, 2.7, 38, 12, 1, true),
-      goldBeamMat
-    );
-    goldBeam.name = 'LegendaryTowerBeaconBeam';
-    goldBeam.position.y = 21;
-    group.add(goldBeam);
-
-    const cyanBeamMat = new THREE.MeshBasicMaterial({
-      color: 0x22d3ee,
       transparent: true,
       opacity: 0.2,
       side: THREE.DoubleSide,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
+      fog: false,
+    });
+    const goldBeam = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.7, 3.4, 64, 12, 1, true),
+      goldBeamMat
+    );
+    goldBeam.name = 'LegendaryTowerBeaconBeam';
+    goldBeam.position.y = 32;
+    goldBeam.renderOrder = 20;
+    goldBeam.frustumCulled = false;
+    group.add(goldBeam);
+
+    const cyanBeamMat = new THREE.MeshBasicMaterial({
+      color: 0x22d3ee,
+      transparent: true,
+      opacity: 0.22,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      fog: false,
     });
     const cyanBeam = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.32, 0.72, 32, 8, 1, true),
+      new THREE.CylinderGeometry(0.38, 0.85, 48, 8, 1, true),
       cyanBeamMat
     );
     cyanBeam.name = 'LegendaryTowerEnergyBeam';
-    cyanBeam.position.y = 18;
+    cyanBeam.position.y = 24;
+    cyanBeam.renderOrder = 21;
+    cyanBeam.frustumCulled = false;
     group.add(cyanBeam);
 
     const ringMat = new THREE.MeshBasicMaterial({
@@ -471,6 +482,7 @@ export class IslandWorld {
       opacity: 0.72,
       side: THREE.DoubleSide,
       depthWrite: false,
+      fog: false,
     });
     for (const [radius, y, tilt] of [
       [4.6, 5.9, 0.18],
@@ -480,6 +492,7 @@ export class IslandWorld {
       ring.name = 'LegendaryTowerBeaconRing';
       ring.position.y = y;
       ring.rotation.x = Math.PI / 2 + tilt;
+      ring.frustumCulled = false;
       group.add(ring);
     }
 
@@ -490,9 +503,11 @@ export class IslandWorld {
       metalness: 0.35,
       roughness: 0.22,
       flatShading: true,
+      fog: false,
     });
     this.monumentCrystal = new THREE.Mesh(new THREE.OctahedronGeometry(1.15, 0), crystalMat);
     this.monumentCrystal.name = 'LegendaryTowerVaultCrystal';
+    this.monumentCrystal.frustumCulled = false;
     this.legendaryTowerCrystalBaseY = roofY + 7.6;
     this.monumentCrystal.position.set(
       LEGENDARY_TOWER.x,
@@ -522,9 +537,11 @@ export class IslandWorld {
         opacity: 0.88,
         depthWrite: false,
         blending: THREE.AdditiveBlending,
+        fog: false,
       })
     );
     this.legendaryTowerParticles.name = 'LegendaryTowerVaultParticles';
+    this.legendaryTowerParticles.frustumCulled = false;
     group.add(this.legendaryTowerParticles);
 
     const vaultLight = new THREE.PointLight(0xfacc15, 85, 34, 2);
