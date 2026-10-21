@@ -43,7 +43,7 @@ This repository includes `render.yaml` which configures both the Node.js Web Ser
 1. Push your branch/repository to GitHub.
 2. In the [Render Dashboard](https://dashboard.render.com/), click **New +** -> **Blueprint** and select this repository.
 3. Render will automatically read `render.yaml` and configure:
-   - **Build Command**: `npm ci && npm run build`
+   - **Build Command**: `npm ci --include=dev && npm run build` (`--include=dev` plus the repo `.npmrc` guarantee TypeScript/Vite/@types/three are installed even though the build runs with `NODE_ENV=production`)
    - **Start Command**: `npm run start`
    - **Health Check Path**: `/health`
    - **Environment Variables**: `NODE_ENV=production`, `NODE_VERSION=22.14.0`, `ACCOUNT_TOKEN_SECRET` (auto-generated), and `DATABASE_URL` (linked to `cicraft-postgres`). `PORT` is injected by Render at runtime and must not be set manually.
@@ -61,7 +61,7 @@ This repository includes `render.yaml` which configures both the Node.js Web Ser
    node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
    ```
 4. Railway automatically uses `railway.json`:
-   - **Build Command**: `npm ci && npm run build` (migrations run automatically at server startup)
+   - **Build Command**: `npm ci --include=dev && npm run build` (`--include=dev` plus the repo `.npmrc` guarantee TypeScript/Vite/@types/three are installed even though the build runs with `NODE_ENV=production`) (migrations run automatically at server startup)
    - **Start Command**: `npm run start`
    - **Healthcheck Path**: `/health`
 5. Generate a public domain in Railway Settings -> Networking.

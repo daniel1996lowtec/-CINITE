@@ -4,6 +4,10 @@
 # Notes:
 # - Do NOT set PORT here: Render injects its own PORT at runtime and routes traffic to it.
 #   The server binds 0.0.0.0:$PORT (falling back to 2567 only for local development).
+# - The build runs with NODE_ENV=production, where a plain `npm ci` omits
+#   devDependencies (TypeScript, Vite, @types/three) and the compile fails with
+#   TS7016 errors. `--include=dev` (plus the repo `.npmrc`) keeps them installed
+#   for the build; the runtime process itself only needs production deps.
 # - Do NOT run database migrations in buildCommand: Render's internal DATABASE_URL hostname
 #   is only resolvable over the private network at runtime, not during build.
 #   `server/multiplayerServer.mjs` runs the idempotent migrations during startup instead.
@@ -12,7 +16,7 @@ services:
     name: cicraft-battle-royale
     runtime: node
     plan: free
-    buildCommand: npm ci && npm run build
+    buildCommand: npm ci --include=dev && npm run build
     startCommand: npm run start
     healthCheckPath: /health
     envVars:
