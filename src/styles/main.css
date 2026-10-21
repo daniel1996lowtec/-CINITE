@@ -471,7 +471,7 @@ kbd {
   left: 50%;
   transform: translateX(-50%);
   background: rgba(15, 23, 42, 0.9);
-  border: 2px solid #38bdf8;
+  border: 2px solid var(--poi-accent, #38bdf8);
   padding: 8px 20px;
   border-radius: 999px;
   font-size: 0.9rem;
@@ -505,6 +505,48 @@ kbd {
   color: #38bdf8;
   font-size: 0.8rem;
   margin-left: 6px;
+}
+
+/* Short, transform-only entrances for moment-to-moment HUD feedback. They
+ * run when HUDManager removes .hidden and do not change layout or touch
+ * target geometry on mobile. */
+.hud-poi-toast:not(.hidden),
+.hud-elim-banner:not(.hidden) {
+  animation: hud-banner-in 0.24s ease-out;
+}
+
+.loot-toast:not(.hidden) {
+  animation: hud-toast-in 0.2s ease-out;
+}
+
+@keyframes hud-banner-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-6px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
+
+@keyframes hud-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hud-poi-toast:not(.hidden),
+  .hud-elim-banner:not(.hidden),
+  .loot-toast:not(.hidden) {
+    animation: none;
+  }
 }
 
 .hud-spectator-banner {
