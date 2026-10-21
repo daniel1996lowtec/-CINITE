@@ -756,6 +756,8 @@ export class GameEngine {
         this.world.terrain.atmosphereMotes.visible = false;
       }
       this.world.foliageGroup.visible = false;
+      this.world.detailFoliageGroup.visible = false;
+      this.world.expansionDetailGroup.visible = false;
       this.tpCamera.camera.far = 310;
       this.tpCamera.camera.updateProjectionMatrix();
     } else if (this.settings.graphicsQuality === 'medium') {
@@ -770,6 +772,8 @@ export class GameEngine {
         this.world.terrain.atmosphereMotes.visible = false;
       }
       this.world.foliageGroup.visible = true;
+      this.world.detailFoliageGroup.visible = false;
+      this.world.expansionDetailGroup.visible = false;
       this.tpCamera.camera.far = 380;
       this.tpCamera.camera.updateProjectionMatrix();
     } else {
@@ -784,6 +788,8 @@ export class GameEngine {
         this.world.terrain.atmosphereMotes.visible = true;
       }
       this.world.foliageGroup.visible = true;
+      this.world.detailFoliageGroup.visible = true;
+      this.world.expansionDetailGroup.visible = true;
       this.tpCamera.camera.far = 460;
       this.tpCamera.camera.updateProjectionMatrix();
     }

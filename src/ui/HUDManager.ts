@@ -9,6 +9,7 @@ import {
 } from '../network/schemas';
 import { RARITY_COLORS } from '../weapons/WeaponDefinitions';
 import { ISLAND_POIS } from '../world/TerrainGenerator';
+import { ISLAND_SETTLEMENTS } from '../world/WorldLayout';
 
 interface FloatingDamageNumber {
   el: HTMLDivElement;
@@ -723,6 +724,16 @@ export class HUDManager {
       ctx.fillRect(px - 2, py - 2, 4, 4);
       ctx.fillText(poi.name.split(' ')[0], px, py - 4);
     }
+
+    // Secondary settlements: small markers keep the expanded island
+    // navigable without overwhelming the eight named-POI labels.
+    for (const settlement of ISLAND_SETTLEMENTS) {
+      const px = cx + settlement.x * scale;
+      const py = cy + settlement.z * scale;
+      ctx.fillStyle = settlement.color;
+      ctx.fillRect(px - 1.5, py - 1.5, 3, 3);
+    }
+    ctx.fillStyle = 'rgba(255,255,255,0.75)';
 
     // Storm Safe Target Circle
     ctx.beginPath();
