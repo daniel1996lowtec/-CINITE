@@ -1,8 +1,8 @@
 /**
  * CI Craft 3.0 character, weapon-model and animation contracts.
  *
- * The rigged GLB is not loaded in Node (there is no browser/WebGL here), so
- * these tests instantiate the real procedural fallback, verify the pure
+ * 3.1 also loads the bundled GLB skeleton/geometry with image references
+ * removed for Node. No browser/WebGL is exercised. Tests verify the pure
  * animation curves and authored weapon nodes, and assert the network/lobby
  * wiring that carries cosmetic identity without changing gameplay state.
  */
@@ -33,7 +33,7 @@ async function loadCharacterModules() {
       [/import\s+\{[\s\S]*?\}\s+from\s+['"]\.\.\/network\/schemas['"];?\n?/, ''],
     ]);
     emit('src/entities/CharacterMesh.ts', 'CharacterMesh.mjs', [
-      [/import\s+\{[\s\S]*?\}\s+from\s+['"]\.\.\/network\/schemas['"];?\n?/, ''],
+      [/import\s+type\s+\{[\s\S]*?\}\s+from\s+['"]\.\.\/network\/schemas['"];?\n?/, ''],
       ["from '../weapons/WeaponDefinitions'", "from './WeaponDefinitions.mjs'"],
       ["from './CharacterCosmetics'", "from './CharacterCosmetics.mjs'"],
       ["from './CharacterAnimation'", "from './CharacterAnimation.mjs'"],
@@ -187,14 +187,16 @@ test('CI Craft 3.0 animation curves: reload, switch, turn and locomotion stay bo
     [1, 0, 0, 'complete']
   );
 
-  let previousPitch = -Infinity;
   for (let remaining = 0.24; remaining >= 0; remaining -= 0.03) {
     const pose = animation.getWeaponSwitchPose(remaining, 0.24);
     assert.ok(pose.progress >= 0 && pose.progress <= 1);
     assert.ok(pose.dipY <= 0 && pose.dipY >= -0.075);
-    assert.ok(pose.pitchOffset >= previousPitch - 1e-9);
-    previousPitch = pose.pitchOffset;
+    assert.ok(pose.pitchOffset <= 1e-9 && pose.pitchOffset >= -0.95);
   }
+
+  assert.ok(Math.abs(animation.getWeaponSwitchPose(0.24).pitchOffset) < 1e-9);
+  assert.ok(Math.abs(animation.getWeaponSwitchPose(0).pitchOffset) < 1e-9);
+  assert.ok(animation.getWeaponSwitchPose(0.12).pitchOffset < -0.9);
 
   let lean = 0;
   for (let i = 0; i < 30; i++) {
@@ -309,4 +311,169 @@ test('CI Craft 3.0 shared interfaces: starter loadouts and cosmetic sync stay al
   const main = read('src/main.ts');
   assert.match(main, /syncOperatorShowcase/);
   assert.match(main, /getStarterLoadoutItems/);
+});
+
+
+test('3.1 actual bundled GLB: skeleton cloning and clip evaluation (textures excluded, no WebGL)', async () => {
+  const { THREE, character } = await loadCharacterModules();
+  const bytes = fs.readFileSync(path.join(ROOT_DIR, 'public/models/soldier.glb'));
+  const length = bytes.readUInt32LE(12);
+  const json = JSON.parse(bytes.subarray(20, 20 + length).toString());
+  assert.equal(json.skins[0].joints.length, 49);
+  assert.deepEqual(json.animations.map(a => a.name).sort(), ['Idle', 'Run', 'TPose', 'Walk']);
+  // Keep the actual binary geometry, inverse bind matrices and animation
+  // tracks. Only image/material references are removed for Node decoding.
+  json.materials = json.materials.map(() => ({ pbrMetallicRoughness: {} }));
+  delete json.images; delete json.textures;
+  const text = Buffer.from(JSON.stringify(json));
+  const padded = Buffer.alloc(Math.ceil(text.length / 4) * 4, 32); text.copy(padded);
+  const binary = bytes.subarray(20 + length);
+  const glb = Buffer.alloc(20 + padded.length + binary.length);
+  bytes.copy(glb, 0, 0, 12); glb.writeUInt32LE(glb.length, 8);
+  glb.writeUInt32LE(padded.length, 12); glb.writeUInt32LE(0x4e4f534a, 16);
+  padded.copy(glb, 20); binary.copy(glb, 20 + padded.length);
+  const waiting = new character.CharacterMesh(makePlayerState());
+  const departed = new character.CharacterMesh(makePlayerState());
+  departed.dispose();
+  const template = await character.CharacterMesh.preloadFromArrayBuffer(glb.buffer.slice(glb.byteOffset, glb.byteOffset + glb.byteLength));
+  assert.equal(waiting.isUsingGLTF, true);
+  assert.equal(departed.isUsingGLTF, false, 'late completion cannot resurrect disposed player');
+  assert.equal(character.CharacterMesh.pendingInstances.size, 0);
+  waiting.dispose();
+  const state = makePlayerState();
+  const mesh = new character.CharacterMesh(state);
+  const other = new character.CharacterMesh(makePlayerState({ id: 'other' }));
+  assert.equal(mesh.isUsingGLTF, true);
+  assert.notEqual(mesh.gltfBones.head, other.gltfBones.head);
+  const skin = mesh.gltfModelGroup.getObjectByName('vanguard_Mesh');
+  const otherSkin = other.gltfModelGroup.getObjectByName('vanguard_Mesh');
+  assert.equal(skin.geometry, otherSkin.geometry);
+  assert.notEqual(skin.skeleton, otherSkin.skeleton);
+  assert.notEqual(skin.material, otherSkin.material);
+  for (const name of ['Ready', 'Sprint', 'Jump', 'Fall', 'Land', 'Aim', 'Shoot', 'Reload', 'Switch']) {
+    assert.ok(template.animations.some(clip => clip.name === name));
+  }
+  for (let i = 0; i < 60; i++) mesh.update(state, 1/60, new THREE.Vector3(0, 1, 3));
+  mesh.root.updateMatrixWorld(true);
+  mesh.gltfModelGroup.traverse(o => { if (o.isSkinnedMesh) { o.skeleton.update(); o.computeBoundingBox(); } });
+  const size = new THREE.Box3().setFromObject(mesh.gltfModelGroup).getSize(new THREE.Vector3());
+  assert.ok(size.y > 1.65 && size.y < 2.05, `metre-scale standing rig: ${size.y}`);
+  assert.ok(mesh.gltfActions.ready.getEffectiveWeight() > 0.9);
+  const snapshot = JSON.stringify(state);
+  mesh.update(Object.freeze(state), 1/60);
+  assert.equal(JSON.stringify(state), snapshot, 'visuals do not write gameplay state');
+  const camera = new THREE.Vector3(0, 1, 3);
+  for (const [action, overrides] of [
+    ['sprint', { isSprinting: true, velocity: { x: 0, y: 0, z: -10 } }],
+    ['jump', { isGrounded: false, velocity: { x: 0, y: 7, z: 0 } }],
+    ['fall', { isGrounded: false, velocity: { x: 0, y: -7, z: 0 } }],
+    ['aim', { isAiming: true }],
+    ['reload', { isReloading: true, reloadDuration: 4, reloadTimer: 2 }],
+  ]) {
+    const next = makePlayerState(overrides);
+    for (let i = 0; i < 30; i++) mesh.update(next, 1/60, camera);
+    assert.ok(mesh.gltfActions[action].getEffectiveWeight() > 0.9, `${action} must actually play`);
+    assert.ok(Object.values(mesh.gltfBones).every(b => b.quaternion.toArray().every(Number.isFinite)));
+  }
+  assert.equal(mesh.gltfActions.reload.time, mesh.gltfActions.reload.getClip().duration / 2);
+  mesh.triggerAttackAnimation();
+  mesh.update(state, 0.04, camera);
+  assert.ok(mesh.gltfActions.shoot.getEffectiveWeight() > 0);
+  assert.equal(mesh.presentationState, 'fire');
+  for (let i = 0; i < 30; i++) mesh.update(state, 1/60, camera);
+  const muzzle = mesh.weaponSocket.getObjectByName('muzzle_tip').getWorldPosition(new THREE.Vector3());
+  assert.ok(muzzle.distanceTo(mesh.getMuzzleWorldPosition(new THREE.Vector3())) < 1e-6);
+  const headAttachment = mesh.outfitAttachmentGroup.children.find(o => o.name.includes('brow_fin'));
+  const initialMatrix = headAttachment.matrix.clone();
+  for (let i = 0; i < 20; i++) mesh.update(makePlayerState({ pitch: 0.5 }), 1/60, camera);
+  assert.notDeepEqual(headAttachment.matrix.elements, initialMatrix.elements, 'head ornaments follow head rotation');
+  for (let i = 0; i < 30; i++) mesh.update(makePlayerState({ alive: false }), 1/60);
+  assert.equal(mesh.root.visible, false);
+  mesh.update(state, 1/60, camera);
+  assert.equal(mesh.root.visible, true);
+  assert.equal(mesh.root.scale.x, 1);
+  const mixer = mesh.mixer;
+  let geometryDisposals = 0, materialDisposals = 0, textureDisposals = 0;
+  skin.geometry.addEventListener('dispose', () => geometryDisposals++);
+  skin.material.addEventListener('dispose', () => materialDisposals++);
+  skin.skeleton.computeBoneTexture();
+  skin.skeleton.boneTexture.addEventListener('dispose', () => textureDisposals++);
+  mesh.dispose(); mesh.dispose();
+  assert.equal(geometryDisposals, 0, 'shared GLB geometry remains available to other players');
+  assert.equal(materialDisposals, 1);
+  assert.equal(textureDisposals, 1);
+  assert.equal(mixer.stats.actions.inUse, 0);
+  assert.equal(mixer.stats.bindings.total, 0);
+  other.update(state, 1/60, camera);
+  other.dispose();
+
+});
+
+
+test('3.1 selection precedence, continuous reload stages and safe outfit IDs', async () => {
+  const { animation, cosmetics } = await loadCharacterModules();
+  const state = makePlayerState();
+  assert.equal(animation.selectPresentationState(state), 'ready');
+  assert.equal(animation.selectPresentationState({ ...state, alive: false }, 1, 1), 'eliminated');
+  assert.equal(animation.selectPresentationState({ ...state, isReloading: true }, 1, 1), 'reload');
+  assert.equal(animation.selectPresentationState(state, 1, 1), 'switch');
+  assert.equal(animation.selectPresentationState(state, 1), 'fire');
+  assert.equal(animation.selectPresentationState(state, 0, 0, 0.1), 'land');
+  for (const boundary of [0.38, 0.72, 1]) {
+    const left = animation.getReloadAnimationPose(4 * (1 - boundary + 1e-6), 4);
+    const right = animation.getReloadAnimationPose(4 * (1 - boundary), 4);
+    assert.ok(Math.abs(left.magazineOffsetY - right.magazineOffsetY) < 1e-5);
+    assert.ok(Math.abs(left.boltPull - right.boltPull) < 1e-5);
+  }
+  for (const id of ['__proto__', 'constructor', 'toString', null]) {
+    assert.equal(cosmetics.normalizeOutfitPresetId(id), 'vanguard_blue');
+  }
+});
+
+test('3.1 failed GLB stays on fallback without repeated requests or retained instances', async () => {
+  const { character } = await loadCharacterModules();
+  const { GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader.js');
+  const original = GLTFLoader.prototype.load;
+  let requests = 0;
+  const instances = [];
+  globalThis.window = {};
+  GLTFLoader.prototype.load = function (_url, _load, _progress, fail) { requests++; fail(new Error('offline')); };
+  try {
+    for (let i = 0; i < 4; i++) instances.push(new character.CharacterMesh(makePlayerState()));
+    assert.equal(requests, 1);
+    assert.equal(character.CharacterMesh.assetStatus, 'failed');
+    assert.equal(character.CharacterMesh.pendingInstances.size, 0);
+    assert.ok(instances.every(mesh => !mesh.isUsingGLTF));
+    for (const mesh of instances) mesh.update(makePlayerState(), 1/60);
+  } finally {
+    for (const mesh of instances) mesh.dispose();
+    GLTFLoader.prototype.load = original;
+    delete globalThis.window;
+  }
+  await assert.rejects(character.CharacterMesh.preloadFromArrayBuffer(new ArrayBuffer(0)));
+  assert.equal(character.CharacterMesh.pendingInstances.size, 0);
+});
+
+test('3.1 fallback disposal is idempotent and keeps shared weapons intact', async () => {
+  const { THREE, character } = await loadCharacterModules();
+  const mesh = new character.CharacterMesh(makePlayerState());
+  let weaponDisposals = 0;
+  mesh.weaponSocket.traverse(o => {
+    if (o instanceof THREE.Mesh && !mesh.muzzleFlashMesh.getObjectById(o.id)) {
+      o.geometry.addEventListener('dispose', () => weaponDisposals++);
+    }
+  });
+  const fallback = mesh.proceduralFallbackGroup;
+  const counts = new Map();
+  fallback.traverse(o => {
+    if (o instanceof THREE.Mesh && !mesh.weaponSocket.getObjectById(o.id) && !counts.has(o.geometry)) {
+      counts.set(o.geometry, 0);
+      o.geometry.addEventListener('dispose', () => counts.set(o.geometry, counts.get(o.geometry) + 1));
+    }
+  });
+  mesh.dispose(); mesh.dispose();
+  assert.ok([...counts.values()].every(count => count === 1));
+  assert.equal(weaponDisposals, 0);
+  mesh.upgradeToRiggedGLTFModel();
+  assert.equal(mesh.root.children.length, 0);
 });

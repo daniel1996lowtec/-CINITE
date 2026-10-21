@@ -4051,3 +4051,8 @@ input:disabled {
 
 
 
+
+/* Cosmetic rarity styling is informational, never an unlock or gameplay bonus. */
+.outfit-btn[data-rarity-style] { border-bottom: 2px solid var(--outfit-rarity); }
+.outfit-btn[data-rarity-style].active { box-shadow: inset 0 -2px 0 var(--outfit-rarity); }
+#preview-asset-status { display: block; color: #94a3b8; font-size: 10px; letter-spacing: .04em; }

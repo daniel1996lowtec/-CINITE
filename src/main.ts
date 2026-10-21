@@ -27,6 +27,7 @@ import { LobbyBrowserClient } from './network/LobbyBrowserClient';
 import { getLobbyJoinBlock, parseLobbyInviteCode } from './network/lobbyBrowserUtils';
 import { LobbyBrowserUI } from './ui/LobbyBrowser';
 import {
+  RARITY_COLORS,
   createWeaponStats,
   getWeaponVisualProfile,
 } from './weapons/WeaponDefinitions';
@@ -195,10 +196,13 @@ window.addEventListener('DOMContentLoaded', () => {
     };
 
     setText('preview-outfit-detail', `${visual.finishLabel} · ${visual.silhouetteLabel}`);
-    setText('preview-outfit-finish', visual.finishLabel.toUpperCase());
+    setText('preview-outfit-finish', `${visual.rarityStyle.toUpperCase()} STYLE`);
+    const finishChip = document.getElementById('preview-outfit-finish');
+    finishChip?.style.setProperty('color', RARITY_COLORS[visual.rarityStyle].hex);
+    if (finishChip) finishChip.title = 'Cosmetic style only — all outfits have identical gameplay hitboxes';
     setText('preview-weapon-icon', primaryProfile.icon);
     setText('preview-weapon-name', primary.name);
-    setText('preview-weapon-role', `${primaryProfile.role} · ${primaryProfile.silhouette}`);
+    setText('preview-weapon-role', `${RARITY_COLORS[loadout.primaryRarity].label} · ${primaryProfile.role}`);
     setText(
       'preview-weapon-damage',
       primary.pellets > 1 ? `${primary.baseDamage}×${primary.pellets}` : `${primary.baseDamage}`
@@ -225,9 +229,12 @@ window.addEventListener('DOMContentLoaded', () => {
       const preset = OUTFIT_PRESETS.find((o) => o.id === btn.dataset.outfit);
       const profile = preset ? getOutfitVisualProfile(preset.id) : null;
       if (preset && profile) {
-        btn.title = `${preset.tagline} · ${profile.finishLabel} · ${profile.silhouetteLabel}`;
+        btn.dataset.rarityStyle = profile.rarityStyle;
+        btn.style.setProperty('--outfit-rarity', RARITY_COLORS[profile.rarityStyle].hex);
+        btn.title = `${profile.rarityStyle} style · ${preset.tagline} · ${profile.finishLabel} · ${profile.silhouetteLabel}`;
       }
       btn.classList.toggle('active', btn.dataset.outfit === c.outfitId);
+      btn.setAttribute('aria-pressed', String(btn.dataset.outfit === c.outfitId));
     });
     document.querySelectorAll<HTMLButtonElement>('.back-acc-btn').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.back === c.backAccessory);

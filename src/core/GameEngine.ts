@@ -1608,6 +1608,12 @@ export class GameEngine {
       this.lobbyPreviewState.facingYaw = this.lobbyPreviewState.yaw;
 
       this.perfMonitor.beginSubsystem();
+      this.lobbyCharacterMesh.setReducedDetail(this.getResolvedGraphicsQuality() === 'low');
+      const assetStatus = document.getElementById('preview-asset-status');
+      const statusText = CharacterMesh.assetStatus === 'ready' ? 'Rigged operator · live preview'
+        : CharacterMesh.assetStatus === 'failed' ? 'Lightweight operator · asset unavailable'
+        : 'Lightweight operator · loading rig';
+      if (assetStatus && assetStatus.textContent !== statusText) assetStatus.textContent = statusText;
       this.lobbyCharacterMesh.update(
         this.lobbyPreviewState,
         dt,
@@ -1890,6 +1896,7 @@ export class GameEngine {
     for (const [id, cm] of this.characterMeshes.entries()) {
       const pState = state.players.get(id);
       if (pState) {
+        cm.setReducedDetail(this.adaptiveDetailReduced || this.getResolvedGraphicsQuality() === 'low');
         cm.update(pState, dt, this.tpCamera.camera.position);
       }
     }

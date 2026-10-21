@@ -40,7 +40,7 @@ export function getReloadAnimationPose(
   if (progress < 0.38) {
     return {
       progress,
-      magazineOffsetY: -Math.sin((progress / 0.38) * Math.PI) * 0.2,
+      magazineOffsetY: -0.14 * Math.sin((progress / 0.38) * Math.PI / 2),
       boltPull: 0,
       stage: 'drop',
     };
@@ -80,10 +80,10 @@ export function getWeaponSwitchPose(
   const safeDuration = Math.max(0.01, duration);
   const remaining = clamp01(Math.max(0, timerRemaining) / safeDuration);
   const progress = 1 - remaining;
-  const arc = Math.sin(progress * Math.PI);
+  const arc = Math.sin(progress * Math.PI) ** 2;
   return {
     progress,
-    pitchOffset: -1.02 * Math.pow(remaining, 1.3) - arc * 0.08,
+    pitchOffset: -0.95 * arc,
     dipY: -arc * 0.075,
     roll: arc * 0.1,
   };
@@ -172,4 +172,26 @@ export function getAirbornePose(verticalVelocity: number): AirbornePose {
     legBend: 0.42 + riseBlend * 0.38 + fallBlend * 0.14,
     spinePitch: 0.05 + riseBlend * 0.1 - fallBlend * 0.03,
   };
+}
+
+export type PresentationState = 'idle' | 'ready' | 'walk' | 'run' | 'sprint' |
+  'jump' | 'fall' | 'land' | 'glide' | 'aim' | 'fire' | 'reload' | 'switch' | 'eliminated';
+
+/** Presentation selection only: never modifies the gameplay snapshot. */
+export function selectPresentationState(state: {
+  alive: boolean; isGliding: boolean; isGrounded: boolean; isReloading: boolean;
+  isAiming: boolean; isSprinting: boolean; velocity: { x: number; y: number; z: number };
+}, fireRemaining = 0, switchRemaining = 0, landingRemaining = 0): PresentationState {
+  if (!state.alive) return 'eliminated';
+  if (state.isGliding) return 'glide';
+  if (!state.isGrounded) return state.velocity.y > 1.2 ? 'jump' : 'fall';
+  if (state.isReloading) return 'reload';
+  if (switchRemaining > 0) return 'switch';
+  if (fireRemaining > 0) return 'fire';
+  if (landingRemaining > 0) return 'land';
+  if (state.isAiming) return 'aim';
+  const speed = Math.hypot(state.velocity.x, state.velocity.z);
+  if (speed <= 0.45) return 'ready';
+  if (state.isSprinting || speed > 8.2) return 'sprint';
+  return speed > 4.6 ? 'run' : 'walk';
 }

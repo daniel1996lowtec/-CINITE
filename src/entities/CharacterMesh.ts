@@ -1,19 +1,21 @@
 import * as THREE from 'three';
-import { GLTFLoader, GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.js';
-import {
+import type {
   BackAccessoryType,
   OutfitPresetId,
   PlayerState,
   WeaponCategory,
   WeaponRarity,
 } from '../network/schemas';
-import { createWeaponMesh } from '../weapons/WeaponDefinitions';
+import { createWeaponMesh, getWeaponVisualProfile } from '../weapons/WeaponDefinitions';
 import {
   getOutfitVisualProfile,
   normalizeOutfitPresetId,
 } from './CharacterCosmetics';
 import {
+  selectPresentationState,
+  type PresentationState,
   getAirbornePose,
   getLocomotionBlend,
   getReloadAnimationPose,
@@ -131,6 +133,7 @@ export class CharacterMesh {
   public static readonly MODEL_URL = '/models/soldier.glb';
   private static sharedGLTFTemplate: GLTF | null = null;
   private static isLoadingTemplate: boolean = false;
+  public static assetStatus: 'idle' | 'loading' | 'ready' | 'failed' = 'idle';
   private static pendingInstances: Set<CharacterMesh> = new Set();
 
   /**
@@ -139,6 +142,14 @@ export class CharacterMesh {
    * retargeted Mixamo AnimationClips for Sprint, Jump, Fall, Land, Aim, Shoot, and Reload.
    */
   private static optimizeAndBuildRetargetedClips(gltf: GLTF): void {
+    // Reject incompatible assets before publishing them to waiting instances.
+    for (const name of ['mixamorigHips', 'mixamorigSpine2', 'mixamorigHead',
+      'mixamorigRightHand', 'mixamorigLeftHand']) {
+      if (!gltf.scene.getObjectByName(name)) throw new Error(`Character rig missing ${name}`);
+    }
+    for (const name of ['Idle', 'Walk', 'Run']) {
+      if (!gltf.animations.some(clip => clip.name === name)) throw new Error(`Missing ${name} clip`);
+    }
     // 1. Prune redundant finger & constant scale/translation tracks for browser performance
     for (const clip of gltf.animations) {
       clip.tracks = clip.tracks.filter((t) => {
@@ -409,6 +420,35 @@ export class CharacterMesh {
       ]);
       gltf.animations.push(reloadClip);
     }
+    const ready = gltf.animations.find(clip => clip.name === 'Aim')!.clone();
+    ready.name = 'Ready';
+    gltf.animations.push(ready);
+    gltf.animations.push(new THREE.AnimationClip('Switch', 0.24, [
+      quatKeyframes('mixamorigRightForeArm', [0, 0.12, 0.24],
+        [[1.2, 0.25, 0.45], [0.9, 0.2, 0.32], [1.2, 0.25, 0.45]]),
+      quatKeyframes('mixamorigLeftForeArm', [0, 0.12, 0.24],
+        [[-0.65, 0.2, 0.55], [-0.4, 0.2, 0.35], [-0.65, 0.2, 0.55]]),
+    ]));
+  }
+
+  private static disposeRejectedAsset(gltf: GLTF): void {
+    const geometries = new Set<THREE.BufferGeometry>();
+    const materials = new Set<THREE.Material>();
+    const textures = new Set<THREE.Texture>();
+    const skeletons = new Set<THREE.Skeleton>();
+    gltf.scene.traverse(object => {
+      if (!(object instanceof THREE.Mesh)) return;
+      geometries.add(object.geometry);
+      if (object instanceof THREE.SkinnedMesh) skeletons.add(object.skeleton);
+      for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
+        materials.add(material);
+        for (const value of Object.values(material)) if (value instanceof THREE.Texture) textures.add(value);
+      }
+    });
+    skeletons.forEach(skeleton => skeleton.dispose());
+    geometries.forEach(geometry => geometry.dispose());
+    materials.forEach(material => material.dispose());
+    textures.forEach(texture => texture.dispose());
   }
 
   /**
@@ -417,15 +457,24 @@ export class CharacterMesh {
    * if loading fails or while loading is in progress.
    */
   public static ensureSharedGLBLoaded(): void {
-    if (this.sharedGLTFTemplate || this.isLoadingTemplate) return;
+    if (this.sharedGLTFTemplate || this.isLoadingTemplate || this.assetStatus === 'failed') return;
     if (typeof window === 'undefined') return;
 
     this.isLoadingTemplate = true;
+    this.assetStatus = 'loading';
     const loader = new GLTFLoader();
     loader.load(
       this.MODEL_URL,
       (gltf) => {
-        this.optimizeAndBuildRetargetedClips(gltf);
+        try { this.optimizeAndBuildRetargetedClips(gltf); }
+        catch {
+          this.disposeRejectedAsset(gltf);
+          this.assetStatus = 'failed';
+          this.isLoadingTemplate = false;
+          this.pendingInstances.clear();
+          return;
+        }
+        this.assetStatus = 'ready';
         this.sharedGLTFTemplate = gltf;
         this.isLoadingTemplate = false;
         for (const inst of this.pendingInstances) {
@@ -435,7 +484,8 @@ export class CharacterMesh {
       },
       undefined,
       () => {
-        // Keep procedural fallback active if GLB load fails
+        // Failed assets are not retried for every newly spawned player.
+        this.assetStatus = 'failed';
         this.isLoadingTemplate = false;
         this.pendingInstances.clear();
       }
@@ -446,24 +496,22 @@ export class CharacterMesh {
    * Allows preloading the bundled GLB binary buffer directly (e.g. in Node/SSR validation tests)
    */
   public static async preloadFromArrayBuffer(buffer: ArrayBuffer): Promise<GLTF> {
-    const loader = new GLTFLoader();
-    return new Promise((resolve, reject) => {
-      loader.parse(
-        buffer,
-        '',
-        (gltf) => {
-          this.optimizeAndBuildRetargetedClips(gltf);
-          this.sharedGLTFTemplate = gltf;
-          this.isLoadingTemplate = false;
-          for (const inst of this.pendingInstances) {
-            inst.upgradeToRiggedGLTFModel();
-          }
-          this.pendingInstances.clear();
-          resolve(gltf);
-        },
-        (err) => reject(err)
-      );
-    });
+    try {
+      const gltf = await new GLTFLoader().parseAsync(buffer, '');
+      try { this.optimizeAndBuildRetargetedClips(gltf); }
+      catch (error) { this.disposeRejectedAsset(gltf); throw error; }
+      this.sharedGLTFTemplate = gltf;
+      this.assetStatus = 'ready';
+      this.isLoadingTemplate = false;
+      for (const instance of this.pendingInstances) instance.upgradeToRiggedGLTFModel();
+      this.pendingInstances.clear();
+      return gltf;
+    } catch (error) {
+      this.assetStatus = this.sharedGLTFTemplate ? 'ready' : 'failed';
+      this.isLoadingTemplate = false;
+      this.pendingInstances.clear();
+      throw error;
+    }
   }
 
   public static getLoadedAnimationClipNames(): string[] {
@@ -501,6 +549,22 @@ export class CharacterMesh {
   public gliderGroup: THREE.Group;
   public shieldAura: THREE.Mesh;
   public currentAnimState: CharacterAnimState = 'idle';
+  public presentationState: PresentationState = 'ready';
+  private reducedDetail = false;
+  public setReducedDetail(reduced: boolean): void {
+    if (this.reducedDetail === reduced) return;
+    this.reducedDetail = reduced;
+    for (const material of [this.torsoMat, this.gltfBodyMat]) {
+      if (!material) continue;
+      material.bumpMap = reduced ? null : this.armorTexture;
+      material.needsUpdate = true;
+    }
+  }
+  private wasGrounded = true;
+  private landingTimer = 0;
+  private wasAlive = true;
+  private eliminationTimer = 0;
+  private disposed = false;
 
   // GLTF Skeleton & AnimationMixer State
   public mixer: THREE.AnimationMixer | null = null;
@@ -516,6 +580,8 @@ export class CharacterMesh {
     shoot?: THREE.AnimationAction;
     reload?: THREE.AnimationAction;
     tpose?: THREE.AnimationAction;
+    ready?: THREE.AnimationAction;
+    switch?: THREE.AnimationAction;
   } = {};
   public gltfBones: GLTFBoneRefs = {};
   private gltfBodyMat: THREE.MeshStandardMaterial | null = null;
@@ -549,7 +615,6 @@ export class CharacterMesh {
   private swayPitchOffset: number = 0;
   private aimPoseBlend: number = 0;
   private reloadPoseBlend: number = 0;
-  private airbornePoseBlend: number = 0;
   private turnLean: number = 0;
   private weaponSwitchDipY: number = 0;
   private weaponSwitchRoll: number = 0;
@@ -558,10 +623,18 @@ export class CharacterMesh {
   private accentMat: THREE.MeshStandardMaterial;
   private armorTexture: THREE.CanvasTexture | null = null;
   private tempHandWorldPos = new THREE.Vector3();
-  private tempSpineWorldPos = new THREE.Vector3();
-  private lodFrameToggle: boolean = false;
-  private lodFrameCounter: number = 0;
   private accumulatedMixerDt: number = 0;
+  private attachmentRest = new Map<THREE.Object3D, THREE.Matrix4>();
+  private attachmentBindings: Array<{ object: THREE.Object3D; bone: THREE.Object3D; inverseBind: THREE.Matrix4 }> = [];
+  private attachmentBodyInverse = new THREE.Matrix4();
+  private attachmentMatrix = new THREE.Matrix4();
+  private ikPoints = Array.from({ length: 8 }, () => new THREE.Vector3());
+  private ikRotations = Array.from({ length: 4 }, () => new THREE.Quaternion());
+  private weaponMagazine: THREE.Object3D | undefined;
+  private weaponSlide: THREE.Object3D | undefined;
+  private weaponMagazineRotation = new THREE.Euler();
+  private packOffset = new THREE.Matrix4().makeTranslation(0, 1.32, 0.16);
+  private baseBonePoses = new Map<THREE.Object3D, THREE.Quaternion>();
 
   constructor(playerState: PlayerState) {
     this.playerId = playerState.id;
@@ -901,7 +974,7 @@ export class CharacterMesh {
     if (CharacterMesh.sharedGLTFTemplate) {
       this.upgradeToRiggedGLTFModel();
     } else {
-      CharacterMesh.pendingInstances.add(this);
+      if (CharacterMesh.assetStatus !== 'failed') CharacterMesh.pendingInstances.add(this);
       CharacterMesh.ensureSharedGLBLoaded();
     }
   }
@@ -912,7 +985,7 @@ export class CharacterMesh {
    */
   public upgradeToRiggedGLTFModel(): void {
     const template = CharacterMesh.sharedGLTFTemplate;
-    if (!template || this.isUsingGLTF) return;
+    if (!template || this.isUsingGLTF || this.disposed) return;
 
     try {
       const clonedScene = cloneSkeleton(template.scene) as THREE.Group;
@@ -955,7 +1028,7 @@ export class CharacterMesh {
             customBodyMat.roughness = profile.roughness;
             customBodyMat.metalness = profile.metalness;
             customBodyMat.envMapIntensity = profile.envMapIntensity;
-            if (this.armorTexture) {
+            if (this.armorTexture && !this.reducedDetail) {
               customBodyMat.bumpMap = this.armorTexture;
               customBodyMat.bumpScale = 0.012;
             }
@@ -993,6 +1066,9 @@ export class CharacterMesh {
         leftFoot: clonedScene.getObjectByName('mixamorigLeftFoot'),
       };
 
+      for (const bone of Object.values(this.gltfBones)) {
+        if (bone) this.baseBonePoses.set(bone, bone.quaternion.clone());
+      }
       // Set up Three.js AnimationMixer with embedded & retargeted GLB clips
       this.mixer = new THREE.AnimationMixer(clonedScene);
       const findClip = (name: string) => template.animations.find((a) => a.name === name);
@@ -1045,10 +1121,30 @@ export class CharacterMesh {
       if (reloadClip) {
         this.gltfActions.reload = this.mixer.clipAction(reloadClip);
       }
+      this.gltfActions.ready = this.mixer.clipAction(findClip('Ready')!);
+      this.gltfActions.switch = this.mixer.clipAction(findClip('Switch')!);
+      for (const key of ['sprint', 'jump', 'fall', 'land', 'aim', 'shoot', 'reload', 'ready', 'switch'] as const) {
+        const action = this.gltfActions[key];
+        if (!action) continue;
+        if (key === 'jump' || key === 'fall' || key === 'land') {
+          // These are authored local rotation offsets, not replacement motion capture.
+          action.blendMode = THREE.AdditiveAnimationBlendMode;
+        }
+        action.setEffectiveWeight(0).play();
+      }
       if (tposeClip) {
         this.gltfActions.tpose = this.mixer.clipAction(tposeClip);
       }
 
+      // Sample the embedded idle pose before recording socket reference frames.
+      this.mixer.update(0);
+      this.root.updateMatrixWorld(true);
+      this.attachmentBodyInverse.copy(this.bodyGroup.matrixWorld).invert();
+      for (const bone of Object.values(this.gltfBones)) {
+        if (bone) this.attachmentRest.set(bone,
+          new THREE.Matrix4().multiplyMatrices(this.attachmentBodyInverse, bone.matrixWorld));
+      }
+      this.bindOutfitAttachments();
       // Move weaponSocket into bodyGroup so it tracks mixamorigRightHand at 1:1 world scale
       this.bodyGroup.add(this.weaponSocket);
       this.weaponSocket.position.set(0.18, 1.22, -0.28);
@@ -1060,7 +1156,21 @@ export class CharacterMesh {
     } catch {
       // If cloning or binding fails, keep procedural fallback active
       this.isUsingGLTF = false;
+      this.mixer?.stopAllAction();
+      if (this.mixer) this.mixer.uncacheRoot(this.mixer.getRoot());
+      this.mixer = null;
+      this.gltfModelGroup?.removeFromParent();
+      this.gltfModelGroup?.traverse(object => {
+        if (object instanceof THREE.SkinnedMesh) object.skeleton.dispose();
+      });
+      this.gltfBodyMat?.dispose(); this.gltfVisorMat?.dispose();
+      this.gltfBodyMat = null; this.gltfVisorMat = null;
+      this.gltfModelGroup = null;
+      this.gltfActions = {}; this.baseBonePoses.clear(); this.attachmentRest.clear();
+      this.rightElbowPivot.add(this.weaponSocket);
+      this.bodyGroup.add(this.proceduralFallbackGroup);
       this.proceduralFallbackGroup.visible = true;
+      this.rebuildOutfitAttachments();
     }
   }
 
@@ -1078,7 +1188,7 @@ export class CharacterMesh {
       this.gltfBodyMat.roughness = profile.roughness;
       this.gltfBodyMat.metalness = profile.metalness;
       this.gltfBodyMat.envMapIntensity = profile.envMapIntensity;
-      if (this.armorTexture && !this.gltfBodyMat.bumpMap) {
+      if (this.armorTexture && !this.reducedDetail && !this.gltfBodyMat.bumpMap) {
         this.gltfBodyMat.bumpMap = this.armorTexture;
         this.gltfBodyMat.bumpScale = 0.012;
         this.gltfBodyMat.needsUpdate = true;
@@ -1094,17 +1204,14 @@ export class CharacterMesh {
 
   private disposeOutfitAttachments(): void {
     if (!this.outfitAttachmentGroup) return;
+    this.attachmentBindings = [];
     this.bodyGroup.remove(this.outfitAttachmentGroup);
-    this.outfitAttachmentGroup.traverse((child) => {
-      const mesh = child as THREE.Mesh;
-      if (!mesh.isMesh || !mesh.material) return;
-      // Geometry is one of the module-level shared unit primitives.
-      if (Array.isArray(mesh.material)) {
-        mesh.material.forEach((material) => material.dispose());
-      } else {
-        mesh.material.dispose();
-      }
+    const materials = new Set<THREE.Material>();
+    this.outfitAttachmentGroup.traverse(child => {
+      if (!(child instanceof THREE.Mesh)) return;
+      for (const mat of Array.isArray(child.material) ? child.material : [child.material]) materials.add(mat);
     });
+    materials.forEach(material => material.dispose());
     this.outfitAttachmentGroup = null;
   }
 
@@ -1247,19 +1354,66 @@ export class CharacterMesh {
 
     this.outfitAttachmentGroup = group;
     this.bodyGroup.add(group);
+    this.bindOutfitAttachments();
+  }
+
+  /** Rigid bone followers, not skinned armor. Authoring is in metre-scale body space. */
+  private bindOutfitAttachments(): void {
+    this.attachmentBindings = [];
+    if (!this.outfitAttachmentGroup || !this.attachmentRest.size) return;
+    this.outfitAttachmentGroup.position.set(0, 0, 0);
+    this.outfitAttachmentGroup.rotation.set(0, 0, 0);
+    for (const object of this.outfitAttachmentGroup.children) {
+      const y = object.position.y;
+      const bone = y > 1.72 ? this.gltfBones.head
+        : object.name.includes('left_pauldron') ? this.gltfBones.leftArm
+        : object.name.includes('right_pauldron') ? this.gltfBones.rightArm
+        : y < 1.1 ? this.gltfBones.hips : this.gltfBones.spine2;
+      const rest = bone && this.attachmentRest.get(bone);
+      if (!bone || !rest) continue;
+      object.updateMatrix();
+      // Keep the authored silhouette, but align head ornaments to the actual
+      // head base (the bundled soldier is shorter than the fallback helmet).
+      const authored = object.matrix.clone();
+      if (y > 1.72) authored.elements[13] += rest.elements[13] - 1.68;
+      const inverseBind = rest.clone().invert().multiply(authored);
+      object.matrixAutoUpdate = false;
+      this.attachmentBindings.push({ object, bone, inverseBind });
+    }
+  }
+
+  private updateOutfitAttachments(): void {
+    if (!this.outfitAttachmentGroup?.visible) return;
+    this.root.updateMatrixWorld(true);
+    this.attachmentBodyInverse.copy(this.bodyGroup.matrixWorld).invert();
+    for (const { object, bone, inverseBind } of this.attachmentBindings) {
+      object.matrix.multiplyMatrices(this.attachmentBodyInverse, bone.matrixWorld).multiply(inverseBind);
+      object.matrixWorldNeedsUpdate = true;
+    }
+    if (this.jumpPackGroup && this.gltfBones.spine2) {
+      const rest = this.attachmentRest.get(this.gltfBones.spine2);
+      if (rest) {
+        this.attachmentMatrix.copy(rest).invert();
+        this.jumpPackGroup.matrixAutoUpdate = false;
+        this.jumpPackGroup.matrix.multiplyMatrices(this.attachmentBodyInverse, this.gltfBones.spine2.matrixWorld)
+          .multiply(this.attachmentMatrix).multiply(this.packOffset);
+        this.jumpPackGroup.matrixWorldNeedsUpdate = true;
+      }
+    }
   }
 
   private rebuildBackAccessory(): void {
     if (this.jumpPackGroup) {
       this.bodyGroup.remove(this.jumpPackGroup);
-      this.jumpPackGroup.traverse((obj) => {
-        const m = obj as THREE.Mesh;
-        if (m.geometry) m.geometry.dispose();
-        if (m.material) {
-          if (Array.isArray(m.material)) m.material.forEach((mat) => mat.dispose());
-          else m.material.dispose();
-        }
+      const geometries = new Set<THREE.BufferGeometry>();
+      const materials = new Set<THREE.Material>();
+      this.jumpPackGroup.traverse(obj => {
+        if (!(obj instanceof THREE.Mesh)) return;
+        geometries.add(obj.geometry);
+        for (const mat of Array.isArray(obj.material) ? obj.material : [obj.material]) materials.add(mat);
       });
+      geometries.forEach(geometry => geometry.dispose());
+      materials.forEach(material => material.dispose());
     }
 
     this.jumpPackGroup = new THREE.Group();
@@ -1439,15 +1593,10 @@ export class CharacterMesh {
       if (outer && outer.material) {
         const mat = outer.material as THREE.MeshBasicMaterial;
         mat.color.setHex(
-          cat === 'sniper' || cat === 'dmr'
-            ? 0x38bdf8
-            : cat === 'burst_rifle'
-              ? 0xa5f3fc
-              : cat === 'heavy_pistol'
-                ? 0xfda4af
-                : cat === 'shotgun' || cat === 'tactical_shotgun'
-                  ? 0xf97316
-                  : 0xfacc15
+          cat === 'sniper' || cat === 'dmr' ? 0x38bdf8
+            : cat === 'burst_rifle' ? 0xa5f3fc
+            : cat === 'heavy_pistol' ? 0xfda4af
+            : cat === 'shotgun' || cat === 'tactical_shotgun' ? 0xf97316 : 0xfacc15
         );
       }
     }
@@ -1485,20 +1634,46 @@ export class CharacterMesh {
       if (typeof child.userData.baseY !== 'number') child.userData.baseY = child.position.y;
       if (typeof child.userData.baseZ !== 'number') child.userData.baseZ = child.position.z;
     });
+    this.weaponSocket.add(model);
     if (category === 'harvester') {
       model.rotation.x = -Math.PI / 3;
     } else {
       const tip = model.getObjectByName('muzzle_tip');
       if (tip) {
-        this.muzzleFlashMesh.position.copy(tip.position);
+        this.root.updateMatrixWorld(true);
+        tip.getWorldPosition(this.tempHandWorldPos);
+        this.muzzleFlashMesh.position.copy(this.weaponSocket.worldToLocal(this.tempHandWorldPos));
       }
     }
-    this.weaponSocket.add(model);
+    this.weaponMagazine = model.getObjectByName('weapon_mag');
+    this.weaponSlide = model.getObjectByName('weapon_slide');
+    if (this.weaponMagazine) this.weaponMagazineRotation.copy(this.weaponMagazine.rotation);
   }
 
   public update(state: PlayerState, dt: number, cameraPos?: THREE.Vector3): void {
-    this.root.visible = state.alive;
-    if (!state.alive) return;
+    if (this.disposed) return;
+    if (this.wasAlive && !state.alive) this.eliminationTimer = 0.3;
+    if (!this.wasAlive && state.alive) {
+      this.root.scale.setScalar(1);
+      this.equipAnimTimer = 0.24;
+      this.landingTimer = 0;
+      this.wasGrounded = state.isGrounded;
+    }
+    this.wasAlive = state.alive;
+    if (!state.alive) {
+      this.presentationState = 'eliminated';
+      this.eliminationTimer = Math.max(0, this.eliminationTimer - dt);
+      this.root.visible = this.eliminationTimer > 0;
+      this.root.scale.setScalar(this.eliminationTimer / 0.3);
+      this.muzzleFlashMesh.visible = false;
+      return;
+    }
+    this.root.visible = true;
+    if (!this.wasGrounded && state.isGrounded && !state.isGliding) this.landingTimer = 0.18;
+    this.wasGrounded = state.isGrounded;
+    this.landingTimer = Math.max(0, this.landingTimer - dt);
+    this.presentationState = selectPresentationState(state, this.attackSwingTimer,
+      this.equipAnimTimer, this.landingTimer);
 
     this.setCosmetics(
       state.skinColor,
@@ -1608,7 +1783,7 @@ export class CharacterMesh {
     if (this.outfitAttachmentGroup) {
       // Cosmetic micro-geometry is the first character detail shed at range;
       // the body, weapon and back accessory remain visible.
-      this.outfitAttachmentGroup.visible = !cameraPos || distToCamera <= 70;
+      this.outfitAttachmentGroup.visible = !cameraPos || distToCamera <= (this.reducedDetail ? 35 : 70);
     }
 
     if (state.isBot && cameraPos && (state.health < 100 || state.shield < 50)) {
@@ -1629,9 +1804,8 @@ export class CharacterMesh {
 
     // Landing Impact Squash & Knee Compression
     let landDipY = 0;
-    if (state.landingImpactTimer > 0) {
-      state.landingImpactTimer = Math.max(0, state.landingImpactTimer - dt);
-      const squash = Math.sin((state.landingImpactTimer / 0.18) * Math.PI) * 0.12;
+    if (this.landingTimer > 0) {
+      const squash = Math.sin((this.landingTimer / 0.18) * Math.PI) * 0.035;
       this.bodyGroup.scale.set(1 + squash * 0.4, 1 - squash, 1 + squash * 0.4);
       landDipY = -squash * 0.35;
     } else {
@@ -1653,7 +1827,7 @@ export class CharacterMesh {
         this.currentAnimState = 'walk';
       }
     } else {
-      this.currentAnimState = state.landingImpactTimer > 0 ? 'land' : 'idle';
+      this.currentAnimState = this.landingTimer > 0 ? 'land' : 'idle';
     }
 
     const activeCat = slot ? slot.category : 'harvester';
@@ -1687,6 +1861,23 @@ export class CharacterMesh {
         drawTilt
       );
     }
+    // Component mechanics are shared by both character paths. A cylinder swings
+    // out sideways, a drum lowers as a unit; neither pretends to be a box mag.
+    if (this.weaponMagazine) {
+      const mag = this.weaponMagazine;
+      mag.position.x = mag.userData.baseX;
+      mag.rotation.copy(this.weaponMagazineRotation);
+      const pose = getReloadAnimationPose(state.reloadTimer, state.reloadDuration, this.reloadAnimClock);
+      const style = getWeaponVisualProfile(activeCat).magazineStyle;
+      if (state.isReloading && style === 'cylinder') {
+        const swing = Math.sin(pose.progress * Math.PI);
+        mag.position.y = mag.userData.baseY;
+        mag.position.x -= swing * 0.09;
+        mag.rotation.z += swing * 0.45;
+      } else if (state.isReloading && style === 'drum') {
+        mag.rotation.x += Math.sin(pose.progress * Math.PI) * 0.18;
+      }
+    }
   }
 
   /**
@@ -1694,6 +1885,32 @@ export class CharacterMesh {
    * velocity-proportional stride timeScale and smooth upper-body pose blending
    * for Sprint, Jump, Fall, Land, Aim, Shoot, Reload, Weapon Sway, and Right-Hand Tracking.
    */
+  private updateClipLayers(state: PlayerState, dt: number): void {
+    const upper = state.isGliding || this.activeWeaponCategory === 'harvester' ? null
+      : state.isReloading ? 'reload' : this.equipAnimTimer > 0 ? 'switch'
+      : this.attackSwingTimer > 0 ? 'shoot' : state.isAiming ? 'aim' : 'ready';
+    const blend = 1 - Math.exp(-dt * 18);
+    for (const key of ['jump', 'fall', 'land', 'aim', 'shoot', 'reload', 'ready', 'switch', 'sprint'] as const) {
+      const action = this.gltfActions[key];
+      if (!action) continue;
+      const selected = key === upper || key === this.currentAnimState;
+      action.setEffectiveWeight(THREE.MathUtils.lerp(action.getEffectiveWeight(), selected ? 1 : 0, blend));
+      if (key === 'reload' || key === 'switch' || key === 'shoot' || key === 'land') {
+        const progress = key === 'reload'
+          ? getReloadAnimationPose(state.reloadTimer, state.reloadDuration, this.reloadAnimClock).progress
+          : key === 'switch' ? 1 - this.equipAnimTimer / 0.24
+          : key === 'shoot' ? 1 - this.attackSwingTimer / 0.22 : 1 - this.landingTimer / 0.18;
+        action.paused = true;
+        action.time = THREE.MathUtils.clamp(progress, 0, 1) * action.getClip().duration;
+      }
+    }
+    // Sprint uses its own derived Run clip rather than doubling the run action.
+    if (this.gltfActions.run) this.gltfActions.run.setEffectiveWeight(
+      this.gltfActions.run.getEffectiveWeight() * (1 - (this.gltfActions.sprint?.getEffectiveWeight() ?? 0)));
+    this.gltfActions.sprint?.setEffectiveTimeScale(Math.max(1, Math.min(1.5,
+      Math.hypot(state.velocity.x, state.velocity.z) / 7.2)));
+  }
+
   private updateRiggedGLTFAnimation(
     state: PlayerState,
     dt: number,
@@ -1703,18 +1920,12 @@ export class CharacterMesh {
     drawTilt: number,
     distToCamera: number
   ): void {
-    // 4-Tier Distance-Based Animation LOD:
-    // < 42m: 60Hz (every frame), 42..85m: 30Hz (every 2nd), 85..145m: 15Hz (every 4th), >145m: 10Hz (every 6th)
+    // Time-based budgets behave consistently on both 30Hz phones and 144Hz desktops.
     this.accumulatedMixerDt += dt;
-    this.lodFrameCounter++;
-    if (distToCamera > 145) {
-      if (this.lodFrameCounter % 6 !== 0) return;
-    } else if (distToCamera > 85) {
-      if ((this.lodFrameCounter & 3) !== 0) return;
-    } else if (distToCamera > 42) {
-      if ((this.lodFrameCounter & 1) !== 0) return;
-    }
-    const stepDt = this.accumulatedMixerDt;
+    const interval = distToCamera > 145 ? 0.1 : distToCamera > 85 ? 1 / 15
+      : distToCamera > (this.reducedDetail ? 24 : 42) ? 1 / 30 : 0;
+    if (this.accumulatedMixerDt + 0.00001 < interval) return;
+    const stepDt = Math.min(0.2, this.accumulatedMixerDt);
     this.accumulatedMixerDt = 0;
 
     this.animTime += stepDt * 4.0;
@@ -1731,16 +1942,6 @@ export class CharacterMesh {
       state.isReloading ? 1.0 : 0.0,
       Math.min(1, stepDt * 12)
     );
-    const isAirborneOrLanding =
-      this.currentAnimState === 'jump' ||
-      this.currentAnimState === 'fall' ||
-      this.currentAnimState === 'land';
-    this.airbornePoseBlend = THREE.MathUtils.lerp(
-      this.airbornePoseBlend,
-      isAirborneOrLanding ? 1.0 : 0.0,
-      Math.min(1, stepDt * 14)
-    );
-
     // Procedural weapon sway from turn angular velocity + movement bob
     let yawDelta = state.yaw - this.prevAimYaw;
     if (yawDelta > Math.PI) yawDelta -= Math.PI * 2;
@@ -1801,34 +2002,17 @@ export class CharacterMesh {
       this.gltfActions.run.setEffectiveTimeScale(runTimeScale);
     }
 
+    this.updateClipLayers(state, stepDt);
+    // Undo previous procedural overlays before the mixer samples the next frame.
+    // Some bones have no tracks after pruning, so relying on mixer overwrite is unsafe.
+    for (const [bone, quaternion] of this.baseBonePoses) bone.quaternion.copy(quaternion);
     this.mixer!.update(stepDt);
+    for (const [bone, quaternion] of this.baseBonePoses) quaternion.copy(bone.quaternion);
 
     const b = this.gltfBones;
-    const airW = this.airbornePoseBlend;
 
-    // 2. Layer Airborne (Jump / Fall / Glide) & Landing Bone Poses on Legs & Spine
-    const airbornePose = getAirbornePose(state.velocity.y);
-    if (this.currentAnimState === 'jump') {
-      if (b.rightUpLeg) b.rightUpLeg.rotation.x -= (0.34 + airbornePose.riseBlend * 0.3) * airW;
-      if (b.rightLeg) b.rightLeg.rotation.x += airbornePose.legBend * airW;
-      if (b.leftUpLeg) b.leftUpLeg.rotation.x -= (0.2 + airbornePose.riseBlend * 0.18) * airW;
-      if (b.leftLeg) b.leftLeg.rotation.x += airbornePose.legBend * 0.72 * airW;
-      if (b.spine1) b.spine1.rotation.x += airbornePose.spinePitch * airW;
-    } else if (this.currentAnimState === 'fall') {
-      const flutter = Math.sin(this.animTime * 2.2) * 0.1;
-      if (b.rightUpLeg) b.rightUpLeg.rotation.x -= (0.2 + airbornePose.fallBlend * 0.18 + flutter) * airW;
-      if (b.rightLeg) b.rightLeg.rotation.x += airbornePose.legBend * 0.82 * airW;
-      if (b.leftUpLeg) b.leftUpLeg.rotation.x -= (0.16 + airbornePose.fallBlend * 0.14 - flutter) * airW;
-      if (b.leftLeg) b.leftLeg.rotation.x += airbornePose.legBend * 0.72 * airW;
-      if (b.spine1) b.spine1.rotation.x += airbornePose.spinePitch * 0.55 * airW;
-    } else if (this.currentAnimState === 'land') {
-      if (b.rightUpLeg) b.rightUpLeg.rotation.x -= 0.35 * airW;
-      if (b.rightLeg) b.rightLeg.rotation.x += 0.55 * airW;
-      if (b.leftUpLeg) b.leftUpLeg.rotation.x -= 0.35 * airW;
-      if (b.leftLeg) b.leftLeg.rotation.x += 0.55 * airW;
-    } else if (this.currentAnimState === 'sprint') {
-      if (b.spine1) b.spine1.rotation.x += 0.18 * (1 - this.aimPoseBlend * 0.7);
-    }
+    // Airborne offsets are now mixer actions; do not apply the same pose twice.
+    if (this.currentAnimState === 'sprint' && b.spine1) b.spine1.rotation.x += 0.1;
 
     // 3. Layer Head & Spine Aiming Tracking + Non-Interrupting Hit Reaction Flinch
     let relHeadYaw =
@@ -1895,14 +2079,7 @@ export class CharacterMesh {
       if (b.leftArm) b.leftArm.rotation.set(0.6, -0.9, 2.2);
     } else if (state.isReloading || this.reloadPoseBlend > 0.05) {
       this.reloadAnimClock += stepDt;
-      const rPhase = state.reloadTimer > 0 ? state.reloadTimer : this.reloadAnimClock;
-      const rWave = Math.sin(rPhase * 11) * 0.26 * this.reloadPoseBlend;
-      if (b.rightArm) b.rightArm.rotation.set(0.15, 0.75, 1.25 + rWave * 0.4);
-      if (b.rightForeArm) b.rightForeArm.rotation.set(1.1, 0.2, 0.45);
-      if (b.leftArm) b.leftArm.rotation.set(0.2, -0.8, 1.55 - rWave * 0.5);
-      if (b.leftForeArm) b.leftForeArm.rotation.set(-0.7, 0.2, 0.55 + rWave);
-
-      const magMesh = this.weaponSocket.getObjectByName('weapon_mag');
+      const magMesh = this.weaponMagazine;
       const reloadPose = getReloadAnimationPose(
         state.reloadTimer,
         state.reloadDuration,
@@ -1916,7 +2093,7 @@ export class CharacterMesh {
       }
     } else {
       this.reloadAnimClock = 0;
-      const magMesh = this.weaponSocket.getObjectByName('weapon_mag');
+      const magMesh = this.weaponMagazine;
       if (magMesh) {
         magMesh.position.y =
           typeof magMesh.userData.baseY === 'number' ? magMesh.userData.baseY : -0.09;
@@ -1929,37 +2106,9 @@ export class CharacterMesh {
             : 0;
         if (b.rightArm) b.rightArm.rotation.set(0.1, 0.65 + swing * 0.5, 1.15 + swing);
         if (b.rightForeArm) b.rightForeArm.rotation.set(0.95, 0.2, 0.35);
-      } else {
-        // Two-handed / Sighted Firearm Stance with smooth ADS elevation blend
-        const adsLift = this.aimPoseBlend * 0.12;
-        if (b.rightArm) {
-          b.rightArm.rotation.set(
-            0.2 - adsLift * 0.4,
-            0.85 + state.pitch * 0.35 + adsLift * 0.25,
-            1.35 + adsLift + recoilKick * 0.45
-          );
-        }
-        if (b.rightForeArm) {
-          b.rightForeArm.rotation.set(
-            1.2 + adsLift * 0.2,
-            0.25,
-            0.45 + recoilKick * 0.35
-          );
-        }
-        if (this.aimPoseBlend > 0.05 || isLongGun) {
-          if (b.leftArm) {
-            b.leftArm.rotation.set(
-              0.15,
-              -0.85 - state.pitch * 0.3,
-              1.65 + adsLift * 0.6 + recoilKick * 0.35
-            );
-          }
-          if (b.leftForeArm) {
-            b.leftForeArm.rotation.set(-0.65, 0.2, 0.55);
-          }
-        }
       }
     }
+
 
     // 5. Sync weaponSocket position to mixamorigRightHand & jumpPackGroup to mixamorigSpine2 in bodyGroup space
     const moveBobY =
@@ -1970,7 +2119,7 @@ export class CharacterMesh {
     const adsLiftOffsetY = this.aimPoseBlend * 0.03;
 
     if (b.rightHand && this.gltfModelGroup && distToCamera < 72) {
-      this.gltfModelGroup.updateMatrixWorld(true);
+      this.root.updateMatrixWorld(true);
       b.rightHand.getWorldPosition(this.tempHandWorldPos);
       this.bodyGroup.worldToLocal(this.tempHandWorldPos);
       this.weaponSocket.position.set(
@@ -1978,22 +2127,7 @@ export class CharacterMesh {
         this.tempHandWorldPos.y + 0.04 + adsLiftOffsetY + moveBobY + this.weaponSwitchDipY,
         this.tempHandWorldPos.z - 0.1 + recoilKick * 0.14
       );
-      if (b.spine2 && this.jumpPackGroup) {
-        b.spine2.getWorldPosition(this.tempSpineWorldPos);
-        this.bodyGroup.worldToLocal(this.tempSpineWorldPos);
-        this.jumpPackGroup.position.set(
-          this.tempSpineWorldPos.x,
-          this.tempSpineWorldPos.y + 0.04,
-          this.tempSpineWorldPos.z + 0.15
-        );
-        if (this.outfitAttachmentGroup) {
-          this.outfitAttachmentGroup.position.set(
-            this.tempSpineWorldPos.x,
-            this.tempSpineWorldPos.y - 1.28,
-            this.tempSpineWorldPos.z
-          );
-        }
-      }
+
     } else {
       this.weaponSocket.position.set(
         0.18 + adsCenterOffsetX,
@@ -2002,7 +2136,7 @@ export class CharacterMesh {
       );
     }
 
-    const slideMesh = this.weaponSocket.getObjectByName('weapon_slide');
+    const slideMesh = this.weaponSlide;
     if (slideMesh) {
       const baseZ =
         typeof slideMesh.userData?.baseZ === 'number'
@@ -2017,6 +2151,46 @@ export class CharacterMesh {
       this.swayYawOffset,
       -this.swayYawOffset * 0.5 + this.weaponSwitchRoll
     );
+    if (distToCamera < (this.reducedDetail ? 22 : 45) && !state.isReloading &&
+        this.reloadPoseBlend < 0.05 && !state.isGliding && activeCat !== 'harvester') {
+      this.alignSupportHand(isLongGun);
+    }
+    this.updateOutfitAttachments();
+  }
+
+  /** Two-bone support-hand IK. Cosmetic only; the gameplay ray never reads it. */
+  private alignSupportHand(longGun: boolean): void {
+    const upper = this.gltfBones.leftArm, lower = this.gltfBones.leftForeArm, hand = this.gltfBones.leftHand;
+    if (!upper || !lower || !hand) return;
+    const [a, b, c, target, axis, pole, elbow, direction] = this.ikPoints;
+    this.root.updateMatrixWorld(true);
+    upper.getWorldPosition(a); lower.getWorldPosition(b); hand.getWorldPosition(c);
+    target.set(0, longGun ? 0.015 : -0.035, longGun ? -0.26 : 0.015);
+    this.weaponSocket.localToWorld(target);
+    const l1 = a.distanceTo(b), l2 = b.distanceTo(c);
+    if (l1 < 0.001 || l2 < 0.001) return;
+    axis.subVectors(target, a);
+    const distance = THREE.MathUtils.clamp(axis.length(), Math.abs(l1 - l2) + 0.001, l1 + l2 - 0.001);
+    axis.normalize();
+    target.copy(a).addScaledVector(axis, distance);
+    pole.subVectors(b, a).addScaledVector(axis, -direction.subVectors(b, a).dot(axis));
+    if (pole.lengthSq() < 0.00001) pole.set(0, -1, 0).addScaledVector(axis, axis.y);
+    pole.normalize();
+    const along = (l1 * l1 - l2 * l2 + distance * distance) / (2 * distance);
+    elbow.copy(a).addScaledVector(axis, along).addScaledVector(pole, Math.sqrt(Math.max(0, l1 * l1 - along * along)));
+    const [rotation, world, parent, delta] = this.ikRotations;
+    const rotateTo = (bone: THREE.Object3D, from: THREE.Vector3, to: THREE.Vector3, origin: THREE.Vector3) => {
+      axis.subVectors(from, origin).normalize(); direction.subVectors(to, origin).normalize();
+      delta.setFromUnitVectors(axis, direction);
+      bone.getWorldQuaternion(world);
+      bone.parent!.getWorldQuaternion(parent).invert();
+      rotation.copy(parent).multiply(delta).multiply(world);
+      bone.quaternion.copy(rotation);
+      bone.updateWorldMatrix(false, true);
+    };
+    rotateTo(upper, b, elbow, a);
+    lower.getWorldPosition(b); hand.getWorldPosition(c);
+    rotateTo(lower, c, target, b);
   }
 
   /**
@@ -2115,7 +2289,7 @@ export class CharacterMesh {
       targetLeftElbowX = 0.14;
       targetSpineX = breathe * 0.55;
       targetPelvisBobY = breathe * 0.25;
-      if (state.landingImpactTimer > 0) {
+      if (this.landingTimer > 0) {
         targetLeftKneeX = -0.35;
         targetRightKneeX = -0.35;
       }
@@ -2198,7 +2372,7 @@ export class CharacterMesh {
       this.leftElbowPivot.rotation.x = 0.52;
       this.weaponSocket.position.z = -0.14;
 
-      const magMesh = this.weaponSocket.getObjectByName('weapon_mag');
+      const magMesh = this.weaponMagazine;
       const reloadPose = getReloadAnimationPose(
         state.reloadTimer,
         state.reloadDuration,
@@ -2209,7 +2383,7 @@ export class CharacterMesh {
           typeof magMesh.userData.baseY === 'number' ? magMesh.userData.baseY : -0.09;
         magMesh.position.y = baseY + reloadPose.magazineOffsetY;
       }
-      const slideMesh = this.weaponSocket.getObjectByName('weapon_slide');
+      const slideMesh = this.weaponSlide;
       if (slideMesh) {
         const baseZ =
           typeof slideMesh.userData.baseZ === 'number' ? slideMesh.userData.baseZ : -0.16;
@@ -2217,7 +2391,7 @@ export class CharacterMesh {
       }
     } else {
       this.reloadAnimClock = 0;
-      const magMesh = this.weaponSocket.getObjectByName('weapon_mag');
+      const magMesh = this.weaponMagazine;
       if (magMesh) {
         magMesh.position.y =
           typeof magMesh.userData.baseY === 'number' ? magMesh.userData.baseY : -0.09;
@@ -2237,7 +2411,7 @@ export class CharacterMesh {
           this.rightArmPivot.rotation.x = Math.PI * 0.48 + state.pitch * 0.6 + kick;
           this.spinePivot.rotation.x -= kick * 0.18;
           this.weaponSocket.position.z = -0.14 + kick * 0.14;
-          const slideMesh = this.weaponSocket.getObjectByName('weapon_slide');
+          const slideMesh = this.weaponSlide;
           if (slideMesh) {
             const baseZ =
               typeof slideMesh.userData.baseZ === 'number'
@@ -2262,7 +2436,7 @@ export class CharacterMesh {
       } else {
         this.rightArmPivot.rotation.x = Math.PI * 0.46 + state.pitch * 0.65;
         this.weaponSocket.position.z = -0.14;
-        const slideMesh = this.weaponSocket.getObjectByName('weapon_slide');
+        const slideMesh = this.weaponSlide;
         if (slideMesh) {
           slideMesh.position.z =
             typeof slideMesh.userData.baseZ === 'number'
@@ -2284,39 +2458,44 @@ export class CharacterMesh {
   }
 
   public dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     CharacterMesh.pendingInstances.delete(this);
     this.disposeOutfitAttachments();
     if (this.mixer) {
       this.mixer.stopAllAction();
+      this.mixer.uncacheRoot(this.mixer.getRoot());
       this.mixer = null;
     }
-    this.armorTexture = null;
-    if (this.gltfBodyMat) {
-      this.gltfBodyMat.dispose();
-      this.gltfBodyMat = null;
-    }
-    if (this.gltfVisorMat) {
-      this.gltfVisorMat.dispose();
-      this.gltfVisorMat = null;
-    }
-    if (this.jumpPackGroup) {
-      this.jumpPackGroup.traverse((child) => {
-        const m = child as THREE.Mesh;
-        if (m.geometry) m.geometry.dispose();
-        if (m.material) {
-          if (Array.isArray(m.material)) m.material.forEach((mat) => mat.dispose());
-          else m.material.dispose();
-        }
-      });
-      this.jumpPackGroup = null;
-    }
-    this.proceduralFallbackGroup.traverse((child) => {
-      const m = child as THREE.Mesh;
-      if (m.geometry) m.geometry.dispose();
-      if (m.material) {
-        if (Array.isArray(m.material)) m.material.forEach((mat) => mat.dispose());
-        else m.material.dispose();
-      }
+    const skeletons = new Set<THREE.Skeleton>();
+    this.gltfModelGroup?.traverse(child => {
+      if (child instanceof THREE.SkinnedMesh) skeletons.add(child.skeleton);
     });
+    skeletons.forEach(skeleton => skeleton.dispose());
+    this.gltfModelGroup?.removeFromParent(); // shared geometry & textures live with template
+    this.gltfBodyMat?.dispose();
+    this.gltfVisorMat?.dispose();
+    this.gltfBodyMat = null;
+    this.gltfVisorMat = null;
+    // Weapon meshes clone the shared weapon library; never dispose their buffers here.
+    this.weaponSocket.removeFromParent();
+    this.root.add(this.muzzleFlashMesh, this.proceduralFallbackGroup);
+    const geometries = new Set<THREE.BufferGeometry>();
+    const materials = new Set<THREE.Material>();
+    this.root.traverse(child => {
+      if (!(child instanceof THREE.Mesh)) return;
+      geometries.add(child.geometry);
+      for (const mat of Array.isArray(child.material) ? child.material : [child.material]) materials.add(mat);
+    });
+    geometries.forEach(geometry => geometry.dispose());
+    materials.forEach(material => material.dispose());
+    this.baseBonePoses.clear();
+    this.attachmentRest.clear();
+    this.gltfActions = {};
+    this.weaponSocket.clear();
+    this.root.clear();
+    this.root.removeFromParent();
+    this.armorTexture = null;
+    this.jumpPackGroup = null;
   }
 }
