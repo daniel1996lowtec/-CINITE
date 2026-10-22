@@ -731,13 +731,13 @@
     <!-- Text-only lobby chat. Independent of match HUD so it also works pre-match. -->
     <section id="text-chat" hidden aria-label="Lobby text chat" data-allow-game-keyboard="true">
       <button id="chat-toggle" type="button" aria-expanded="false" aria-controls="chat-panel" title="Lobby text chat (T during a match)">
-        CHAT <span id="chat-unread" hidden aria-live="polite">0</span>
+        <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 4h16v12H9l-5 4V4Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg> CHAT <span id="chat-unread" hidden aria-live="polite">0</span>
       </button>
       <div id="chat-panel" hidden>
         <ol id="chat-log" role="log" aria-label="Lobby messages" aria-live="polite" aria-relevant="additions" tabindex="0"></ol>
         <form id="chat-form" autocomplete="off">
-          <input id="chat-input" type="text" maxlength="240" aria-label="Message to this lobby" placeholder="Message…" enterkeyhint="send" autocomplete="off" />
-          <button id="chat-send" type="button">Send</button>
+          <input id="chat-input" disabled type="text" maxlength="240" aria-label="Message to this lobby" placeholder="Message…" enterkeyhint="send" autocomplete="off" />
+          <button id="chat-send" disabled type="button">Send</button>
         </form>
         <p id="chat-status" role="status"></p>
       </div>

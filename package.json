@@ -23,7 +23,8 @@
     "test:branding": "node --test tests/worldBranding.test.mjs",
     "test:branding:browser": "node scripts/worldBranding.browser.mjs",
     "test:chat": "node --test tests/textChat.test.mjs tests/textChat.integration.test.mjs",
-    "test:chat:browser": "node scripts/textChat.browser.mjs"
+    "test:chat:browser": "node scripts/textChat.browser.mjs",
+    "test:chat:game": "node scripts/textChat.game.browser.mjs"
   },
   "engines": {
     "node": "22.14.0"

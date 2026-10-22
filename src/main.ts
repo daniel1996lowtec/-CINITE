@@ -42,7 +42,7 @@ window.addEventListener('DOMContentLoaded', () => {
     text => engine.network.sendChat(text), () => {
       engine.keys.clear(); engine.clearTransientInput();
       if (document.pointerLockElement) document.exitPointerLock();
-    });
+    }, () => engine.network.isOnlineRoom);
   window.addEventListener('pagehide', event => {
     if (!event.persisted) textChat.destroy();
   });
@@ -1228,7 +1228,7 @@ window.addEventListener('DOMContentLoaded', () => {
   // Keyboard Controls
   window.addEventListener('keydown', (e) => {
     if (isTextEntryElement(e.target) || textChat.ownsTarget(e.target)) return;
-    if (e.code === 'KeyT' && engine.isRunningMatch && !engine.isPaused && engine.network.textChat.roomCode) {
+    if (e.code === 'KeyT' && engine.isRunningMatch && !engine.isPaused) {
       e.preventDefault(); textChat.open(true); return;
     }
     if (e.code === 'F3') {
