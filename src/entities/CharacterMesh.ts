@@ -65,6 +65,7 @@ export interface GLTFBoneRefs {
 }
 
 let sharedTacticalArmorTexture: THREE.CanvasTexture | null | undefined;
+let sharedParachuteFabricTexture: THREE.CanvasTexture | null | undefined;
 
 function createTacticalArmorTexture(): THREE.CanvasTexture | null {
   if (sharedTacticalArmorTexture !== undefined) {
@@ -75,45 +76,262 @@ function createTacticalArmorTexture(): THREE.CanvasTexture | null {
     return null;
   }
   const canvas = document.createElement('canvas');
-  canvas.width = 64;
-  canvas.height = 64;
+  canvas.width = 128;
+  canvas.height = 128;
   const ctx = canvas.getContext('2d');
   if (!ctx) {
     sharedTacticalArmorTexture = null;
     return null;
   }
 
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, 64, 64);
-  ctx.fillStyle = 'rgba(15, 23, 42, 0.12)';
-  for (let y = 0; y < 64; y += 8) {
-    for (let x = 0; x < 64; x += 8) {
-      if ((x + y) % 16 === 0) {
-        ctx.fillRect(x, y, 4, 4);
+  ctx.fillStyle = '#f1f5f9';
+  ctx.fillRect(0, 0, 128, 128);
+  // Subtle diagonal ballistic carbon-weave & ripstop micro-grid
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.10)';
+  for (let y = 0; y < 128; y += 4) {
+    for (let x = 0; x < 128; x += 4) {
+      if (((x >> 2) + (y >> 2)) % 2 === 0) {
+        ctx.fillRect(x, y, 2, 2);
       }
     }
   }
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+  ctx.strokeStyle = 'rgba(15, 23, 42, 0.14)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 128; i += 16) {
+    ctx.beginPath();
+    ctx.moveTo(i, 0);
+    ctx.lineTo(i, 128);
+    ctx.moveTo(0, i);
+    ctx.lineTo(128, i);
+    ctx.stroke();
+  }
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
   ctx.lineWidth = 2;
-  ctx.strokeRect(2, 2, 60, 60);
+  ctx.strokeRect(2, 2, 124, 124);
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(2, 2);
+  tex.repeat.set(3, 3);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 4;
   sharedTacticalArmorTexture = tex;
   return tex;
 }
 
-// Shared unit geometries for every procedural outfit attachment. Each mesh
-// only changes scale/rotation, so six cosmetic silhouettes add no unique
-// BufferGeometry allocations per player.
-const OUTFIT_BOX_GEO = new THREE.BoxGeometry(1, 1, 1);
-const OUTFIT_CYLINDER_GEO = new THREE.CylinderGeometry(0.5, 0.5, 1, 10);
-const OUTFIT_CONE_GEO = new THREE.ConeGeometry(0.5, 1, 8);
-const OUTFIT_OCTA_GEO = new THREE.OctahedronGeometry(0.5, 0);
+function createParachuteFabricTexture(): THREE.CanvasTexture | null {
+  if (sharedParachuteFabricTexture !== undefined) {
+    return sharedParachuteFabricTexture;
+  }
+  if (typeof document === 'undefined') {
+    sharedParachuteFabricTexture = null;
+    return null;
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    sharedParachuteFabricTexture = null;
+    return null;
+  }
+  ctx.fillStyle = '#f8fafc';
+  ctx.fillRect(0, 0, 128, 128);
+  ctx.strokeStyle = 'rgba(15, 23, 42, 0.12)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 128; i += 8) {
+    ctx.beginPath();
+    ctx.moveTo(i, 0);
+    ctx.lineTo(i, 128);
+    ctx.moveTo(0, i);
+    ctx.lineTo(128, i);
+    ctx.stroke();
+  }
+  ctx.strokeStyle = 'rgba(15, 23, 42, 0.26)';
+  ctx.lineWidth = 2;
+  for (let x = 0; x <= 128; x += 32) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, 128);
+    ctx.stroke();
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(4, 2);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  sharedParachuteFabricTexture = tex;
+  return tex;
+}
+
+/**
+ * Evaluates the 3D curved surface of the ram-air parafoil canopy at normalized
+ * span u in [-1, 1] and chord v in [0, 1] (0 = leading edge, 1 = trailing edge).
+ */
+function sampleParachuteCanopyPoint(
+  u: number,
+  v: number,
+  isUpperSurface: boolean,
+  target: THREE.Vector3
+): THREE.Vector3 {
+  const halfSpan = 1.28;
+  const chord = 1.12;
+  const x = u * halfSpan;
+  // Slight swept-back planform toward wingtips
+  const sweepZ = (u * u) * 0.08;
+  const z = (v - 0.46) * chord + sweepZ;
+  // Spanwise anhedral arch (curves downward smoothly toward wingtips)
+  const archY = -0.34 * (u * u) - 0.06 * (u * u * u * u);
+  // Chordwise airfoil camber + nose droop
+  const camberY = 0.115 * Math.sin(v * Math.PI) - 0.025 * v;
+  // Airfoil thickness envelope (thickest near 28% chord, tapers to trailing edge)
+  const airfoilHalfThick = 0.068 * Math.sin(Math.pow(THREE.MathUtils.clamp(v, 0, 1), 0.58) * Math.PI);
+  // 7 spanwise ram-air cells with pillowed fabric billow between stitched ribs
+  const cellWave = Math.abs(Math.sin(u * 3.5 * Math.PI));
+  const billow = (isUpperSurface ? 0.028 : 0.01) * cellWave * Math.sin(v * Math.PI);
+  const y = archY + camberY + (isUpperSurface ? airfoilHalfThick + billow : -airfoilHalfThick * 0.45 + billow * 0.25);
+  return target.set(x, y, z);
+}
+
+function createCurvedParachuteCanopyGeometry(
+  primaryColorHex: number,
+  accentColorHex: number
+): THREE.BufferGeometry {
+  const spanSegs = 28; // 7 cells * 4 subdivisions per cell
+  const chordSegs = 12;
+  const positions: number[] = [];
+  const colors: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+
+  const primaryCol = new THREE.Color(primaryColorHex);
+  const accentCol = new THREE.Color(accentColorHex);
+  const centerCol = new THREE.Color(0xe2e8f0).lerp(primaryCol, 0.28);
+  const slateCol = new THREE.Color(0x1e293b).lerp(primaryCol, 0.22);
+  const midCol = new THREE.Color(0x334155).lerp(primaryCol, 0.38);
+  const wingtipCol = new THREE.Color(0x0f172a).lerp(accentCol, 0.72);
+  const seamCol = new THREE.Color(0x0f172a);
+  const undersideCol = new THREE.Color(0x1e293b).lerp(primaryCol, 0.18);
+  const tmpPt = new THREE.Vector3();
+  const vCol = new THREE.Color();
+
+  const pushSurfaceGrid = (isUpper: boolean): number => {
+    const baseVertex = positions.length / 3;
+    for (let iu = 0; iu <= spanSegs; iu++) {
+      const u = (iu / spanSegs) * 2 - 1;
+      const absU = Math.abs(u);
+      const isRibSeam = iu % 4 === 0;
+      for (let iv = 0; iv <= chordSegs; iv++) {
+        const v = iv / chordSegs;
+        sampleParachuteCanopyPoint(u, v, isUpper, tmpPt);
+        positions.push(tmpPt.x, tmpPt.y, tmpPt.z);
+        uvs.push((u + 1) * 0.5, v);
+
+        if (!isUpper) {
+          vCol.copy(undersideCol);
+          if (isRibSeam) vCol.lerp(seamCol, 0.55);
+        } else if (isRibSeam || iv === 0 || iv === chordSegs) {
+          vCol.copy(seamCol);
+        } else if (absU < 1 / 7) {
+          vCol.copy(v < 0.22 ? accentCol : centerCol);
+        } else if (absU < 3 / 7) {
+          vCol.copy(slateCol);
+        } else if (absU < 5 / 7) {
+          vCol.copy(midCol);
+        } else {
+          vCol.copy(wingtipCol);
+        }
+        colors.push(vCol.r, vCol.g, vCol.b);
+      }
+    }
+
+    const stride = chordSegs + 1;
+    for (let iu = 0; iu < spanSegs; iu++) {
+      for (let iv = 0; iv < chordSegs; iv++) {
+        const a = baseVertex + iu * stride + iv;
+        const b = a + stride;
+        const c = b + 1;
+        const d = a + 1;
+        if (isUpper) {
+          indices.push(a, d, b, b, d, c);
+        } else {
+          indices.push(a, b, d, b, c, d);
+        }
+      }
+    }
+    return baseVertex;
+  };
+
+  const upperBase = pushSurfaceGrid(true);
+  const lowerBase = pushSurfaceGrid(false);
+  const stride = chordSegs + 1;
+
+  // Stitch trailing edge & 8 internal/wingtip load-bearing cell ribs
+  for (let iu = 0; iu < spanSegs; iu++) {
+    const u0 = upperBase + iu * stride + chordSegs;
+    const u1 = upperBase + (iu + 1) * stride + chordSegs;
+    const l0 = lowerBase + iu * stride + chordSegs;
+    const l1 = lowerBase + (iu + 1) * stride + chordSegs;
+    indices.push(u0, l0, u1, u1, l0, l1);
+  }
+  for (let iu = 0; iu <= spanSegs; iu += 4) {
+    for (let iv = 0; iv < chordSegs; iv++) {
+      const u0 = upperBase + iu * stride + iv;
+      const u1 = u0 + 1;
+      const l0 = lowerBase + iu * stride + iv;
+      const l1 = l0 + 1;
+      indices.push(u0, u1, l0, u1, l1, l0);
+      indices.push(u0, l0, u1, u1, l0, l1);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function createSuspensionLineMesh(
+  name: string,
+  from: THREE.Vector3,
+  to: THREE.Vector3,
+  radius: number,
+  material: THREE.Material
+): THREE.Mesh {
+  const dir = new THREE.Vector3().subVectors(to, from);
+  const len = Math.max(0.01, dir.length());
+  const geo = new THREE.CylinderGeometry(radius, radius, len, 6, 1);
+  const mesh = new THREE.Mesh(geo, material);
+  mesh.name = name;
+  mesh.position.copy(from).addScaledVector(dir, 0.5);
+  mesh.quaternion.setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0),
+    dir.normalize()
+  );
+  return mesh;
+}
+
+// Shared unit geometries for procedural outfit attachments. Smooth contoured
+// primitives replace raw cubes so no boxy placeholders ever appear on the character.
+const OUTFIT_PAULDRON_GEO = (() => {
+  const geo = new THREE.SphereGeometry(0.5, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.58);
+  geo.translate(0, -0.12, 0);
+  geo.computeVertexNormals();
+  return geo;
+})();
+const OUTFIT_BOX_GEO = (() => {
+  const geo = new THREE.CapsuleGeometry(0.34, 0.32, 4, 10);
+  geo.rotateZ(Math.PI / 2);
+  geo.computeVertexNormals();
+  return geo;
+})();
+const OUTFIT_CYLINDER_GEO = new THREE.CylinderGeometry(0.5, 0.5, 1, 12);
+const OUTFIT_CONE_GEO = new THREE.ConeGeometry(0.5, 1, 10);
+const OUTFIT_OCTA_GEO = new THREE.OctahedronGeometry(0.5, 1);
 
 function quatKeyframes(
   boneName: string,
@@ -638,8 +856,11 @@ export class CharacterMesh {
   private weaponMagazine: THREE.Object3D | undefined;
   private weaponSlide: THREE.Object3D | undefined;
   private weaponMagazineRotation = new THREE.Euler();
-  private packOffset = new THREE.Matrix4().makeTranslation(0, 1.32, 0.16);
+  private packOffset = new THREE.Matrix4().makeTranslation(0, 1.3, 0.205);
   private baseBonePoses = new Map<THREE.Object3D, THREE.Quaternion>();
+  private parachuteCanopyPivot: THREE.Group | null = null;
+  private parachuteHarnessGroup: THREE.Group | null = null;
+  private parachuteDeployBlend: number = 0;
 
   constructor(playerState: PlayerState) {
     this.playerId = playerState.id;
@@ -909,33 +1130,13 @@ export class CharacterMesh {
     this.muzzleFlashMesh.visible = false;
     this.weaponSocket.add(this.muzzleFlashMesh);
 
-    // 3. Sky-Drop Glider
+    // 3. Tactical Ram-Air Parachute System (Curved Multi-Cell Canopy, Risers, Suspension Lines & Harness)
     this.gliderGroup = new THREE.Group();
-    this.gliderGroup.position.set(0, 2.65, 0);
-    const wingMesh = new THREE.Mesh(new THREE.BoxGeometry(2.85, 0.1, 1.2), accentMat);
-    const wingTrim = new THREE.Mesh(new THREE.BoxGeometry(2.9, 0.06, 0.25), darkMat);
-    wingTrim.position.z = -0.45;
-    const handleL = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.03, 0.03, 0.9, 6),
-      darkMat
-    );
-    handleL.position.set(-0.45, -0.45, 0);
-    const handleR = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.03, 0.03, 0.9, 6),
-      darkMat
-    );
-    handleR.position.set(0.45, -0.45, 0);
-    const thrusterL = new THREE.Mesh(
-      new THREE.ConeGeometry(0.16, 0.55, 6),
-      new THREE.MeshBasicMaterial({ color: 0x38bdf8 })
-    );
-    thrusterL.rotation.x = -Math.PI / 2;
-    thrusterL.position.set(-0.65, 0, 0.75);
-    const thrusterR = thrusterL.clone();
-    thrusterR.position.x = 0.65;
-    this.gliderGroup.add(wingMesh, wingTrim, handleL, handleR, thrusterL, thrusterR);
+    this.gliderGroup.name = 'parachute_system';
+    this.gliderGroup.position.set(0, 0, 0);
     this.gliderGroup.visible = false;
     this.bodyGroup.add(this.gliderGroup);
+    this.rebuildParachuteRig();
 
     // 4. Shield Aura Cylinder
     const shieldGeo = new THREE.CylinderGeometry(0.56, 0.56, 1.88, 14, 1, true);
@@ -995,12 +1196,12 @@ export class CharacterMesh {
     try {
       const clonedScene = cloneSkeleton(template.scene) as THREE.Group;
       this.gltfModelGroup = new THREE.Group();
-      // Stylized heroic Battle Royale proportions (slightly broader shoulders & chest silhouette)
-      this.gltfModelGroup.scale.set(1.06, 1.02, 1.06);
+      // Balanced athletic proportions matching human anatomy and tactical gear
+      this.gltfModelGroup.scale.set(1.03, 1.02, 1.03);
       this.gltfModelGroup.add(clonedScene);
       this.bodyGroup.add(this.gltfModelGroup);
 
-      // Customize SkinnedMesh materials with vibrant stylized clothing/visor colors
+      // Customize SkinnedMesh materials with realistic PBR cloth/armor shading & polarized visor
       clonedScene.traverse((obj) => {
         const mesh = obj as THREE.SkinnedMesh;
         if (mesh.isMesh) {
@@ -1013,10 +1214,10 @@ export class CharacterMesh {
             const visorMat = new THREE.MeshStandardMaterial({
               color: this.accentColorHex,
               emissive: this.accentColorHex,
-              emissiveIntensity: profile.visorEmissiveIntensity,
-              roughness: Math.max(0.08, profile.roughness * 0.42),
-              metalness: Math.min(0.88, profile.metalness + 0.34),
-              envMapIntensity: profile.envMapIntensity + 0.25,
+              emissiveIntensity: profile.visorEmissiveIntensity * 0.62,
+              roughness: Math.max(0.06, profile.roughness * 0.35),
+              metalness: Math.min(0.92, profile.metalness + 0.42),
+              envMapIntensity: profile.envMapIntensity + 0.35,
             });
             mesh.material = visorMat;
             this.gltfVisorMat = visorMat;
@@ -1024,18 +1225,22 @@ export class CharacterMesh {
             const profile = getOutfitVisualProfile(this.outfitId);
             const origMat = mesh.material as THREE.MeshStandardMaterial;
             const customBodyMat = origMat.clone();
-            const vibrantColor = new THREE.Color(this.skinColorHex);
+            const baseTint = new THREE.Color(this.skinColorHex);
             const hsl = { h: 0, s: 0, l: 0 };
-            vibrantColor.getHSL(hsl);
-            vibrantColor.setHSL(hsl.h, Math.min(1, hsl.s * 1.2), Math.max(0.45, hsl.l));
-            const tinted = new THREE.Color(0xffffff).lerp(vibrantColor, 0.58);
+            baseTint.getHSL(hsl);
+            baseTint.setHSL(
+              hsl.h,
+              Math.min(0.85, hsl.s * 0.95),
+              THREE.MathUtils.clamp(hsl.l, 0.32, 0.58)
+            );
+            const tinted = new THREE.Color(0xe2e8f0).lerp(baseTint, 0.52);
             customBodyMat.color.copy(tinted);
-            customBodyMat.roughness = Math.max(.48, profile.roughness);
-            customBodyMat.metalness = profile.metalness * .65;
+            customBodyMat.roughness = Math.max(0.52, profile.roughness);
+            customBodyMat.metalness = Math.min(0.45, profile.metalness * 0.62);
             customBodyMat.envMapIntensity = profile.envMapIntensity;
             if (this.armorTexture && !this.reducedDetail) {
               customBodyMat.bumpMap = this.armorTexture;
-              customBodyMat.bumpScale = 0.012;
+              customBodyMat.bumpScale = 0.015;
             }
             mesh.material = customBodyMat;
             this.gltfBodyMat = customBodyMat;
@@ -1221,9 +1426,8 @@ export class CharacterMesh {
   }
 
   /**
-   * Builds one of six compact procedural armor silhouettes. Every piece is
-   * visual-only, stays inside the existing capsule's practical footprint,
-   * and reuses four shared unit geometries.
+   * Builds one of six compact procedural armor silhouettes using contoured
+   * non-box primitives and matte tactical materials fitted flush to the rig.
    */
   private rebuildOutfitAttachments(): void {
     this.disposeOutfitAttachments();
@@ -1233,30 +1437,39 @@ export class CharacterMesh {
     group.userData.outfitId = profile.id;
     group.userData.armorStyle = profile.armorStyle;
 
+    const tacticalPlateColor = new THREE.Color(0x1e293b).lerp(
+      new THREE.Color(this.skinColorHex),
+      0.42
+    );
+    const tacticalTrimColor = new THREE.Color(0x334155).lerp(
+      new THREE.Color(this.accentColorHex),
+      0.58
+    );
+
     const armorMat = new THREE.MeshStandardMaterial({
-      color: this.skinColorHex,
+      color: tacticalPlateColor,
       map: this.armorTexture,
-      roughness: profile.roughness,
-      metalness: profile.metalness,
+      roughness: Math.max(0.42, profile.roughness),
+      metalness: Math.min(0.55, profile.metalness + 0.12),
       envMapIntensity: profile.envMapIntensity,
-      flatShading: true,
+      flatShading: false,
     });
     const accentMat = new THREE.MeshStandardMaterial({
-      color: this.accentColorHex,
+      color: tacticalTrimColor,
       emissive: this.accentColorHex,
-      emissiveIntensity: profile.visorEmissiveIntensity * 0.42,
-      roughness: Math.max(0.12, profile.roughness * 0.55),
-      metalness: Math.min(0.7, profile.metalness + 0.16),
+      emissiveIntensity: profile.visorEmissiveIntensity * 0.22,
+      roughness: Math.max(0.22, profile.roughness * 0.58),
+      metalness: Math.min(0.68, profile.metalness + 0.18),
       envMapIntensity: profile.envMapIntensity,
-      flatShading: true,
+      flatShading: false,
     });
     const darkMat = new THREE.MeshStandardMaterial({
       color: 0x1e293b,
       map: this.armorTexture,
-      roughness: Math.min(0.72, profile.roughness + 0.16),
-      metalness: 0.24,
-      envMapIntensity: profile.envMapIntensity * 0.72,
-      flatShading: true,
+      roughness: Math.min(0.74, profile.roughness + 0.18),
+      metalness: 0.28,
+      envMapIntensity: profile.envMapIntensity * 0.75,
+      flatShading: false,
     });
 
     const add = (
@@ -1291,69 +1504,69 @@ export class CharacterMesh {
     ) =>
       add(
         side < 0 ? 'left_pauldron' : 'right_pauldron',
-        OUTFIT_BOX_GEO,
+        OUTFIT_PAULDRON_GEO,
         material,
-        side * 0.39,
-        1.5,
+        side * 0.34,
+        1.45,
         0,
-        width,
-        height,
-        depth,
+        width * 0.42,
+        height * 0.48,
+        depth * 0.42,
         0,
         0,
-        side * -0.08
+        side * -0.18
       );
 
     switch (profile.armorStyle) {
       case 'solar':
-        pauldron(-1, 0.28, 0.1, 0.24, accentMat);
-        pauldron(1, 0.28, 0.1, 0.24, accentMat);
-        add('solar_disc', OUTFIT_CYLINDER_GEO, accentMat, 0, 1.31, -0.25, 0.2, 0.032, 0.2, Math.PI / 2);
-        add('solar_core', OUTFIT_OCTA_GEO, armorMat, 0, 1.31, -0.28, 0.1, 0.1, 0.05);
-        add('plume', OUTFIT_CONE_GEO, accentMat, 0, 1.99, 0.02, 0.13, 0.3, 0.13, -0.12);
-        add('waist_sash', OUTFIT_BOX_GEO, darkMat, 0, 0.98, -0.2, 0.42, 0.07, 0.04, 0, 0, -0.18);
+        pauldron(-1, 0.22, 0.1, 0.2, accentMat);
+        pauldron(1, 0.22, 0.1, 0.2, accentMat);
+        add('solar_disc', OUTFIT_CYLINDER_GEO, accentMat, 0, 1.31, -0.22, 0.12, 0.018, 0.12, Math.PI / 2);
+        add('solar_core', OUTFIT_OCTA_GEO, armorMat, 0, 1.31, -0.23, 0.065, 0.065, 0.025);
+        add('plume', OUTFIT_CONE_GEO, accentMat, 0, 1.92, -0.02, 0.055, 0.11, 0.08, -0.18);
+        add('waist_sash', OUTFIT_BOX_GEO, darkMat, 0, 0.98, -0.175, 0.22, 0.038, 0.024, 0, 0, -0.12);
         break;
       case 'phantom':
-        pauldron(-1, 0.09, 0.32, 0.2);
-        pauldron(1, 0.09, 0.32, 0.2);
-        add('diamond_core', OUTFIT_OCTA_GEO, accentMat, 0, 1.3, -0.26, 0.13, 0.19, 0.05);
-        add('left_antenna', OUTFIT_CYLINDER_GEO, accentMat, -0.11, 1.98, -0.02, 0.024, 0.3, 0.024, 0, 0, 0.18);
-        add('right_antenna', OUTFIT_CYLINDER_GEO, accentMat, 0.11, 1.98, -0.02, 0.024, 0.3, 0.024, 0, 0, -0.18);
-        add('stealth_collar', OUTFIT_BOX_GEO, darkMat, 0, 1.58, -0.08, 0.34, 0.08, 0.22, 0.14);
+        pauldron(-1, 0.14, 0.14, 0.16);
+        pauldron(1, 0.14, 0.14, 0.16);
+        add('diamond_core', OUTFIT_OCTA_GEO, accentMat, 0, 1.3, -0.22, 0.075, 0.1, 0.025);
+        add('left_antenna', OUTFIT_CYLINDER_GEO, accentMat, -0.085, 1.91, -0.04, 0.014, 0.11, 0.014, 0, 0, 0.14);
+        add('right_antenna', OUTFIT_CYLINDER_GEO, accentMat, 0.085, 1.91, -0.04, 0.014, 0.11, 0.014, 0, 0, -0.14);
+        add('stealth_collar', OUTFIT_BOX_GEO, darkMat, 0, 1.52, -0.06, 0.18, 0.042, 0.12, 0.12);
         break;
       case 'ranger':
-        pauldron(-1, 0.3, 0.16, 0.3);
-        pauldron(1, 0.17, 0.1, 0.22, darkMat);
-        add('field_strap', OUTFIT_BOX_GEO, darkMat, 0, 1.3, -0.245, 0.52, 0.07, 0.028, 0, 0, -0.48);
-        add('left_pouch', OUTFIT_BOX_GEO, armorMat, -0.16, 0.98, -0.2, 0.13, 0.16, 0.08);
-        add('right_pouch', OUTFIT_BOX_GEO, darkMat, 0.16, 0.98, -0.2, 0.13, 0.16, 0.08);
-        add('left_sensor_fin', OUTFIT_BOX_GEO, accentMat, -0.12, 1.91, 0, 0.04, 0.17, 0.1, 0, 0, 0.14);
-        add('right_sensor_fin', OUTFIT_BOX_GEO, accentMat, 0.12, 1.91, 0, 0.04, 0.17, 0.1, 0, 0, -0.14);
+        pauldron(-1, 0.22, 0.12, 0.22);
+        pauldron(1, 0.16, 0.09, 0.18, darkMat);
+        add('field_strap', OUTFIT_BOX_GEO, darkMat, 0, 1.3, -0.215, 0.24, 0.036, 0.018, 0, 0, -0.48);
+        add('left_pouch', OUTFIT_BOX_GEO, armorMat, -0.125, 0.98, -0.165, 0.068, 0.082, 0.042);
+        add('right_pouch', OUTFIT_BOX_GEO, darkMat, 0.125, 0.98, -0.165, 0.068, 0.082, 0.042);
+        add('left_sensor_fin', OUTFIT_BOX_GEO, accentMat, -0.09, 1.88, -0.04, 0.022, 0.075, 0.055, 0, 0, 0.12);
+        add('right_sensor_fin', OUTFIT_BOX_GEO, accentMat, 0.09, 1.88, -0.04, 0.022, 0.075, 0.055, 0, 0, -0.12);
         break;
       case 'arctic':
-        pauldron(-1, 0.28, 0.17, 0.31);
-        pauldron(1, 0.28, 0.17, 0.31);
-        add('sentinel_collar', OUTFIT_BOX_GEO, armorMat, 0, 1.59, -0.02, 0.54, 0.13, 0.34);
-        add('chest_plate', OUTFIT_BOX_GEO, armorMat, 0, 1.29, -0.245, 0.31, 0.3, 0.035);
-        add('cryo_strip', OUTFIT_BOX_GEO, accentMat, 0, 1.31, -0.27, 0.06, 0.24, 0.02);
-        add('visor_guard', OUTFIT_BOX_GEO, darkMat, 0, 1.82, -0.16, 0.3, 0.05, 0.1, 0.2);
+        pauldron(-1, 0.21, 0.12, 0.22);
+        pauldron(1, 0.21, 0.12, 0.22);
+        add('sentinel_collar', OUTFIT_BOX_GEO, armorMat, 0, 1.52, -0.04, 0.2, 0.05, 0.14);
+        add('chest_plate', OUTFIT_BOX_GEO, armorMat, 0, 1.29, -0.215, 0.17, 0.14, 0.02);
+        add('cryo_strip', OUTFIT_BOX_GEO, accentMat, 0, 1.31, -0.225, 0.032, 0.11, 0.014);
+        add('visor_guard', OUTFIT_BOX_GEO, darkMat, 0, 1.82, -0.14, 0.14, 0.026, 0.05, 0.16);
         break;
       case 'crimson':
-        pauldron(-1, 0.18, 0.11, 0.22, darkMat);
-        pauldron(1, 0.34, 0.19, 0.33);
-        add('slash_left', OUTFIT_BOX_GEO, accentMat, -0.07, 1.33, -0.255, 0.21, 0.035, 0.024, 0, 0, -0.52);
-        add('slash_right', OUTFIT_BOX_GEO, accentMat, 0.07, 1.22, -0.255, 0.21, 0.035, 0.024, 0, 0, -0.52);
-        add('mohawk_fin', OUTFIT_BOX_GEO, accentMat, 0, 1.98, -0.02, 0.035, 0.25, 0.23, -0.08);
-        add('striker_core', OUTFIT_OCTA_GEO, darkMat, 0, 1.08, -0.24, 0.1, 0.13, 0.05);
+        pauldron(-1, 0.16, 0.1, 0.18, darkMat);
+        pauldron(1, 0.23, 0.13, 0.22);
+        add('slash_left', OUTFIT_BOX_GEO, accentMat, -0.055, 1.32, -0.22, 0.11, 0.022, 0.016, 0, 0, -0.52);
+        add('slash_right', OUTFIT_BOX_GEO, accentMat, 0.055, 1.24, -0.22, 0.11, 0.022, 0.016, 0, 0, -0.52);
+        add('mohawk_fin', OUTFIT_BOX_GEO, accentMat, 0, 1.91, -0.04, 0.02, 0.09, 0.11, -0.08);
+        add('striker_core', OUTFIT_OCTA_GEO, darkMat, 0, 1.12, -0.21, 0.06, 0.075, 0.025);
         break;
       case 'vanguard':
       default:
-        pauldron(-1, 0.25, 0.14, 0.29);
-        pauldron(1, 0.25, 0.14, 0.29);
-        add('chevron_left', OUTFIT_BOX_GEO, accentMat, -0.09, 1.34, -0.25, 0.19, 0.035, 0.024, 0, 0, 0.55);
-        add('chevron_right', OUTFIT_BOX_GEO, accentMat, 0.09, 1.34, -0.25, 0.19, 0.035, 0.024, 0, 0, -0.55);
-        add('chest_core', OUTFIT_OCTA_GEO, accentMat, 0, 1.22, -0.26, 0.11, 0.11, 0.05);
-        add('brow_fin', OUTFIT_BOX_GEO, armorMat, 0, 1.87, -0.13, 0.22, 0.035, 0.12, 0.18);
+        pauldron(-1, 0.2, 0.11, 0.2);
+        pauldron(1, 0.2, 0.11, 0.2);
+        add('chevron_left', OUTFIT_BOX_GEO, accentMat, -0.065, 1.32, -0.215, 0.105, 0.022, 0.016, 0, 0, 0.55);
+        add('chevron_right', OUTFIT_BOX_GEO, accentMat, 0.065, 1.32, -0.215, 0.105, 0.022, 0.016, 0, 0, -0.55);
+        add('chest_core', OUTFIT_OCTA_GEO, accentMat, 0, 1.24, -0.22, 0.065, 0.065, 0.024);
+        add('brow_fin', OUTFIT_BOX_GEO, armorMat, 0, 1.86, -0.12, 0.11, 0.022, 0.055, 0.16);
         break;
     }
 
@@ -1362,7 +1575,11 @@ export class CharacterMesh {
     this.bindOutfitAttachments();
   }
 
-  /** Rigid bone followers, not skinned armor. Authoring is in metre-scale body space. */
+  /**
+   * Fits cosmetic attachments directly onto the rigged GLTF skeleton's actual
+   * anatomical surfaces (clavicle/deltoid, sternum, waist belt, and helmet crown)
+   * so no pieces float or swing out on lever arms during arm IK or locomotion.
+   */
   private bindOutfitAttachments(): void {
     this.attachmentBindings = [];
     if (!this.outfitAttachmentGroup || !this.attachmentRest.size) return;
@@ -1370,17 +1587,60 @@ export class CharacterMesh {
     this.outfitAttachmentGroup.rotation.set(0, 0, 0);
     for (const object of this.outfitAttachmentGroup.children) {
       const y = object.position.y;
-      const bone = y > 1.72 ? this.gltfBones.head
-        : object.name.includes('left_pauldron') ? this.gltfBones.leftArm
-        : object.name.includes('right_pauldron') ? this.gltfBones.rightArm
-        : y < 1.1 ? this.gltfBones.hips : this.gltfBones.spine2;
+      const isLeftPauldron = object.name.includes('left_pauldron');
+      const isRightPauldron = object.name.includes('right_pauldron');
+      const bone =
+        y > 1.72
+          ? this.gltfBones.head
+          : isLeftPauldron
+            ? (this.gltfBones.leftShoulder ?? this.gltfBones.spine2)
+            : isRightPauldron
+              ? (this.gltfBones.rightShoulder ?? this.gltfBones.spine2)
+              : y < 1.1
+                ? this.gltfBones.hips
+                : this.gltfBones.spine2;
       const rest = bone && this.attachmentRest.get(bone);
       if (!bone || !rest) continue;
-      object.updateMatrix();
-      // Keep the authored silhouette, but align head ornaments to the actual
-      // head base (the bundled soldier is shorter than the fallback helmet).
-      const authored = object.matrix.clone();
-      if (y > 1.72) authored.elements[13] += rest.elements[13] - 1.68;
+
+      // Map fallback coordinates onto the exact surface of soldier.glb
+      const gltfPos = object.position.clone();
+      const gltfScale = object.scale.clone();
+      if (isLeftPauldron) {
+        gltfPos.set(-0.182, 1.405, -0.042);
+        gltfScale.multiplyScalar(0.76);
+      } else if (isRightPauldron) {
+        gltfPos.set(0.174, 1.405, 0.012);
+        gltfScale.multiplyScalar(0.76);
+      } else if (y > 1.72) {
+        // Align helmet ornaments flush to the soldier.glb helmet crown/brow
+        gltfPos.x *= 0.68;
+        gltfPos.y = rest.elements[13] + (y - 1.78) * 0.55 + 0.105;
+        gltfPos.z = Math.max(-0.165, object.position.z * 0.85 - 0.035);
+        gltfScale.multiplyScalar(0.74);
+      } else if (y >= 1.46) {
+        // Collar pieces around neck base
+        gltfPos.y = 1.43;
+        gltfPos.z = -0.045;
+        gltfScale.multiplyScalar(0.72);
+      } else if (y < 1.1) {
+        // Belt & waist pouches flush against lower torso
+        gltfPos.x *= 0.82;
+        gltfPos.y = 0.99;
+        gltfPos.z = -0.158;
+        gltfScale.multiplyScalar(0.78);
+      } else {
+        // Sternum / chest emblems flush against front armor plate
+        gltfPos.x *= 0.76;
+        gltfPos.y = 1.24 + (y - 1.24) * 0.75;
+        gltfPos.z = -0.152;
+        gltfScale.multiplyScalar(0.76);
+      }
+
+      const authored = new THREE.Matrix4().compose(
+        gltfPos,
+        object.quaternion,
+        gltfScale
+      );
       const inverseBind = rest.clone().invert().multiply(authored);
       object.matrixAutoUpdate = false;
       this.attachmentBindings.push({ object, bone, inverseBind });
@@ -1422,7 +1682,8 @@ export class CharacterMesh {
     }
 
     this.jumpPackGroup = new THREE.Group();
-    this.jumpPackGroup.position.set(0, 1.32, 0.16);
+    this.jumpPackGroup.name = 'back_accessory';
+    this.jumpPackGroup.position.set(0, 1.3, 0.205);
     this.bodyGroup.add(this.jumpPackGroup);
 
     if (this.backAccessoryType === 'none') {
@@ -1430,80 +1691,377 @@ export class CharacterMesh {
       return;
     }
 
-    const armorMat = new THREE.MeshStandardMaterial({
-      color: this.skinColorHex,
-      roughness: 0.32,
-      metalness: 0.45,
+    const housingColor = new THREE.Color(0x1e293b).lerp(
+      new THREE.Color(this.skinColorHex),
+      0.28
+    );
+    const alloyMat = new THREE.MeshStandardMaterial({
+      color: housingColor,
+      roughness: 0.42,
+      metalness: 0.62,
     });
-    const glowMat = new THREE.MeshStandardMaterial({
+    const darkCarbonMat = new THREE.MeshStandardMaterial({
+      color: 0x0f172a,
+      roughness: 0.56,
+      metalness: 0.38,
+    });
+    const trimMat = new THREE.MeshStandardMaterial({
       color: this.accentColorHex,
       emissive: this.accentColorHex,
-      emissiveIntensity: 0.55,
-      roughness: 0.2,
+      emissiveIntensity: 0.28,
+      roughness: 0.25,
+      metalness: 0.55,
     });
 
     if (this.backAccessoryType === 'energy_wings') {
       const hub = new THREE.Mesh(
-        new THREE.OctahedronGeometry(0.11, 0),
-        armorMat
+        new THREE.CapsuleGeometry(0.042, 0.08, 6, 10),
+        darkCarbonMat
       );
-      this.jumpPackGroup.add(hub);
+      const coreNode = new THREE.Mesh(
+        new THREE.OctahedronGeometry(0.036, 1),
+        trimMat
+      );
+      coreNode.position.z = 0.032;
+      this.jumpPackGroup.add(hub, coreNode);
       for (const side of [-1, 1]) {
-        const upperWing = new THREE.Mesh(
-          new THREE.BoxGeometry(0.36, 0.07, 0.04),
-          glowMat
+        const upperVane = new THREE.Mesh(
+          new THREE.ConeGeometry(0.018, 0.14, 10),
+          alloyMat
         );
-        upperWing.position.set(side * 0.22, 0.1, 0.03);
-        upperWing.rotation.z = side * 0.42;
+        upperVane.position.set(side * 0.082, 0.042, 0.012);
+        upperVane.rotation.z = side * -0.92;
 
-        const lowerWing = new THREE.Mesh(
-          new THREE.BoxGeometry(0.28, 0.055, 0.04),
-          glowMat
+        const lowerVane = new THREE.Mesh(
+          new THREE.ConeGeometry(0.014, 0.11, 10),
+          trimMat
         );
-        lowerWing.position.set(side * 0.19, -0.06, 0.03);
-        lowerWing.rotation.z = -side * 0.25;
-        this.jumpPackGroup.add(upperWing, lowerWing);
+        lowerVane.position.set(side * 0.072, -0.036, 0.015);
+        lowerVane.rotation.z = side * -1.18;
+        this.jumpPackGroup.add(upperVane, lowerVane);
       }
     } else if (this.backAccessoryType === 'tactical_shield') {
       const shieldDisc = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.24, 0.24, 0.05, 6),
-        armorMat
+        new THREE.CylinderGeometry(0.128, 0.136, 0.026, 16),
+        darkCarbonMat
       );
       shieldDisc.rotation.x = Math.PI / 2;
       const rim = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.26, 0.26, 0.03, 6),
-        glowMat
+        new THREE.TorusGeometry(0.128, 0.012, 8, 20),
+        alloyMat
       );
-      rim.rotation.x = Math.PI / 2;
-      rim.position.z = -0.01;
+      rim.position.z = 0.012;
       const crest = new THREE.Mesh(
-        new THREE.OctahedronGeometry(0.08, 0),
-        glowMat
+        new THREE.OctahedronGeometry(0.038, 1),
+        trimMat
       );
-      crest.position.z = 0.03;
+      crest.scale.set(0.85, 1.15, 0.45);
+      crest.position.z = 0.022;
       this.jumpPackGroup.add(shieldDisc, rim, crest);
     } else {
-      // 'jump_pack'
-      const packChassis = new THREE.Mesh(
-        new THREE.BoxGeometry(0.28, 0.34, 0.13),
-        armorMat
+      // 'jump_pack': Compact contoured twin-pod micro-thruster pack flush to back
+      const centerSpine = new THREE.Mesh(
+        new THREE.CapsuleGeometry(0.048, 0.12, 6, 12),
+        darkCarbonMat
       );
-      const packCore = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.065, 0.065, 0.05, 10),
-        glowMat
+      const coreVent = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.034, 0.034, 0.024, 12),
+        trimMat
       );
-      packCore.rotation.x = Math.PI / 2;
-      packCore.position.set(0, 0.02, 0.06);
-      const finL = new THREE.Mesh(
-        new THREE.BoxGeometry(0.06, 0.24, 0.1),
-        glowMat
+      coreVent.rotation.x = Math.PI / 2;
+      coreVent.position.set(0, 0.01, 0.04);
+      this.jumpPackGroup.add(centerSpine, coreVent);
+
+      for (const side of [-1, 1]) {
+        const pod = new THREE.Mesh(
+          new THREE.CapsuleGeometry(0.036, 0.13, 6, 12),
+          alloyMat
+        );
+        pod.position.set(side * 0.068, 0.008, 0.008);
+        pod.rotation.z = side * 0.08;
+
+        const nozzle = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.02, 0.028, 0.045, 10),
+          darkCarbonMat
+        );
+        nozzle.position.set(side * 0.075, -0.095, 0.012);
+        nozzle.rotation.z = side * 0.12;
+        this.jumpPackGroup.add(pod, nozzle);
+      }
+    }
+  }
+
+  /**
+   * Builds the believable multi-cell curved parafoil canopy, stitched rib seams,
+   * non-intersecting Kevlar suspension lines, V-risers, steering toggles, and
+   * fitted torso harness.
+   */
+  private rebuildParachuteRig(): void {
+    if (!this.gliderGroup) return;
+    const oldGeometries = new Set<THREE.BufferGeometry>();
+    const oldMaterials = new Set<THREE.Material>();
+    this.gliderGroup.traverse((obj) => {
+      if (!(obj instanceof THREE.Mesh)) return;
+      oldGeometries.add(obj.geometry);
+      for (const mat of Array.isArray(obj.material) ? obj.material : [obj.material]) {
+        oldMaterials.add(mat);
+      }
+    });
+    this.gliderGroup.clear();
+    oldGeometries.forEach((g) => g.dispose());
+    oldMaterials.forEach((m) => m.dispose());
+
+    const fabricTex = createParachuteFabricTexture();
+    const canopyMat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      map: fabricTex,
+      bumpMap: fabricTex,
+      bumpScale: 0.008,
+      roughness: 0.68,
+      metalness: 0.06,
+      side: THREE.DoubleSide,
+    });
+    const webbingMat = new THREE.MeshStandardMaterial({
+      color: 0x1e293b,
+      roughness: 0.72,
+      metalness: 0.18,
+    });
+    const cordMat = new THREE.MeshStandardMaterial({
+      color: 0x475569,
+      roughness: 0.55,
+      metalness: 0.25,
+    });
+    const buckleMat = new THREE.MeshStandardMaterial({
+      color: 0x94a3b8,
+      roughness: 0.32,
+      metalness: 0.78,
+    });
+    const toggleMat = new THREE.MeshStandardMaterial({
+      color: this.accentColorHex,
+      emissive: this.accentColorHex,
+      emissiveIntensity: 0.2,
+      roughness: 0.35,
+      metalness: 0.3,
+    });
+
+    // 1. Fitted Parachute Torso Harness & Deployment Container
+    const harnessGroup = new THREE.Group();
+    harnessGroup.name = 'parachute_harness';
+
+    const backContainer = new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.085, 0.16, 6, 12),
+      webbingMat
+    );
+    backContainer.name = 'parachute_pack_container';
+    backContainer.scale.set(1.15, 1.0, 0.55);
+    backContainer.position.set(0, 1.28, 0.195);
+
+    const chestStrap = new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.016, 0.24, 4, 8),
+      webbingMat
+    );
+    chestStrap.name = 'parachute_chest_strap';
+    chestStrap.rotation.z = Math.PI / 2;
+    chestStrap.position.set(0, 1.31, -0.155);
+
+    const chestBuckle = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.022, 0.022, 0.014, 8),
+      buckleMat
+    );
+    chestBuckle.rotation.x = Math.PI / 2;
+    chestBuckle.position.set(0, 1.31, -0.162);
+    harnessGroup.add(backContainer, chestStrap, chestBuckle);
+
+    for (const side of [-1, 1]) {
+      const shoulderStrap = new THREE.Mesh(
+        new THREE.TorusGeometry(0.145, 0.016, 6, 14, Math.PI * 0.95),
+        webbingMat
       );
-      finL.position.set(-0.16, 0.05, 0.02);
-      finL.rotation.z = 0.22;
-      const finR = finL.clone();
-      finR.position.x = 0.16;
-      finR.rotation.z = -0.22;
-      this.jumpPackGroup.add(packChassis, packCore, finL, finR);
+      shoulderStrap.name = side < 0 ? 'parachute_strap_left' : 'parachute_strap_right';
+      shoulderStrap.rotation.y = Math.PI / 2;
+      shoulderStrap.rotation.x = -0.22;
+      shoulderStrap.position.set(side * 0.115, 1.34, 0.015);
+
+      const legStrap = new THREE.Mesh(
+        new THREE.TorusGeometry(0.082, 0.014, 6, 12),
+        webbingMat
+      );
+      legStrap.rotation.x = Math.PI / 2 + side * 0.08;
+      legStrap.position.set(side * 0.095, 0.96, -0.01);
+
+      const dRing = new THREE.Mesh(
+        new THREE.TorusGeometry(0.022, 0.005, 6, 10),
+        buckleMat
+      );
+      dRing.position.set(side * 0.15, 1.43, 0.035);
+      harnessGroup.add(shoulderStrap, legStrap, dRing);
+    }
+    this.parachuteHarnessGroup = harnessGroup;
+    this.gliderGroup.add(harnessGroup);
+
+    // 2. Overhead Pivot for Curved Canopy + Risers + Suspension Lines
+    const canopyPivot = new THREE.Group();
+    canopyPivot.name = 'parachute_canopy_pivot';
+    canopyPivot.position.set(0, 1.43, 0.035);
+    this.parachuteCanopyPivot = canopyPivot;
+    this.gliderGroup.add(canopyPivot);
+
+    const canopyOffsetY = 1.48; // Places canopy apex at y = 2.91m in bodyGroup space
+    const canopyGeo = createCurvedParachuteCanopyGeometry(
+      this.skinColorHex,
+      this.accentColorHex
+    );
+    const canopyMesh = new THREE.Mesh(canopyGeo, canopyMat);
+    canopyMesh.name = 'parachute_canopy_mesh';
+    canopyMesh.position.set(0, canopyOffsetY, 0);
+    canopyMesh.castShadow = true;
+    canopyMesh.receiveShadow = true;
+    canopyPivot.add(canopyMesh);
+
+    // Vertical end-cell stabilizer fins at left/right wingtips
+    const tipPtFront = new THREE.Vector3();
+    const tipPtRear = new THREE.Vector3();
+    for (const side of [-1, 1]) {
+      sampleParachuteCanopyPoint(side, 0.18, false, tipPtFront);
+      sampleParachuteCanopyPoint(side, 0.86, false, tipPtRear);
+      const stabilizer = createSuspensionLineMesh(
+        side < 0 ? 'canopy_stabilizer_left' : 'canopy_stabilizer_right',
+        new THREE.Vector3(tipPtFront.x, canopyOffsetY + tipPtFront.y - 0.11, tipPtFront.z),
+        new THREE.Vector3(tipPtRear.x, canopyOffsetY + tipPtRear.y - 0.08, tipPtRear.z),
+        0.018,
+        webbingMat
+      );
+      stabilizer.scale.x = 0.35;
+      canopyPivot.add(stabilizer);
+    }
+
+    // 3. V-Risers, 12 Non-Intersecting Suspension Lines & 2 Brake Control Toggles
+    const attachPt = new THREE.Vector3();
+    const spanStations = [-0.92, -0.58, -0.24, 0.24, 0.58, 0.92];
+    for (const side of [-1, 1]) {
+      const shoulderAnchor = new THREE.Vector3(side * 0.15, 0, 0);
+      const frontRiserLink = new THREE.Vector3(side * 0.27, 0.42, -0.11);
+      const rearRiserLink = new THREE.Vector3(side * 0.27, 0.42, 0.11);
+
+      canopyPivot.add(
+        createSuspensionLineMesh(
+          side < 0 ? 'riser_left_front' : 'riser_right_front',
+          shoulderAnchor,
+          frontRiserLink,
+          0.011,
+          webbingMat
+        ),
+        createSuspensionLineMesh(
+          side < 0 ? 'riser_left_rear' : 'riser_right_rear',
+          shoulderAnchor,
+          rearRiserLink,
+          0.011,
+          webbingMat
+        )
+      );
+
+      // Steering toggle handle held by raised hand + brake control line to trailing wingtip
+      const handGripLocal = new THREE.Vector3(side * 0.29, 0.22, -0.14);
+      const toggleBar = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.012, 0.012, 0.095, 8),
+        toggleMat
+      );
+      toggleBar.name = side < 0 ? 'steering_toggle_left' : 'steering_toggle_right';
+      toggleBar.rotation.z = Math.PI / 2;
+      toggleBar.position.copy(handGripLocal);
+      canopyPivot.add(toggleBar);
+
+      sampleParachuteCanopyPoint(side * 0.88, 0.92, false, attachPt);
+      attachPt.y += canopyOffsetY;
+      canopyPivot.add(
+        createSuspensionLineMesh(
+          side < 0 ? 'brake_line_left' : 'brake_line_right',
+          handGripLocal,
+          attachPt,
+          0.005,
+          cordMat
+        )
+      );
+    }
+
+    let lineIdx = 0;
+    for (const u of spanStations) {
+      const side = u < 0 ? -1 : 1;
+      const frontRiserLink = new THREE.Vector3(side * 0.27, 0.42, -0.11);
+      const rearRiserLink = new THREE.Vector3(side * 0.27, 0.42, 0.11);
+
+      sampleParachuteCanopyPoint(u, 0.22, false, attachPt);
+      attachPt.y += canopyOffsetY;
+      canopyPivot.add(
+        createSuspensionLineMesh(
+          `suspension_line_front_${lineIdx}`,
+          frontRiserLink,
+          attachPt,
+          0.0055,
+          cordMat
+        )
+      );
+
+      sampleParachuteCanopyPoint(u, 0.76, false, attachPt);
+      attachPt.y += canopyOffsetY;
+      canopyPivot.add(
+        createSuspensionLineMesh(
+          `suspension_line_rear_${lineIdx}`,
+          rearRiserLink,
+          attachPt,
+          0.0055,
+          cordMat
+        )
+      );
+      lineIdx++;
+    }
+  }
+
+  private updateParachuteRig(
+    state: PlayerState,
+    dt: number,
+    horizSpeed: number,
+    facingDelta: number
+  ): void {
+    if (!state.isGliding || !state.alive) {
+      this.parachuteDeployBlend = 0;
+      this.gliderGroup.visible = false;
+      return;
+    }
+
+    this.gliderGroup.visible = true;
+    this.parachuteDeployBlend = THREE.MathUtils.lerp(
+      this.parachuteDeployBlend,
+      1.0,
+      1 - Math.exp(-dt * 10)
+    );
+    const deploy = Math.max(0.25, this.parachuteDeployBlend);
+
+    if (this.parachuteCanopyPivot) {
+      const targetBankRoll =
+        THREE.MathUtils.clamp(-facingDelta * 2.1, -0.26, 0.26) +
+        Math.sin(this.animTime * 2.4) * 0.032;
+      const targetForwardPitch =
+        THREE.MathUtils.clamp(horizSpeed * 0.012, 0.02, 0.14) +
+        Math.cos(this.animTime * 1.9) * 0.018;
+
+      this.parachuteCanopyPivot.rotation.z = THREE.MathUtils.lerp(
+        this.parachuteCanopyPivot.rotation.z,
+        targetBankRoll,
+        1 - Math.exp(-dt * 10)
+      );
+      this.parachuteCanopyPivot.rotation.x = THREE.MathUtils.lerp(
+        this.parachuteCanopyPivot.rotation.x,
+        targetForwardPitch,
+        1 - Math.exp(-dt * 10)
+      );
+      const cellBreathX = 1 + Math.sin(this.animTime * 3.6) * 0.016;
+      const cellBreathY = 1 + Math.cos(this.animTime * 4.2) * 0.024;
+      this.parachuteCanopyPivot.scale.set(
+        deploy * cellBreathX,
+        deploy * cellBreathY,
+        deploy
+      );
     }
   }
 
@@ -1538,16 +2096,21 @@ export class CharacterMesh {
       this.gltfVisorMat.emissive.setHex(accentColor);
     }
     if (this.gltfBodyMat) {
-      const vibrantColor = new THREE.Color(skinColor);
+      const baseTint = new THREE.Color(skinColor);
       const hsl = { h: 0, s: 0, l: 0 };
-      vibrantColor.getHSL(hsl);
-      vibrantColor.setHSL(hsl.h, Math.min(1, hsl.s * 1.2), Math.max(0.45, hsl.l));
-      const tinted = new THREE.Color(0xffffff).lerp(vibrantColor, 0.58);
+      baseTint.getHSL(hsl);
+      baseTint.setHSL(
+        hsl.h,
+        Math.min(0.85, hsl.s * 0.95),
+        THREE.MathUtils.clamp(hsl.l, 0.32, 0.58)
+      );
+      const tinted = new THREE.Color(0xe2e8f0).lerp(baseTint, 0.52);
       this.gltfBodyMat.color.copy(tinted);
     }
 
     this.applyOutfitMaterialFinish();
     this.rebuildBackAccessory();
+    this.rebuildParachuteRig();
     this.rebuildOutfitAttachments();
   }
 
@@ -1725,10 +2288,7 @@ export class CharacterMesh {
       this.equipAnimTimer = Math.max(0, this.equipAnimTimer - dt);
     }
 
-    this.gliderGroup.visible = state.isGliding;
-    if (state.isGliding) {
-      this.gliderGroup.rotation.z = Math.sin(this.animTime * 3.5) * 0.08;
-    }
+    this.updateParachuteRig(state, dt, horizontalSpeedForLean, facingDelta);
 
     if (this.muzzleFlashTimer > 0) {
       this.muzzleFlashTimer = Math.max(0, this.muzzleFlashTimer - dt);
@@ -2100,8 +2660,15 @@ export class CharacterMesh {
     let reloadBoltPull = 0;
 
     if (state.isGliding) {
-      if (b.rightArm) b.rightArm.rotation.set(-0.6, 0.9, 2.2);
-      if (b.leftArm) b.leftArm.rotation.set(0.6, -0.9, 2.2);
+      const sway = Math.sin(this.animTime * 2.4) * 0.04;
+      if (b.rightArm) b.rightArm.rotation.set(-0.42, 0.68, 2.05 + sway);
+      if (b.rightForeArm) b.rightForeArm.rotation.set(0.55, 0.18, 0.28);
+      if (b.leftArm) b.leftArm.rotation.set(-0.42, -0.68, -2.05 + sway);
+      if (b.leftForeArm) b.leftForeArm.rotation.set(0.55, -0.18, -0.28);
+      if (b.rightUpLeg) b.rightUpLeg.rotation.x -= 0.22;
+      if (b.leftUpLeg) b.leftUpLeg.rotation.x -= 0.18;
+      if (b.rightLeg) b.rightLeg.rotation.x += 0.36;
+      if (b.leftLeg) b.leftLeg.rotation.x += 0.32;
     } else if (state.isReloading || this.reloadPoseBlend > 0.05) {
       this.reloadAnimClock += stepDt;
       const magMesh = this.weaponMagazine;
@@ -2143,7 +2710,11 @@ export class CharacterMesh {
     const adsCenterOffsetX = -this.aimPoseBlend * 0.035;
     const adsLiftOffsetY = this.aimPoseBlend * 0.03;
 
-    if (b.rightHand && this.gltfModelGroup && distToCamera < 72) {
+    if (state.isGliding) {
+      // Sling weapon cleanly at hip/back harness while both hands grip parachute toggles
+      this.weaponSocket.position.set(0.16, 1.06, 0.14);
+      this.weaponSocket.rotation.set(-1.18, 0.16, 0.42);
+    } else if (b.rightHand && this.gltfModelGroup && distToCamera < 72) {
       this.root.updateMatrixWorld(true);
       b.rightHand.getWorldPosition(this.tempHandWorldPos);
       this.bodyGroup.worldToLocal(this.tempHandWorldPos);
@@ -2152,12 +2723,21 @@ export class CharacterMesh {
         this.tempHandWorldPos.y + 0.04 + adsLiftOffsetY + moveBobY + this.weaponSwitchDipY,
         this.tempHandWorldPos.z - 0.1 + recoilKick * 0.14
       );
-
+      this.weaponSocket.rotation.set(
+        state.pitch * 0.65 - recoilKick * 0.45 + drawTilt + this.swayPitchOffset,
+        this.swayYawOffset,
+        -this.swayYawOffset * 0.5 + this.weaponSwitchRoll
+      );
     } else {
       this.weaponSocket.position.set(
         0.18 + adsCenterOffsetX,
         1.22 + adsLiftOffsetY + moveBobY + this.weaponSwitchDipY,
         -0.28 + recoilKick * 0.14
+      );
+      this.weaponSocket.rotation.set(
+        state.pitch * 0.65 - recoilKick * 0.45 + drawTilt + this.swayPitchOffset,
+        this.swayYawOffset,
+        -this.swayYawOffset * 0.5 + this.weaponSwitchRoll
       );
     }
 
@@ -2171,11 +2751,6 @@ export class CharacterMesh {
         baseZ + Math.max(recoilKick * 0.18, reloadBoltPull, pumpOrBoltFollow);
     }
 
-    this.weaponSocket.rotation.set(
-      state.pitch * 0.65 - recoilKick * 0.45 + drawTilt + this.swayPitchOffset,
-      this.swayYawOffset,
-      -this.swayYawOffset * 0.5 + this.weaponSwitchRoll
-    );
     if (distToCamera < (this.reducedDetail ? 22 : 45) && !state.isReloading &&
         this.reloadPoseBlend < 0.05 && !state.isGliding && activeCat !== 'harvester') {
       this.alignSupportHand(activeCat);
