@@ -1,6 +1,9 @@
+import { MenuShell } from './ui/MenuShell';
+import { validateDisplayName } from '../shared/displayName.mjs';
 import { TextChat } from './ui/TextChat';
 import { MobileHud } from './ui/MobileHud';
 import './styles/main.css';
+import './styles/menu4.css';
 import { GameEngine } from './core/GameEngine';
 import {
   BackAccessoryType,
@@ -36,6 +39,7 @@ import {
 import { getOutfitVisualProfile } from './entities/CharacterCosmetics';
 
 window.addEventListener('DOMContentLoaded', () => {
+  const menuShell = new MenuShell(document);
   const container = document.getElementById('game-canvas-container')!;
   const engine = new GameEngine(container);
   const textChat = new TextChat(document, engine.network.textChat,
@@ -44,7 +48,7 @@ window.addEventListener('DOMContentLoaded', () => {
       if (document.pointerLockElement) document.exitPointerLock();
     }, () => engine.network.isOnlineRoom);
   window.addEventListener('pagehide', event => {
-    if (!event.persisted) textChat.destroy();
+    if (!event.persisted) { textChat.destroy(); menuShell.destroy(); }
   });
 
   // =========================================================================
@@ -101,6 +105,10 @@ window.addEventListener('DOMContentLoaded', () => {
   engine.onProgressionUpdated = () => {
     renderCareerProgressionStrip();
     syncLockerUI();
+    if (!nameEdited && playerNameInput && engine.progression.state.callsign) {
+      playerNameInput.value = engine.progression.state.callsign;
+      lobbyBrowser.setDefaultPlayerName(engine.progression.state.callsign);
+    }
   };
   renderCareerProgressionStrip();
 
@@ -146,6 +154,10 @@ window.addEventListener('DOMContentLoaded', () => {
 
   restoreBtn?.addEventListener('click', async () => {
     engine.sound.playUIClick();
+    if (isLobbyConnectionPending()) {
+      if (restoreMsg) { restoreMsg.textContent = 'Leave your lobby before linking another account.'; restoreMsg.className = 'account-restore-msg err'; }
+      return;
+    }
     const val = (restoreInput?.value || '').trim();
     if (!val) {
       if (restoreMsg) {
@@ -173,6 +185,7 @@ window.addEventListener('DOMContentLoaded', () => {
     ) as HTMLInputElement | null;
     if (nameInput && res.profile?.callsign) {
       nameInput.value = res.profile.callsign;
+      nameEdited = false; lobbyBrowser.setDefaultPlayerName(res.profile.callsign);
     }
     renderCareerProgressionStrip();
     syncLockerUI();
@@ -332,10 +345,15 @@ window.addEventListener('DOMContentLoaded', () => {
     syncLockerUI();
     document.getElementById('lobby-overlay')?.classList.add('hidden');
     document.getElementById('locker-overlay')?.classList.remove('hidden');
+    const card = document.querySelector('.locker-card'); if (card) card.scrollTop = 0;
+    const dock = document.getElementById('lobby-preview-dock'); if (dock) dock.scrollTop = 0;
   };
 
   document.getElementById('btn-open-locker')?.addEventListener('click', openLocker);
-  document.getElementById('btn-dock-locker')?.addEventListener('click', openLocker);
+  document.getElementById('btn-dock-locker')?.addEventListener('click', () => {
+    document.getElementById('locker-overlay')?.classList.add('hidden');
+    document.getElementById('lobby-overlay')?.classList.remove('hidden');
+  });
 
   document.getElementById('btn-close-locker')?.addEventListener('click', () => {
     engine.sound.playUIClick();
@@ -366,6 +384,7 @@ window.addEventListener('DOMContentLoaded', () => {
   const openHowTo = () => {
     engine.sound.playUIClick();
     document.getElementById('howto-overlay')?.classList.remove('hidden');
+    const card = document.querySelector('.howto-card'); if (card) card.scrollTop = 0;
   };
   document.getElementById('btn-open-howto')?.addEventListener('click', openHowTo);
   document.getElementById('btn-open-howto-pause')?.addEventListener('click', openHowTo);
@@ -393,7 +412,35 @@ window.addEventListener('DOMContentLoaded', () => {
     'lobby-player-name'
   ) as HTMLInputElement | null;
 
-  let mainMenuMode: 'solo' | 'multiplayer' = 'solo';
+  let mainMenuMode: 'home' | 'solo' | 'multiplayer' | 'account' = 'home';
+  let nameEdited = false;
+  if (playerNameInput) playerNameInput.value = engine.progression.state.callsign || '';
+  const validateName = (): string | null => {
+    const raw = playerNameInput?.value.trim() || '';
+    // Existing two-character accounts can keep their legacy name unchanged.
+    const name = validateDisplayName(raw) || (raw === engine.progression.state.callsign && /^[A-Za-z0-9_ -]{2,18}$/.test(raw) ? raw : null);
+    const status = document.getElementById('name-status')!;
+    if (!name) {
+      status.textContent = 'Use 3–18 characters: start with a letter or number; then letters, numbers, spaces, _ or -.';
+      playerNameInput?.setAttribute('aria-invalid', 'true'); playerNameInput?.focus();
+      return null;
+    }
+    playerNameInput!.value = name; playerNameInput!.removeAttribute('aria-invalid');
+    engine.progression.saveDisplayNameLocally(name);
+    return name;
+  };
+  const saveName = async () => {
+    if (activeLobbySnapshot || pendingLobbyJoin) return;
+    const name = validateName(); if (!name) return;
+    await engine.accountReady;
+    const ok = await engine.progression.initializeServerAccount(name);
+    if (playerNameInput?.value !== name || activeLobbySnapshot) return;
+    engine.progression.state.callsign = name; engine.progression.saveProgression();
+    document.getElementById('name-status')!.textContent = ok ? 'Name saved to your account.' : 'Using this name locally. Server unavailable; multiplayer requires a connection.';
+    nameEdited = false; renderCareerProgressionStrip();
+  };
+  document.getElementById('btn-save-name')?.addEventListener('click', () => { void saveName(); });
+  playerNameInput?.addEventListener('change', () => { void saveName(); });
   let activeLobbySnapshot: RoomSnapshot | null = null;
   let lobbyBusy = false;
   let pendingLobbyJoin = false;
@@ -470,6 +517,7 @@ window.addEventListener('DOMContentLoaded', () => {
   const ensureVerifiedMultiplayerAccount = async (
     callsign: string
   ): Promise<boolean> => {
+    await engine.accountReady;
     const initialized = await engine.progression.initializeServerAccount(callsign);
     const credentials = engine.progression.credentials;
     if (!initialized || !credentials.accountId || !credentials.accountToken) {
@@ -494,7 +542,7 @@ window.addEventListener('DOMContentLoaded', () => {
     const requestedBotCount =
       overrides.botCount ?? (parseInt(botCountSelectEl?.value || '14', 10) || 14);
     return {
-      playerName: playerNameInput?.value || 'Commander_CI',
+      playerName: playerNameInput?.value.trim() || engine.progression.state.callsign || '',
       mode,
       roomCode: roomCode || undefined,
       skyDrop: skyDropCheck?.checked ?? true,
@@ -514,6 +562,8 @@ window.addEventListener('DOMContentLoaded', () => {
     connectingMessage: string
   ): Promise<void> => {
     if (lobbyBusy || engine.isRunningMatch) return;
+    const chosenName = validateName(); if (!chosenName) return;
+    config.playerName = chosenName;
     if (isLobbyConnectionPending()) {
       lobbyBrowser.setTab('mine');
       lobbyBrowser.showMessage(
@@ -767,14 +817,16 @@ window.addEventListener('DOMContentLoaded', () => {
 
   lobbyBrowser.setDefaultPlayerName(playerNameInput?.value || 'Commander_CI');
   playerNameInput?.addEventListener('input', () => {
+    nameEdited = true;
     lobbyBrowser.setDefaultPlayerName(playerNameInput.value);
   });
 
   const updateMainMenuMode = () => {
+    menuShell.show(mainMenuMode);
     const multiplayer = mainMenuMode === 'multiplayer';
     soloBtn?.classList.toggle('active-pill', !multiplayer);
     onlineBtn?.classList.toggle('active-pill', multiplayer);
-    soloControlsEl?.classList.toggle('hidden', multiplayer);
+    soloControlsEl?.classList.toggle('hidden', mainMenuMode !== 'solo');
     lobbyBrowser.setVisible(multiplayer);
     if (launchBtn) {
       launchBtn.disabled = false;
@@ -785,20 +837,17 @@ window.addEventListener('DOMContentLoaded', () => {
     else stopLobbyDirectory();
   };
 
-  const setMainMenuMode = (mode: 'solo' | 'multiplayer') => {
+  const setMainMenuMode = (mode: 'home' | 'solo' | 'multiplayer' | 'account') => {
     if (mode === 'solo' && isLobbyConnectionPending()) {
       leaveCurrentLobby(false);
     }
     mainMenuMode = mode;
     updateMainMenuMode();
-    if (mode === 'multiplayer') {
-      window.requestAnimationFrame(() => {
-        document
-          .getElementById('multiplayer-browser')
-          ?.scrollIntoView({ block: 'start', behavior: 'smooth' });
-      });
-    }
+
   };
+
+  document.getElementById('menu-back')?.addEventListener('click', () => setMainMenuMode('home'));
+  document.getElementById('btn-menu-account')?.addEventListener('click', () => setMainMenuMode('account'));
 
   soloBtn?.addEventListener('click', () => {
     engine.sound.playUIClick();
@@ -832,10 +881,17 @@ window.addEventListener('DOMContentLoaded', () => {
     const previousRoomCode = activeLobbySnapshot?.roomCode || '';
     const previousHostPlayerId = activeLobbySnapshot?.hostPlayerId || '';
     activeLobbySnapshot = snapshot;
+    if (playerNameInput) playerNameInput.disabled = !!snapshot;
+    (document.getElementById('btn-save-name') as HTMLButtonElement).disabled = !!snapshot;
+    if (snapshot) {
+      const self = snapshot.players.find(player => player.id === snapshot.selfPlayerId);
+      if (self && playerNameInput) playerNameInput.value = self.name;
+      document.getElementById('name-status')!.textContent = 'Name locked for this lobby. Leave the lobby to change it.';
+    }
     pendingLobbyJoin = false;
     if (lobbyBusy) setLobbyBusy(false);
     if (snapshot) {
-      mainMenuMode = 'multiplayer';
+      if (!hadSnapshot) { mainMenuMode = 'multiplayer'; menuShell.show('multiplayer'); }
       soloBtn?.classList.remove('active-pill');
       onlineBtn?.classList.add('active-pill');
       soloControlsEl?.classList.add('hidden');
@@ -1013,6 +1069,7 @@ window.addEventListener('DOMContentLoaded', () => {
       );
       return;
     }
+    if (!validateName()) return;
     engine.startMatch(buildBaseLobbyConfig('solo_bots', 'CICRAFT-1'));
   });
 
@@ -1026,6 +1083,7 @@ window.addEventListener('DOMContentLoaded', () => {
       // Ended lobby rooms are not restarted into a partially reused roster.
       // Return to the live browser so players can join a fresh server lobby.
       engine.returnToMainMenu();
+      setMainMenuMode('home');
       activeLobbySnapshot = null;
       pendingLobbyJoin = false;
       setMainMenuMode('multiplayer');
@@ -1034,6 +1092,7 @@ window.addEventListener('DOMContentLoaded', () => {
       lobbyBrowser.showMessage('Find a fresh lobby or create a new one for the next match.');
       return;
     }
+    if (!validateName()) return;
     engine.startMatch(buildBaseLobbyConfig('solo_bots', 'CICRAFT-1'));
   });
 
@@ -1050,11 +1109,13 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-spectator-menu')?.addEventListener('click', () => {
     engine.sound.playUIClick();
     engine.returnToMainMenu();
+    setMainMenuMode('home');
   });
 
   document.getElementById('btn-end-main-menu')?.addEventListener('click', () => {
     engine.sound.playUIClick();
     engine.returnToMainMenu();
+    setMainMenuMode('home');
   });
 
   // Pause & Settings Controls
@@ -1072,6 +1133,7 @@ window.addEventListener('DOMContentLoaded', () => {
     engine.sound.playUIClick();
     if (engine.currentConfig.mode !== 'solo_bots') {
       engine.returnToMainMenu();
+      setMainMenuMode('home');
       activeLobbySnapshot = null;
       pendingLobbyJoin = false;
       setMainMenuMode('multiplayer');
@@ -1085,11 +1147,13 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-return-menu')?.addEventListener('click', () => {
     engine.sound.playUIClick();
     engine.returnToMainMenu();
+    setMainMenuMode('home');
   });
 
   const openSettings = () => {
     engine.sound.playUIClick();
     document.getElementById('settings-overlay')?.classList.remove('hidden');
+    const card = document.querySelector('.settings-card'); if (card) card.scrollTop = 0;
   };
 
   document
@@ -1354,6 +1418,7 @@ window.addEventListener('DOMContentLoaded', () => {
     // player may not have tapped a button to move focus away from a field.
     window.requestAnimationFrame(() => {
       mobileLandscape?.blurActiveTextEntry();
+      mobileLandscape?.refresh();
     });
   };
 

@@ -1,0 +1,136 @@
+/* CI CRAFT 4.0 — menu-only layout. The gameplay HUD keeps its own geometry. */
+html, body { max-width: 100%; overflow: hidden; }
+.overlay-screen {
+  inset: var(--menu-top, 0px) 0 auto;
+  height: var(--menu-height, 100dvh); max-height: 100dvh;
+  padding: max(8px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  overflow: hidden; min-width: 0; backdrop-filter: none;
+}
+.overlay-screen [hidden] { display: none !important; }
+.overlay-screen *, .overlay-screen *::before, .overlay-screen *::after { min-width: 0; box-sizing: border-box; }
+.overlay-screen :is(.lobby-card, .end-card) {
+  max-height: 100%; overflow: auto; overscroll-behavior: contain; touch-action: pan-y;
+  width: min(100%, 700px); padding: clamp(14px, 2.5vw, 26px);
+  border: 1px solid #284257; border-radius: 16px; background: #0d1c2e;
+  box-shadow: 0 16px 48px #0005; overflow-wrap: anywhere;
+  scrollbar-width: thin; scrollbar-color: #31576c #0d1c2e;
+}
+.overlay-screen :is(button, input, select) { max-width: 100%; min-height: 44px; }
+.overlay-screen :is(input, select, textarea) { font-size: 16px; }
+.overlay-screen button { white-space: normal; overflow-wrap: anywhere; touch-action: manipulation; }
+#lobby-overlay { justify-content: center; align-items: center; background: #07111eef; }
+#lobby-overlay > .lobby-card { width: min(100%, 760px); max-height: 100%; text-align: left; }
+#lobby-overlay[data-menu-section="home"] > .lobby-card { max-width: 520px; }
+#lobby-overlay .game-title { font-size: clamp(28px, 5vw, 42px); line-height: 1.05; margin: 8px 0; letter-spacing: -.04em; }
+#lobby-overlay .game-subtitle { font-size: 13px; line-height: 1.4; margin: 0 0 16px; color: #9eb2c6; }
+#lobby-overlay .lobby-top-bar .brand-badge { font-size: 9px; letter-spacing: .08em; background: none; border: 0; padding: 0; margin: 0; }
+#lobby-overlay .mini-util-btn { font-size: 11px; }
+.menu-profile { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; align-items: end; padding: 12px; background: #13253a; border: 1px solid #294153; border-radius: 10px; }
+.menu-profile .form-group { margin: 0; gap: 5px; }
+.menu-profile label { font-size: 12px; color: #aec2d3; }
+.menu-profile input { width: 100%; padding: 8px 10px; background: #091625; color: #e7f3ff; border: 1px solid #35566d; border-radius: 7px; }
+.menu-profile input[aria-invalid] { border-color: #ff998b; }
+#name-status { grid-column: 1/-1; margin: 0; color: #adc6d6; font-size: 11px; line-height: 1.4; }
+#btn-save-name, #menu-back, #menu-utilities button { border: 1px solid #365266; background: #152a3d; color: #dfedf7; border-radius: 8px; padding: 8px 12px; font: 600 12px system-ui; }
+.menu-section-heading { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 16px 0 12px; }
+.menu-section-heading h2 { font-size: 16px; font-weight: 600; color: #d7e5f1; margin: 0; }
+#lobby-overlay .primary-mode-pills { display: grid; grid-template-columns: 1fr; gap: 10px; margin: 0; }
+#lobby-overlay .primary-mode-pills .nav-pill { min-height: 62px; text-align: left; padding: 16px 20px; color: #e5faff; background: #15364b; border: 1px solid #328eaa; font-size: 17px; letter-spacing: .06em; border-radius: 10px; box-shadow: none; }
+#lobby-overlay #btn-mode-online { background: #123044; border-color: #325e76; }
+#menu-utilities { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; margin-top: 16px; }
+#menu-utilities button { margin: 0; width: 100%; }
+#lobby-overlay[data-menu-section="home"] .lobby-form,
+#lobby-overlay[data-menu-section="account"] .lobby-form,
+#lobby-overlay:not([data-menu-section="home"]) .primary-mode-pills,
+#lobby-overlay:not([data-menu-section="home"]) #menu-utilities { display: none; }
+#lobby-overlay .lobby-form { margin: 0; }
+#lobby-overlay .form-row { gap: 12px; }
+#lobby-overlay .deployment-preference { margin: 10px 0; }
+#lobby-overlay .career-strip { margin: 0; }
+#lobby-overlay .lobby-room-bar { margin: 10px 0; padding: 10px; gap: 6px; flex-wrap: wrap; }
+#lobby-overlay .room-status-tag, #lobby-overlay .career-storage-badge { white-space: normal; overflow-wrap: anywhere; }
+#lobby-overlay #multiplayer-browser { border-radius: 10px; background: #0a1727; box-shadow: none; }
+#lobby-overlay .lobby-browser-hero { padding: 12px; gap: 8px; flex-wrap: wrap; }
+#lobby-overlay .lobby-browser-hero h2 { font-size: 20px; }
+#lobby-overlay .lobby-browser-hero p { font-size: 12px; }
+#lobby-overlay .lobby-browser-hero-actions { justify-content: flex-start; }
+#lobby-overlay .lobby-browser-tabs { display: flex; flex-wrap: wrap; }
+#lobby-overlay .lobby-browser-tab { flex: 1 1 90px; padding: 8px 6px; font-size: 11px; }
+#lobby-overlay .lobby-card-list { max-height: min(360px, 45dvh); overflow: auto; }
+#lobby-overlay :is(.lobby-browser-panel, .lobby-filter-bar, .create-lobby-form, .my-lobby-panel) { padding: 12px; }
+.duplicate-name-warning { color: #f3c87b; font-size: 12px; padding: 10px; border: 1px solid #6b5730; border-radius: 6px; }
+/* Existing showcases move to Locker, where they cannot crowd mode selection. */
+#locker-overlay { display: grid; grid-template-columns: minmax(0,650px) minmax(0,340px); justify-content: center; gap: 16px; }
+#locker-overlay.hidden { display: none; }
+#locker-overlay > .lobby-preview-dock:not(#lobby-preview-dock) { display: none; }
+#locker-overlay #lobby-preview-dock { width: 100%; height: auto; max-height: 100%; overflow: auto; padding: 12px; gap: 10px; align-self: center; background: #0d1c2ee8; border-radius: 12px; }
+#locker-overlay .preview-showcase { width: 100%; margin: 0; padding: 12px; }
+#locker-overlay .preview-dock-header { margin: 0; }
+#locker-overlay .preview-dock-header strong { font-size: 20px; }
+#locker-overlay .preview-stat-grid { gap: 4px; }
+#howto-overlay .howto-sections { grid-template-columns: 1fr; }
+@media (max-width: 600px), (max-height: 500px) {
+  .overlay-screen :is(.lobby-card, .end-card) { padding: 12px; border-radius: 10px; }
+  #lobby-overlay .game-subtitle { margin-bottom: 10px; }
+  #lobby-overlay .lobby-top-bar .brand-badge { max-width: 55%; }
+  #lobby-overlay .form-row, #lobby-overlay .account-restore-row { flex-wrap: wrap; }
+  #lobby-overlay .form-row > *, #lobby-overlay .account-restore-row > * { flex: 1 1 160px; }
+  #lobby-overlay :is(.lobby-filter-grid, .create-lobby-grid, .my-lobby-share-grid) { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  #lobby-overlay .career-stats-row { flex-wrap: wrap; }
+  #locker-overlay { grid-template-columns: minmax(0,1fr); grid-template-rows: minmax(0,1fr) auto; gap: 8px; }
+  #locker-overlay #lobby-preview-dock { max-height: min(150px, 26dvh); padding: 8px; }
+  #locker-overlay .preview-showcase { display: none; }
+  #locker-overlay .preview-dock-header { gap: 2px; }
+  #locker-overlay .preview-dock-header strong { font-size: 15px; }
+  #locker-overlay .preview-tag, #locker-overlay #preview-outfit-detail { display: none; }
+  .overlay-screen .end-title { font-size: 28px; }
+}
+@media (max-width: 380px) {
+  #lobby-overlay :is(.lobby-filter-grid, .create-lobby-grid, .my-lobby-share-grid) { grid-template-columns: minmax(0,1fr); }
+  #lobby-overlay .lobby-browser-hero-actions > * { flex: 1 1 90px; }
+}
+@media (max-height: 500px) and (min-width: 550px) {
+  #lobby-overlay[data-menu-section="home"] > .lobby-card { max-width: 740px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; }
+  #lobby-overlay[data-menu-section="home"] :is(.lobby-top-bar,.game-title,.game-subtitle,.menu-profile) { grid-column: 1; margin: 0; }
+  #lobby-overlay[data-menu-section="home"] .menu-section-heading { grid-column: 2; grid-row: 1; margin: 0; }
+  #lobby-overlay[data-menu-section="home"] .primary-mode-pills { grid-column: 2; grid-row: 2 / 5; }
+  #lobby-overlay[data-menu-section="home"] #menu-utilities { grid-column: 1/-1; grid-template-columns: repeat(4,minmax(0,1fr)); margin: 0; }
+}
+/* A shared header keeps drag/reset accessible without adding HUD height. */
+#chat-toolbar { display: flex; flex-shrink: 0; width: 100%; align-items: center; }
+#text-chat:not([data-open="true"]) :is(#chat-drag,#chat-reset) { display: none; }
+#text-chat[data-open="true"] #chat-toggle { flex: 1; min-width: 44px; padding: 3px; font-size: 11px; }
+#text-chat[data-open="true"] #chat-toggle svg { display: none; }
+#chat-drag, #chat-reset { flex: 0 0 44px; width: 44px; padding: 2px; }
+#chat-drag { touch-action: none !important; cursor: grab !important; }
+#chat-drag:active { cursor: grabbing !important; }
+#chat-reset { font-size: 10px !important; }
+#text-chat { scroll-padding-left: max(8px,env(safe-area-inset-left)); scroll-padding-right: max(8px,env(safe-area-inset-right)); scroll-padding-top: max(8px,env(safe-area-inset-top)); scroll-padding-bottom: max(8px,env(safe-area-inset-bottom)); }
+#lobby-overlay { background: #07111e; }
+#lobby-overlay .game-title span { background: none; -webkit-text-fill-color: #65d5e7; color: #65d5e7; }
+#locker-overlay { background: #07111eaa; }
+#locker-overlay #lobby-preview-dock { background: transparent; }
+#operator-preview-window { height: 210px; width: 100%; border: 1px solid #365266; border-radius: 10px; flex-shrink: 0; }
+#locker-overlay .preview-dock-header, #locker-overlay .preview-dock-controls { background: #0d1c2e; border-radius: 8px; padding: 6px; }
+@media (max-width: 600px), (max-height: 500px) {
+  #locker-overlay #lobby-preview-dock { display: grid; grid-template-columns: 100px minmax(0,1fr); grid-template-rows: auto auto; max-height: min(160px, 36dvh); padding: 0; gap: 4px; }
+  #operator-preview-window { height: 108px; grid-column: 1; grid-row: 1/3; }
+  #locker-overlay .preview-dock-header, #locker-overlay .preview-dock-controls { grid-column: 2; padding: 3px; }
+  #locker-overlay .preview-dock-controls { gap: 4px; }
+  #locker-overlay .preview-ctrl-btn { font-size: 10px; padding: 4px; min-width: 44px; }
+  #locker-overlay .preview-showcase { display: block; grid-column: 1/-1; }
+}
+/* Empty space alongside the collapsed button never captures gameplay/menu taps. */
+#text-chat, #chat-toolbar { pointer-events: none; }
+#chat-toolbar button, #chat-panel { pointer-events: auto; }
+.overlay-screen .game-title { font-size: clamp(24px, 4vw, 34px); line-height: 1.1; margin: 10px 0; color: #e5f2fc; text-shadow: none; }
+.overlay-screen .primary-launch-btn { min-height: 48px; padding: 12px; font-size: 14px; letter-spacing: .03em; background: #186179; color: #edfcff; border: 1px solid #54b8ca; box-shadow: none; text-shadow: none; }
+.overlay-screen .menu-close { display: block; min-height: 44px; padding: 8px 14px; border: 1px solid #365266; border-radius: 8px; background: #152a3d; color: #e5f2fc; font-size: 14px; }
+#locker-overlay #lobby-preview-dock, #locker-overlay .preview-showcase { pointer-events: auto; touch-action: pan-y; overscroll-behavior: contain; }
+@media (max-width: 600px), (max-height: 500px) {
+  #locker-overlay .preview-dock-header { grid-row: 1; }
+  #locker-overlay .preview-dock-controls { grid-row: 2; }
+  #locker-overlay .preview-showcase { grid-row: 3; }
+}
+.menu-screen-title { font-size: 23px; line-height: 1.2; color: #d9effa; margin: 12px 0; letter-spacing: .03em; }
+#chat-toolbar { width: min(100%, 180px); }

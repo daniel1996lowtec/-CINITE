@@ -762,6 +762,8 @@ export class LobbyBrowserUI {
       if (players.length === 0) {
         roster.appendChild(makeElement('div', 'my-lobby-roster-empty', 'Waiting for the server roster…'));
       }
+      const duplicateNames = players.filter((p, i) => players.findIndex(other => other.name.toLowerCase() === p.name.toLowerCase()) !== i);
+      if (duplicateNames.length) roster.appendChild(makeElement('p', 'duplicate-name-warning', 'Duplicate display names in this lobby. Names are not identity; use YOU, HOST and the player ID badges to distinguish players. Leave the lobby to rename.'));
       for (const player of players) {
         const row = makeElement(
           'div',
@@ -782,6 +784,7 @@ export class LobbyBrowserUI {
         const left = makeElement('div', 'my-lobby-player-main');
         left.appendChild(makeElement('strong', 'my-lobby-player-name', player.name));
         const badges = makeElement('span', 'my-lobby-player-badges');
+        badges.appendChild(makeElement('span', 'mini-badge', `ID ${player.id.slice(-6)}`));
         if (player.isHost) badges.appendChild(makeElement('span', 'mini-badge host', 'HOST'));
         if (player.id === snapshot.selfPlayerId) badges.appendChild(makeElement('span', 'mini-badge you', 'YOU'));
         if (outfitPreset) {

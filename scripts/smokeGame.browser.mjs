@@ -15,14 +15,21 @@ try {
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
   page.on('console',message=>{if(message.type()==='error'&&/THREE|WebGL|shader/i.test(message.text()))errors.push(message.text())});
   await page.goto(process.env.GAME_QA_URL || 'http://localhost:2567');
-  await page.waitForSelector('#btn-launch-match');
+  await page.waitForSelector('#btn-mode-solo');
   await page.selectOption('#setting-graphics','low',{force:true});
+  await page.click('#btn-open-locker');
+  await page.waitForFunction(()=>{const c=document.querySelector('#game-canvas-container canvas'),g=c.getContext('webgl2');return g.getParameter(g.VIEWPORT)[2]<c.width});
+  await page.click('#btn-dock-locker');
+  await page.click('#btn-mode-solo');
+  await page.waitForSelector('#btn-launch-match');
   await page.tap('#btn-launch-match');
   await page.waitForSelector('#hud-overlay:not(.hidden)');
   // Software WebGL is slow; the simulation intentionally caps dt. This is
   // a bounded functional wait, not a wall-clock timing/performance assertion.
   await page.waitForFunction(()=>document.getElementById('countdown-overlay').classList.contains('hidden'),{},{timeout:45000});
   await page.waitForFunction(()=>document.getElementById('hud-storm-phase').textContent.includes('PHASE'),{},{timeout:45000});
+  const viewportRestored=await page.evaluate(()=>{const c=document.querySelector('#game-canvas-container canvas'),g=c.getContext('webgl2'),v=g.getParameter(g.VIEWPORT);return v[0]===0&&v[1]===0&&v[2]===c.width&&v[3]===c.height});
+  assert.equal(viewportRestored,true,'Locker viewport must restore before actual gameplay');
   // Real compiled main/GameEngine/Solo lifecycle: no room ACK or UI injection.
   await page.waitForSelector('#chat-toggle',{state:'visible'});
   const chatBounds=await page.evaluate(()=>{

@@ -78,7 +78,7 @@
     </div>
 
     <!-- Main Menu / Lobby Overlay -->
-    <div id="lobby-overlay" class="overlay-screen lobby-split-screen">
+    <div id="lobby-overlay" class="overlay-screen lobby-split-screen" data-menu-section="home">
       <div class="lobby-card">
         <div class="lobby-top-bar">
           <div class="brand-badge">STYLIZED 3D THIRD-PERSON BATTLE ROYALE</div>
@@ -89,31 +89,39 @@
             data-fullscreen-toggle
             title="Toggle Fullscreen"
           >
-            🖥️ FULLSCREEN
+            FULLSCREEN
           </button>
         </div>
         <h1 class="game-title">CI <span>CRAFT</span></h1>
-        <p class="game-subtitle">
-          Drop onto the CI Pipeline Island across 8 Named POIs and Aurora Heights, scavenge
-          nine weapon archetypes in 5 rarity tiers, build fortifications, and outlast the storm!
-        </p>
-
+        <p class="game-subtitle">Your island. Your squad. Your next victory.</p>
+        <div id="menu-profile" class="menu-profile">
+          <button id="btn-save-name" type="button">Save name</button>
+          <p id="name-status" role="status">3–18 characters: letters, numbers, spaces, _ or -.</p>
+        </div>
+        <div class="menu-section-heading">
+          <button id="menu-back" type="button" hidden>← Main menu</button>
+          <h2 id="menu-section-title">Choose your next drop</h2>
+        </div>
         <!-- Quick Mode & Menu Navigation Tabs -->
         <div class="lobby-nav-pills primary-mode-pills">
           <button id="btn-mode-solo" class="nav-pill active-pill" type="button">
-            🤖 PLAY SOLO
+            SINGLE MODE
           </button>
           <button id="btn-mode-online" class="nav-pill" type="button">
-            🌐 MULTIPLAYER
+            MULTIPLAYER
           </button>
           <button id="btn-open-locker" class="nav-pill" type="button">
-            🎨 LOCKER
+            LOCKER
           </button>
           <button id="btn-open-howto" class="nav-pill" type="button">
-            📖 HOW TO PLAY
+            HOW TO PLAY
           </button>
         </div>
 
+        <nav id="menu-utilities" aria-label="More options">
+          <button id="btn-menu-account" type="button">Career & account</button>
+        </nav>
+        <section id="menu-account" hidden aria-label="Career and account"></section>
         <!-- Career & Progression Strip -->
         <div id="lobby-career-strip" class="career-strip">
           <div class="career-header-row">
@@ -193,12 +201,12 @@
         <div class="lobby-form">
           <div class="form-row">
             <div class="form-group">
-              <label for="lobby-player-name">Commander Callsign</label>
+              <label for="lobby-player-name">Display name</label>
               <input
                 type="text"
                 id="lobby-player-name"
-                value="Commander_CI"
-                maxlength="18"
+                value=""
+                minlength="3" maxlength="18" required autocomplete="nickname" aria-describedby="name-status"
                 placeholder="Enter callsign..."
               />
             </div>
@@ -659,7 +667,7 @@
           </section>
 
           <button id="btn-open-settings-lobby" class="secondary-action-btn global-settings-btn" title="Settings">
-            ⚙️ SETTINGS
+            SETTINGS
           </button>
         </div>
 
@@ -684,6 +692,7 @@
 
       <!-- Right-Side Live 3D Character Preview Stage Dock -->
       <div id="lobby-preview-dock" class="lobby-preview-dock">
+        <div id="operator-preview-window" aria-label="Live 3D operator and weapon preview"></div>
         <div class="preview-dock-header">
           <span class="preview-tag">LIVE 3D OPERATOR PREVIEW</span>
           <strong id="preview-outfit-name">CI Vanguard</strong>
@@ -718,7 +727,7 @@
             ⟲ Rotate
           </button>
           <button id="btn-dock-locker" class="preview-ctrl-btn accent" type="button">
-            🎨 Customize Outfit
+            Done
           </button>
           <button id="btn-rot-right" class="preview-ctrl-btn" type="button" title="Rotate Right">
             Rotate ⟳
@@ -730,9 +739,13 @@
     <!-- In-Match HUD Overlay -->
     <!-- Text-only lobby chat. Independent of match HUD so it also works pre-match. -->
     <section id="text-chat" hidden aria-label="Lobby text chat" data-allow-game-keyboard="true">
+      <header id="chat-toolbar" aria-label="Chat controls">
       <button id="chat-toggle" type="button" aria-expanded="false" aria-controls="chat-panel" title="Lobby text chat (T during a match)">
         <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 4h16v12H9l-5 4V4Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg> CHAT <span id="chat-unread" hidden aria-live="polite">0</span>
       </button>
+      <button id="chat-drag" type="button" title="Drag to move chat; arrow keys also move" aria-label="Move chat (drag or arrow keys)"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v20M2 12h20M8 6l4-4 4 4M8 18l4 4 4-4M6 8l-4 4 4 4M18 8l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></button>
+      <button id="chat-reset" type="button" title="Reset chat position">Reset</button>
+      </header>
       <div id="chat-panel" hidden>
         <ol id="chat-log" role="log" aria-label="Lobby messages" aria-live="polite" aria-relevant="additions" tabindex="0"></ol>
         <form id="chat-form" autocomplete="off">
@@ -1006,7 +1019,7 @@
             ⚙️ GAME SETTINGS
           </button>
           <button id="btn-open-howto-pause" class="secondary-action-btn">
-            📖 HOW TO PLAY &amp; CONTROLS
+            HOW TO PLAY &amp; CONTROLS
           </button>
           <button id="btn-restart-match" class="secondary-action-btn">
             🔄 RESTART MATCH
@@ -1021,8 +1034,9 @@
     <!-- Cosmetic Locker Overlay (Split View so 3D Character Preview stays visible) -->
     <div id="locker-overlay" class="overlay-screen lobby-split-screen hidden">
       <div class="lobby-card locker-card">
+        <button class="menu-close" type="button" data-menu-close="btn-close-locker">← Back</button>
         <div class="brand-badge">VISUAL-ONLY OPERATOR CUSTOMIZATION</div>
-        <h2 class="end-title victory" style="font-size: 1.85rem">🎨 OPERATOR LOCKER</h2>
+        <h2 class="menu-screen-title">OPERATOR LOCKER</h2>
         <p class="game-subtitle" style="margin-bottom: 12px">
           Customize your Outfit, Armor Plating, Visor Optics, and Back Accessory. Cosmetics are
           100% visual-only and never alter hitboxes, movement speed, or damage.
@@ -1106,8 +1120,9 @@
     <!-- How to Play & Tactical Controls Reference Modal -->
     <div id="howto-overlay" class="overlay-screen hidden">
       <div class="end-card howto-card">
+        <button class="menu-close" type="button" data-menu-close="btn-close-howto">← Back</button>
         <div class="brand-badge">FIELD MANUAL &amp; TACTICAL GUIDE</div>
-        <h2 class="end-title victory" style="font-size: 1.85rem">📖 HOW TO PLAY</h2>
+        <h2 class="menu-screen-title">HOW TO PLAY</h2>
 
         <div class="howto-sections">
           <div class="howto-box">
@@ -1163,7 +1178,8 @@
     <!-- Settings Modal Overlay -->
     <div id="settings-overlay" class="overlay-screen hidden">
       <div class="end-card settings-card">
-        <h2 class="end-title victory" style="font-size: 1.85rem">⚙️ SETTINGS</h2>
+        <button class="menu-close" type="button" data-menu-close="btn-close-settings">← Back</button>
+        <h2 class="menu-screen-title">SETTINGS</h2>
         <div class="lobby-form" style="margin-top: 16px">
           <div class="form-group">
             <label for="setting-sensitivity">

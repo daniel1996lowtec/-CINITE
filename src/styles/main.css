@@ -4260,11 +4260,12 @@ input:disabled {
 #text-chat {
   --chat-top: calc(env(safe-area-inset-top, 0px) + 244px);
   --chat-left: calc(env(safe-area-inset-left, 0px) + 16px);
+  --chat-anchor-left: calc(env(safe-area-inset-left, 0px) + 16px);
   position: fixed; z-index: 120; display: flex; flex-direction: column; align-items: flex-start;
-  max-height: min(240px, calc(var(--chat-viewport-height, 100dvh) - var(--chat-top) - var(--chat-bottom-clearance, 76px)));
+  max-height: min(240px, calc(var(--chat-viewport-height, 100dvh) - var(--chat-anchor-top, var(--chat-top)) - var(--chat-bottom-clearance, 76px)));
   left: var(--chat-left);
   top: var(--chat-top);
-  width: min(280px, calc(50dvw - var(--chat-left) - 24px));
+  width: min(280px, calc(50dvw - var(--chat-anchor-left, var(--chat-left)) - 24px));
   color: #e6f5ff; font: 12px/1.35 system-ui, sans-serif;
   pointer-events: auto;
 }
@@ -4286,6 +4287,6 @@ input:disabled {
 #chat-toggle { border: 2px solid #67e8f9 !important; color: #e6fcff !important; box-shadow: 0 2px 8px #0009; }
 #text-chat button:disabled, #chat-input:disabled { opacity: .55; cursor: not-allowed; }
 @media (pointer: coarse) {
-  #text-chat { --chat-left: calc(var(--mh-left) + 112px); --chat-top: calc(var(--mh-top) + 72px); width: clamp(140px, calc(50dvw - var(--chat-left) - 24px), 230px); }
+  #text-chat { --chat-anchor-left: calc(var(--mh-left) + 112px); --chat-left: calc(var(--mh-left) + 112px); --chat-top: calc(var(--mh-top) + 72px); width: clamp(140px, calc(50dvw - var(--chat-anchor-left, var(--chat-left)) - 24px), 230px); }
   #chat-log { height: clamp(32px, calc(50dvh - 140px), 90px); }
 }

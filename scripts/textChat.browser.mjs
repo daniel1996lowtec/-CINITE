@@ -140,6 +140,21 @@ try {
     for(const c of items.controls)assert.ok(!overlap(items.chat,c),`desktop ${width}: overlap ${JSON.stringify({chat:items.chat,control:c})}`);
     assert.ok(items.chat.x+items.chat.w<=width&&items.chat.y+items.chat.h<=height);
   }
+  // Persist/reload with the actual TextChat instance; game state above remains
+  // controlled, unlike the separate compiled-game pointer/server regression.
+  await desktopPage.focus('#chat-drag');await desktopPage.keyboard.press('ArrowRight');
+  const saved=await desktopPage.evaluate(()=>localStorage.getItem('ci-craft-chat-position-v1'));assert.ok(saved);
+  await desktopPage.reload();await desktopPage.waitForFunction(()=>!!window.chatQA);
+  await desktopPage.evaluate(()=>{
+    document.querySelectorAll('.overlay-screen').forEach(e=>e.classList.add('hidden'));
+    document.getElementById('hud-overlay').classList.remove('hidden');
+    chatQAEngine.network.textChat.joined('DESKTOP-QA');chatQA.open();
+  });
+  assert.equal(await desktopPage.evaluate(()=>localStorage.getItem('ci-craft-chat-position-v1')),saved);
+  const restored=await desktopPage.locator('#text-chat').boundingBox();
+  const position=JSON.parse(saved);assert.ok(Math.abs(restored.x-(8+position.x*(800-16-restored.width)))<1);
+  await desktopPage.click('#chat-reset');assert.equal(await desktopPage.evaluate(()=>localStorage.getItem('ci-craft-chat-position-v1')),null);
+  const reset=await desktopPage.locator('#text-chat').boundingBox();assert.ok(reset.x<restored.x);
   assert.deepEqual(errors,[]);
   console.log(JSON.stringify({result:'PASS',layoutCases,desktopCases:2,input:'actual main handlers: typing isolation, T, focused Enter, IME, Escape, button, unread, safe DOM, bounded history and cleanup',errors},null,2));
 }finally{await browser.close()}

@@ -148,10 +148,20 @@ export class ProgressionSystem {
   public state: PlayerProgressionState;
   public cosmetics: CosmeticLoadout;
   public credentials: AccountCredentialsState;
+  private pendingName: { accountId: string; name: string } | null = null;
+  private readonly pendingNameKey = 'ci-craft-pending-name-v1';
 
   constructor() {
     this.credentials = this.loadCredentials();
     this.state = this.loadProgression();
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(this.pendingNameKey) || 'null');
+      if (saved && typeof saved.accountId === 'string' && typeof saved.name === 'string' && /^[A-Za-z0-9_ -]{2,18}$/.test(saved.name)) this.pendingName = saved;
+    } catch { /* Offline/private mode fallback. */ }
+    if (!this.state.callsign) {
+      this.state.callsign = `Pilot_${Math.random().toString(36).slice(2, 8).padEnd(6, '0')}`;
+      this.saveProgression();
+    }
     this.cosmetics = this.loadCosmetics();
   }
 
@@ -163,7 +173,7 @@ export class ProgressionSystem {
   }
 
   public loadCredentials(): AccountCredentialsState {
-    if (typeof window === 'undefined' || !window.localStorage) {
+    if (typeof window === 'undefined') {
       return { accountId: '', accountToken: '', passkey: '' };
     }
     try {
@@ -182,7 +192,7 @@ export class ProgressionSystem {
 
   public saveCredentials(creds: Partial<AccountCredentialsState>): void {
     Object.assign(this.credentials, creds);
-    if (typeof window === 'undefined' || !window.localStorage) return;
+    if (typeof window === 'undefined') return;
     try {
       window.localStorage.setItem(
         ACCOUNT_CREDENTIALS_KEY,
@@ -193,8 +203,26 @@ export class ProgressionSystem {
     }
   }
 
-  public async initializeServerAccount(callsign?: string): Promise<boolean> {
+  /** Local draft is associated with its account, never used as authentication. */
+  public saveDisplayNameLocally(name: string): void {
+    this.state.callsign = name;
+    this.pendingName = { accountId: this.credentials.accountId, name };
+    this.saveProgression();
+    try { window.localStorage.setItem(this.pendingNameKey, JSON.stringify(this.pendingName)); } catch { /* Session fallback. */ }
+  }
+  private clearPendingName(): void {
+    this.pendingName = null;
+    try { window.localStorage.removeItem(this.pendingNameKey); } catch { /* Session fallback. */ }
+  }
+  private accountQueue: Promise<boolean> = Promise.resolve(false);
+  public initializeServerAccount(callsign?: string): Promise<boolean> {
+    const request = () => this.initializeAccountRequest(callsign);
+    this.accountQueue = this.accountQueue.then(request, request);
+    return this.accountQueue;
+  }
+  private async initializeAccountRequest(callsign?: string): Promise<boolean> {
     if (typeof fetch !== 'function') return false;
+    const requestedName = callsign ?? (this.pendingName?.accountId === this.credentials.accountId ? this.pendingName.name : undefined);
     try {
       const res = await fetch(`${this.getApiBaseUrl()}/api/account/init`, {
         method: 'POST',
@@ -202,7 +230,7 @@ export class ProgressionSystem {
         body: JSON.stringify({
           accountId: this.credentials.accountId || undefined,
           accountToken: this.credentials.accountToken || undefined,
-          callsign: callsign || this.state.callsign || 'Commander_CI',
+          callsign: requestedName ?? (this.credentials.accountId ? undefined : this.state.callsign),
           cosmetics: this.cosmetics,
         }),
       });
@@ -220,6 +248,7 @@ export class ProgressionSystem {
 
       if (data.profile) {
         this.applyServerVerifiedProgression(data.profile, !data.isNew);
+        if (this.pendingName?.name === data.profile.callsign) this.clearPendingName();
       }
       return true;
     } catch {
@@ -253,6 +282,7 @@ export class ProgressionSystem {
         passkey: String(data.passkey || passkeyInput.trim()),
       });
 
+      this.clearPendingName();
       if (data.profile) {
         // Authoritatively overwrite local progression & cosmetics with the restored account
         this.state = this.getDefaultProgression();
@@ -312,7 +342,7 @@ export class ProgressionSystem {
   }
 
   public loadProgression(): PlayerProgressionState {
-    if (typeof window === 'undefined' || !window.localStorage) {
+    if (typeof window === 'undefined') {
       return this.getDefaultProgression();
     }
     try {
@@ -321,6 +351,7 @@ export class ProgressionSystem {
       const parsed = JSON.parse(raw) as Partial<PlayerProgressionState>;
       const xp = Math.max(0, Number(parsed.xp || 0));
       return {
+        callsign: typeof parsed.callsign === 'string' && /^[A-Za-z0-9_ -]{2,18}$/.test(parsed.callsign) ? parsed.callsign : undefined,
         matchesPlayed: Math.max(0, Number(parsed.matchesPlayed || 0)),
         wins: Math.max(0, Number(parsed.wins || 0)),
         eliminations: Math.max(0, Number(parsed.eliminations || 0)),
@@ -339,7 +370,7 @@ export class ProgressionSystem {
   }
 
   public saveProgression(): void {
-    if (typeof window === 'undefined' || !window.localStorage) return;
+    if (typeof window === 'undefined') return;
     try {
       window.localStorage.setItem(
         PROGRESSION_STORAGE_KEY,
@@ -351,7 +382,7 @@ export class ProgressionSystem {
   }
 
   public loadCosmetics(): CosmeticLoadout {
-    if (typeof window === 'undefined' || !window.localStorage) {
+    if (typeof window === 'undefined') {
       return this.getDefaultCosmetics();
     }
     try {
@@ -387,7 +418,7 @@ export class ProgressionSystem {
 
   public saveCosmetics(update: Partial<CosmeticLoadout>): CosmeticLoadout {
     Object.assign(this.cosmetics, update);
-    if (typeof window !== 'undefined' && window.localStorage) {
+    if (typeof window !== 'undefined') {
       try {
         window.localStorage.setItem(
           COSMETICS_STORAGE_KEY,
@@ -525,7 +556,7 @@ export class ProgressionSystem {
     }
     if (applyServerCosmetics && serverProfile.cosmetics) {
       Object.assign(this.cosmetics, serverProfile.cosmetics);
-      if (typeof window !== 'undefined' && window.localStorage) {
+      if (typeof window !== 'undefined') {
         try {
           window.localStorage.setItem(
             COSMETICS_STORAGE_KEY,

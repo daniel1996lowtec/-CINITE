@@ -1,3 +1,4 @@
+import { validateDisplayName } from '../shared/displayName.mjs';
 /**
  * CI Craft 2.8 — Durable Server-Side Persistence & Account Identity Layer
  *
@@ -500,8 +501,9 @@ export class PersistenceManager {
       return null;
     }
 
-    if (callsign) {
-      const cleanCallsign = sanitizeCallsign(callsign);
+    if (callsign !== undefined) {
+      const cleanCallsign = callsign === existing.callsign ? callsign : validateDisplayName(callsign);
+      if (!cleanCallsign) throw new Error('Invalid display name: use 3–18 letters, numbers, spaces, _ or -.');
       if (cleanCallsign !== existing.callsign) {
         return this.updateAccountCosmetics(accountId, undefined, cleanCallsign);
       }
@@ -511,11 +513,13 @@ export class PersistenceManager {
   }
 
   async createOrVerifyAccount({ accountId, accountToken, callsign, cosmetics }) {
-    const cleanCallsign = sanitizeCallsign(callsign);
+    let cleanCallsign = callsign === undefined ? sanitizeCallsign(callsign) : validateDisplayName(callsign);
 
     if (accountId && accountToken && this.verifySignedTokenFormat(accountId, accountToken)) {
       const existing = await this.getAccountRow(accountId);
       if (existing && timingSafeHexEqual(existing.token_hash, sha256Hex(accountToken))) {
+        if (callsign === existing.callsign) cleanCallsign = existing.callsign;
+        if (callsign !== undefined && !cleanCallsign) throw new Error('Invalid display name.');
         if (callsign && cleanCallsign !== existing.callsign) {
           await this.updateAccountCosmetics(accountId, undefined, cleanCallsign);
           existing.callsign = cleanCallsign;
@@ -530,6 +534,7 @@ export class PersistenceManager {
       }
     }
 
+    if (!cleanCallsign) throw new Error('Invalid display name.');
     const newAccountId = `acc_${crypto.randomBytes(6).toString('hex')}`;
     const nonce = crypto.randomBytes(12).toString('base64url');
     const newAccountToken = this.signAccountToken(newAccountId, nonce);
@@ -658,9 +663,10 @@ export class PersistenceManager {
     const nextCosmetics = cosmeticsUpdate
       ? sanitizeCosmetics({ ...currentCosmetics, ...cosmeticsUpdate })
       : currentCosmetics;
-    const nextCallsign = callsignUpdate
-      ? sanitizeCallsign(callsignUpdate)
-      : sanitizeCallsign(row.callsign);
+    const nextCallsign = callsignUpdate === undefined
+      ? sanitizeCallsign(row.callsign)
+      : (callsignUpdate === row.callsign ? callsignUpdate : validateDisplayName(callsignUpdate));
+    if (!nextCallsign || callsignUpdate === '') throw new Error('Invalid display name.');
     const now = Date.now();
 
     if (this.backend === 'postgresql' && this.pgPool) {

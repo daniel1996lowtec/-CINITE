@@ -24,6 +24,7 @@ try {
   await page.route('**/src/main.ts*',r=>r.fulfill({body:''}));
   await page.goto(process.env.MOBILE_QA_URL || 'http://localhost:5173');
   await page.addStyleTag({url:'/src/styles/main.css'});
+  await page.addStyleTag({url:'/src/styles/menu4.css'});
   await page.evaluate(async()=>{
     document.querySelectorAll('.overlay-screen').forEach(e=>e.classList.add('hidden'));
     document.querySelector('#hud-overlay').classList.remove('hidden');

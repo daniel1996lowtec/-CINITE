@@ -2132,7 +2132,7 @@ const server = http.createServer(async (req, res) => {
       const code = generateUniqueRoomCode(resolved.config.mode);
       const room = getOrCreateRoom(code, resolved.config.mode, resolved.config, {
         accountId: verifiedProfile.accountId,
-        name: sanitizeCallsign(body.playerName),
+        name: verifiedProfile.callsign,
       });
       sendJson(res, 200, {
         ok: true,
@@ -2559,7 +2559,7 @@ server.on('upgrade', (req, socket) => {
           const code = generateUniqueRoomCode(resolved.config.mode);
           const room = getOrCreateRoom(code, resolved.config.mode, resolved.config, {
             accountId: verifiedAccountId,
-            name: sanitizeCallsign(msg.playerName),
+            name: verifiedProfile.callsign,
           });
           socket.write(
             encodeWsFrame({
@@ -2746,7 +2746,7 @@ server.on('upgrade', (req, socket) => {
           currentRoom = room;
           currentSessionToken = requestedSessionToken;
 
-          const cleanCallsign = sanitizeCallsign(msg.playerName);
+          const cleanCallsign = verifiedProfile?.callsign || sanitizeCallsign(msg.playerName);
           const roomCosmetics = sanitizeCosmetics({
             outfitId: msg.outfitId ?? player?.outfitId,
             skinColor: msg.skinColor ?? player?.skinColor,
