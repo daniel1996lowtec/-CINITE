@@ -98,7 +98,15 @@ test('3.5 navigation paint follows existing supported surfaces; landmark light i
   // (cornices, mullions, rooftop plant, street furniture) stays inside the
   // shared instanced batches and is dropped on the reduced-detail tier; the
   // draw-call/mesh count and the exact collider fingerprint are unchanged.
-  assert.ok(decals>20);assert.ok(triangles<=340000);
+  assert.ok(decals>20);
+// CI CRAFT 6.2: the decorative tier (window frames, sills, railings, fine
+// foliage) is hidden on Low/Medium, so the always-on scene is budgeted at the
+// pre-6.2 ceiling while the full-detail total has its own cap.
+const detailGroups=new Set([world.expansionDetailGroup,world.houseDetailGroup,world.detailFoliageGroup]);
+let essential=0;
+scene.traverse(o=>{if(!o.isMesh)return;const t=(o.geometry.index?.count??o.geometry.attributes.position.count)/3*(o.isInstancedMesh?o.count:1);let n=o,inDetail=false;while(n){if(detailGroups.has(n)){inDetail=true;break}n=n.parent}if(!inDetail)essential+=t});
+assert.ok(essential<=330000,`always-on triangle budget ${Math.round(essential)}`);
+assert.ok(triangles<=560000,`full-detail triangle budget ${Math.round(triangles)}`);
   const light=scene.getObjectByName('LegendaryTowerVaultLight');world.update(.1,new THREE.Vector3(500,50,500));assert.equal(light.visible,false);
   world.setLandmarkDetail(false);world.update(.1,new THREE.Vector3(0,55,0));assert.equal(light.visible,false);
   world.setLandmarkDetail(true);world.update(.1,new THREE.Vector3(0,55,0));assert.equal(light.visible,true);assert.ok(light.intensity>=71&&light.intensity<=85);

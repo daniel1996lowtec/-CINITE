@@ -253,9 +253,23 @@ test('6.1 world: facade depth, street furniture and upgraded nature are really i
     }
   });
   const totalFacadeDetail = Object.values(detailCounts).reduce((sum, n) => sum + n, 0);
+  // CI CRAFT 6.2 moved facade relief out of thin instanced decals and into
+  // merged kit meshes with real depth. The decal count therefore legitimately
+  // drops; assert on the combined facade throughput instead (instanced decals
+  // plus the authored kit's window/door/roof geometry).
+  const kitMeshes = [...world.expansionGroup.children, ...world.expansionDetailGroup.children].filter(
+    (mesh) => mesh.name.startsWith('ExpansionKit_')
+  );
+  let kitTriangles = 0;
+  for (const mesh of kitMeshes) kitTriangles += triangles(mesh.geometry);
+  assert.ok(kitMeshes.length >= 8, `expected authored kit meshes, got ${kitMeshes.length}`);
   assert.ok(
-    totalFacadeDetail > 2500,
-    `expected substantial facade/street detail instances, got ${totalFacadeDetail}`
+    kitTriangles > 120000,
+    `expected substantial authored facade geometry, got ${kitTriangles}`
+  );
+  assert.ok(
+    totalFacadeDetail + kitMeshes.length > 2000,
+    `expected substantial facade/street detail, got ${totalFacadeDetail} decals + ${kitMeshes.length} kit meshes`
   );
 
   // Architecture materials carry real PBR maps and the surface shader.
@@ -298,7 +312,33 @@ test('6.1 world: facade depth, street furniture and upgraded nature are really i
     if (!object.isMesh) return;
     tris += triangles(object.geometry) * (object.isInstancedMesh ? object.count : 1);
   });
-  assert.ok(tris <= 340000, `triangle budget ${tris}`);
+  // CI CRAFT 6.2 tiered budget: the decorative tier is hidden on Low/Medium,
+  // so the always-on scene keeps the pre-6.2 ceiling while the full-detail
+  // total has its own (higher) cap.
+  const detailGroups = new Set([
+    world.expansionDetailGroup,
+    world.houseDetailGroup,
+    world.detailFoliageGroup,
+  ]);
+  let essential = 0;
+  scene.traverse((object) => {
+    if (!object.isMesh) return;
+    const t =
+      ((object.geometry.index?.count ?? object.geometry.attributes.position.count) / 3) *
+      (object.isInstancedMesh ? object.count : 1);
+    let node = object;
+    let inDetail = false;
+    while (node) {
+      if (detailGroups.has(node)) {
+        inDetail = true;
+        break;
+      }
+      node = node.parent;
+    }
+    if (!inDetail) essential += t;
+  });
+  assert.ok(essential <= 330000, `always-on triangle budget ${Math.round(essential)}`);
+  assert.ok(tris <= 560000, `full-detail triangle budget ${tris}`);
 });
 
 test('6.1 weapons: authored iron sights, vents, magwell, sling loop and steel normal maps', async () => {

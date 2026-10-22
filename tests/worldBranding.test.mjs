@@ -106,7 +106,13 @@ test('3.6 gameplay fingerprint is byte-identical to 3.5: collision, routes, fixe
   // Draw calls (meshes) are unchanged by CI CRAFT 6.1 while the static
   // detail-tier triangle budget absorbs the richer facades/foliage, which
   // are hidden on the reduced-detail tier.
-  assert.ok(meshes<=900);assert.ok(triangles<=340000);
+  assert.ok(meshes<=900);
+// CI CRAFT 6.2 tiered triangle budgets (see worldExpansion.test.mjs).
+const detailGroups=new Set([world.expansionDetailGroup,world.houseDetailGroup,world.detailFoliageGroup]);
+let essential=0;
+scene.traverse(o=>{if(!o.isMesh)return;const t=(o.geometry.index?.count??o.geometry.attributes.position.count)/3*(o.isInstancedMesh?o.count:1);let n=o,inDetail=false;while(n){if(detailGroups.has(n)){inDetail=true;break}n=n.parent}if(!inDetail)essential+=t});
+assert.ok(essential<=330000,`always-on triangle budget ${Math.round(essential)}`);
+assert.ok(triangles<=560000,`full-detail triangle budget ${Math.round(triangles)}`);
   assert.ok(world.boxColliders.length+world.cylinderColliders.length<=1450);
   console.log(JSON.stringify({branding36:{meshes,triangles,colliders:1414,signs:branding.BUILDING_BRANDING.length,roadMarkings:branding.ROAD_BRANDING.length,batches:world.branding.group.children.length}}));
 });

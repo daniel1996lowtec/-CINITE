@@ -5,6 +5,7 @@ import {
   weldAndSmoothGeometry,
   STARFIELD_RADIUS,
   SUN_DISTANCE,
+  applyTerrainGroundDetail,
   createTerrainSurfaceMaps,
   getSunDirection,
   getEnvironmentPreset,
@@ -181,6 +182,38 @@ export class TerrainGenerator {
    * Deterministic per-cell tonal value for paving slabs, cobbles, gravel and
    * tilled rows. Keeps large ground planes from reading as flat colour bands.
    */
+  /**
+   * Tileable-ish fractal value noise in 0..1 used for biome-border jitter and
+   * large tonal patches. Deterministic and independent of terrain height.
+   */
+  private macroNoise(x: number, z: number): number {
+    const n = (a: number, b: number): number => {
+      const h = Math.sin(a * 12.9898 + b * 78.233) * 43758.5453;
+      return h - Math.floor(h);
+    };
+    const smooth = (t: number): number => t * t * (3 - 2 * t);
+    let total = 0;
+    let amp = 1;
+    let sum = 0;
+    for (let o = 0; o < 4; o++) {
+      const scale = 0.018 * 2 ** o;
+      const fx = x * scale;
+      const fz = z * scale;
+      const x0 = Math.floor(fx);
+      const z0 = Math.floor(fz);
+      const tx = smooth(fx - x0);
+      const tz = smooth(fz - z0);
+      const a = n(x0, z0);
+      const b = n(x0 + 1, z0);
+      const c = n(x0, z0 + 1);
+      const d = n(x0 + 1, z0 + 1);
+      total += ((a * (1 - tx) + b * tx) * (1 - tz) + (c * (1 - tx) + d * tx) * tz) * amp;
+      sum += amp;
+      amp *= 0.5;
+    }
+    return total / sum;
+  }
+
   private stoneTone(cellX: number, cellZ: number): number {
     const h = Math.sin(cellX * 12.9898 + cellZ * 78.233) * 43758.5453;
     return h - Math.floor(h);
@@ -586,20 +619,30 @@ export class TerrainGenerator {
       const microNoise = getSurfaceVariation(vx, vz);
       const fineVariation = Math.sin(vx * 0.21 + vz * 0.17) * 0.5 + 0.5;
 
-      if (vy < -0.35) {
+      // CI CRAFT 6.2 — biome borders are jittered by fractal noise instead of
+      // following perfect height/radius contours, and wide tonal patches break
+      // up large single-colour fields. Both are pure functions of position, so
+      // terrain height, collision and navigation are untouched.
+      const macro = this.macroNoise(vx, vz);
+      const jitter = (macro - 0.5) * 1.5;
+      const vyJ = vy + jitter * 0.55;
+      const shoreJ = vy + jitter * 0.32;
+      const patch = this.macroNoise(vx * 0.45 + 91, vz * 0.45 - 37);
+
+      if (shoreJ < -0.35) {
         // Deep seabed & riverbed
         color.setHex(0x075985);
-      } else if (vy < 0.08) {
+      } else if (shoreJ < 0.08) {
         // Shallow turquoise lagoon shelf
-        color.setHex(0x0e7490).lerp(new THREE.Color(0xc49f6c), (vy + 0.35) / 0.43);
-      } else if (vy < 0.52) {
+        color.setHex(0x0e7490).lerp(new THREE.Color(0xc49f6c), (shoreJ + 0.35) / 0.43);
+      } else if (shoreJ < 0.52) {
         // Wet shoreline sand
-        color.setHex(0xc49f6c).lerp(new THREE.Color(0xdcc59a), (vy - 0.08) / 0.44);
+        color.setHex(0xc49f6c).lerp(new THREE.Color(0xdcc59a), (shoreJ - 0.08) / 0.44);
       } else if (
-        vy < 1.85 ||
-        distCenter > this.islandRadius * 0.88 ||
-        (riverDist < 6.4 && vy < 2.5) ||
-        (lakeDist > 20 && lakeDist < 26.5 && vy < 2.6)
+        vyJ < 1.85 ||
+        distCenter > this.islandRadius * 0.88 + jitter * 3.5 ||
+        (riverDist < 6.4 + jitter * 1.4 && vyJ < 2.5) ||
+        (lakeDist > 20 + jitter * 2 && lakeDist < 26.5 + jitter * 2 && vyJ < 2.6)
       ) {
         // Warm Mediterranean coastal sand & riverbank pebble-sand
         color.setHex(0xdcc59a).lerp(new THREE.Color(0xe8d7b4), fineVariation * 0.65);
@@ -612,15 +655,26 @@ export class TerrainGenerator {
         const joint =
           Math.abs(vx * 0.62 + Math.sin(vz * 0.31) * 0.4 - slabX - 0.5) > 0.45 ||
           Math.abs(vz * 0.62 - slabZ - 0.5) > 0.45;
-        color.setHex(0xa9b3bd).offsetHSL(0, -0.02, slabTone * 0.05);
+        color.setHex(0x9aa5b1).offsetHSL(0, -0.02, slabTone * 0.05 - 0.03);
         if (joint) color.multiplyScalar(0.9);
-      } else if (roadDist < 3.6) {
-        // Compacted limestone road with aggregate variation and tar seams.
+      } else if (roadDist < 3.6 + jitter * 0.22) {
+        // CI CRAFT 6.2 — roads now read as *paved*: a dark compacted asphalt
+        // crown, a lighter aggregate shoulder band and tar seams. Previously
+        // they were a tan almost identical to the beach, so the road network
+        // was invisible from eye level.
         const aggregate = this.stoneTone(Math.floor(vx * 1.4), Math.floor(vz * 1.4));
-        color.setHex(0xb08f63).offsetHSL(0, 0.02 * aggregate, aggregate * 0.055);
+        const crown = 1 - Math.min(1, roadDist / 3.0);
+        color.setHex(0x6b6f76).offsetHSL(0, 0.01 * aggregate, aggregate * 0.05 - 0.02);
+        // Wheel-track polish: two faint lighter bands either side of centre.
+        const track = Math.exp(-((roadDist - 1.35) ** 2) / 0.16);
+        color.offsetHSL(0, -0.01, track * 0.035);
+        // Aggregate shoulder at the very edge of the roadway.
+        color.lerp(new THREE.Color(0x9a9384), (1 - crown) * 0.55);
         const seam = Math.abs(((vx + vz) * 0.35) % 1 - 0.5) < 0.02;
-        if (seam) color.multiplyScalar(0.88);
-      } else if (roadDist < 5.1) {
+        if (seam) color.multiplyScalar(0.86);
+        // Painted edge line where the kerb is (outside the driving surface).
+        if (roadDist > 3.15) color.lerp(new THREE.Color(0xd8d2c4), 0.5);
+      } else if (roadDist < 5.1 + jitter * 0.5) {
         // Smooth dirt road shoulder transition into surrounding meadow
         const shoulderT = Math.min(1, Math.max(0, (roadDist - 3.6) / 1.5));
         color.copy(dirtShoulderColor).lerp(new THREE.Color(0x4d7c42), shoulderT * 0.65);
@@ -682,6 +736,26 @@ export class TerrainGenerator {
           .lerp(new THREE.Color(0x5e8e50), (microNoise * 0.5 + 0.5) * 0.72);
       }
 
+      // Wide tonal patches: dry grass, damp hollows and exposed soil drift
+      // across the meadows so no field is ever one flat colour.
+      if (vy > 1.6 && vyJ > 2.0 && roadDist > 5.0 && slope < 0.36 && shoreJ > 0.9) {
+        const dry = Math.max(0, patch - 0.52) * 1.9;
+        const damp = Math.max(0, 0.46 - patch) * 1.7;
+        color.lerp(new THREE.Color(0x8a9550), Math.min(0.52, dry));
+        color.lerp(new THREE.Color(0x35603a), Math.min(0.42, damp));
+      }
+      // Sand grain ripples: fine tonal banding across the beach and dunes.
+      if (shoreJ >= 0.08 && shoreJ < 2.0) {
+        const ripple = Math.sin(vx * 1.35 + vz * 0.85 + macro * 6.0) * 0.5 + 0.5;
+        color.offsetHSL(0, 0, (ripple - 0.5) * 0.035);
+        color.lerp(new THREE.Color(0xbda57d), Math.max(0, patch - 0.62) * 0.35);
+      }
+      // Rock strata and scree on the mountains.
+      if (vyJ > 6.5) {
+        const strata = Math.sin(vy * 3.1 + macro * 4.2) * 0.5 + 0.5;
+        color.offsetHSL(0, 0, (strata - 0.5) * 0.05 + (patch - 0.5) * 0.04);
+      }
+
       // Slope-based cliff & escarpment rock blending on steep terrain
       if (vy > 1.8 && vy < 15.8 && slope > 0.42) {
         const rockWeight = Math.min(1, (slope - 0.42) / 0.44);
@@ -689,7 +763,7 @@ export class TerrainGenerator {
       }
 
       // Smooth, deterministic tonal variation softens biome transitions
-      color.offsetHSL(0, 0, microNoise * 0.028);
+      color.offsetHSL(0, 0, microNoise * 0.028 + (patch - 0.5) * 0.05);
 
       colors.push(color.r, color.g, color.b);
     }
@@ -716,6 +790,7 @@ export class TerrainGenerator {
       metalness: 0.02,
       envMapIntensity: 0.55,
     });
+    applyTerrainGroundDetail(terrainMat);
 
     this.terrainMesh = new THREE.Mesh(geo, terrainMat);
     this.terrainMesh.receiveShadow = true;

@@ -398,6 +398,26 @@ const OUTFIT_KNEE_GUARD_GEO = (() => {
   return geo;
 })();
 const OUTFIT_CUFF_GEO = new THREE.CylinderGeometry(0.42, 0.5, 0.55, 12, 1, true);
+// Shoulder-strap body: a capsule squash-scaled per strap at build time.
+const OUTFIT_PACK_STRAP_GEO = new THREE.CapsuleGeometry(0.02, 0.1, 4, 8);
+// Conforming harness plate: an open spherical cap, scaled per strap group.
+const OUTFIT_BACKPLATE_GEO = new THREE.SphereGeometry(
+  0.106,
+  14,
+  10,
+  0,
+  Math.PI * 2,
+  0,
+  Math.PI * 0.66
+);
+// Bevelled clamp plate for pack harness buckles: a smooth-shaded rounded box
+// rather than a raw cube, so harness hardware matches the rest of the armour.
+const OUTFIT_BUCKLE_GEO = (() => {
+  const geo = new THREE.SphereGeometry(0.5, 10, 6);
+  geo.scale(0.032, 0.024, 0.012);
+  geo.computeVertexNormals();
+  return geo;
+})();
 
 function quatKeyframes(
   boneName: string,
@@ -1900,6 +1920,66 @@ export class CharacterMesh {
       roughness: 0.25,
       metalness: 0.55,
     });
+
+    // CI CRAFT 6.2 — the pack used to hang off the spine with nothing joining
+    // it to the torso, so from the front and in profile it read as a floating
+    // prop. Every accessory now gets an authored harness: a conforming
+    // backplate, two shoulder straps that run over the collarbone and end in
+    // clamp buckles, a sternum strap and a lumbar pad with strap tails. The
+    // geometry is kept inside the pack's existing silhouette envelope so the
+    // accessory stays proportional to the rig.
+    const strapMat = new THREE.MeshStandardMaterial({
+      color: 0x1b2430,
+      normalMap: CHARACTER_FABRIC_NORMAL,
+      normalScale: new THREE.Vector2(0.9, 0.9),
+      roughness: 0.82,
+      metalness: 0.12,
+    });
+    const buckleMat = new THREE.MeshStandardMaterial({
+      color: 0x6b7785,
+      normalMap: CHARACTER_COMPOSITE_NORMAL,
+      normalScale: new THREE.Vector2(0.6, 0.6),
+      roughness: 0.34,
+      metalness: 0.86,
+    });
+
+    const backplate = new THREE.Mesh(OUTFIT_BACKPLATE_GEO, strapMat);
+    backplate.name = 'pack_backplate';
+    backplate.scale.set(0.86, 0.62, 0.34);
+    backplate.rotation.x = Math.PI * 0.5;
+    backplate.position.set(0, 0.004, -0.028);
+    this.jumpPackGroup.add(backplate);
+
+    for (const side of [-1, 1] as const) {
+      const strap = new THREE.Mesh(OUTFIT_PACK_STRAP_GEO, strapMat);
+      strap.name = side < 0 ? 'pack_strap_left' : 'pack_strap_right';
+      strap.position.set(side * 0.062, 0.036, -0.03);
+      strap.rotation.set(0.3, 0, side * 0.14);
+      strap.scale.set(1.25, 1, 0.42);
+      this.jumpPackGroup.add(strap);
+
+      const buckle = new THREE.Mesh(OUTFIT_BUCKLE_GEO, buckleMat);
+      buckle.name = side < 0 ? 'pack_buckle_left' : 'pack_buckle_right';
+      buckle.position.set(side * 0.068, 0.104, -0.012);
+      buckle.rotation.z = side * 0.2;
+      this.jumpPackGroup.add(buckle);
+    }
+
+    const sternum = new THREE.Mesh(OUTFIT_PACK_STRAP_GEO, strapMat);
+    sternum.name = 'pack_sternum_strap';
+    sternum.rotation.z = Math.PI / 2;
+    sternum.scale.set(0.55, 0.75, 0.45);
+    sternum.position.set(0, 0.062, -0.018);
+    const lumbarPad = new THREE.Mesh(OUTFIT_BACKPLATE_GEO, strapMat);
+    lumbarPad.name = 'pack_lumbar_pad';
+    lumbarPad.scale.set(0.7, 0.34, 0.4);
+    lumbarPad.rotation.x = Math.PI * 0.5;
+    lumbarPad.position.set(0, -0.078, -0.022);
+    const lumbarBuckle = new THREE.Mesh(OUTFIT_BUCKLE_GEO, buckleMat);
+    lumbarBuckle.name = 'pack_lumbar_buckle';
+    lumbarBuckle.scale.set(0.85, 0.85, 1);
+    lumbarBuckle.position.set(0, -0.078, 0.004);
+    this.jumpPackGroup.add(sternum, lumbarPad, lumbarBuckle);
 
     if (this.backAccessoryType === 'energy_wings') {
       const hub = new THREE.Mesh(

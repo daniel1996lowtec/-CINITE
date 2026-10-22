@@ -656,7 +656,23 @@ export function applyArchitectureSurfaceShader(
   kind: 'facade' | 'glass' | 'metal'
 ): THREE.MeshStandardMaterial {
   const cacheKey = `cicraft-arch-surface-${kind}`;
-  material.onBeforeCompile = (shader) => {
+
+  // CI CRAFT 6.2 — this used to ASSIGN material.onBeforeCompile outright, which
+  // silently destroyed the world-space UV projection that
+  // applyWorldSpaceUv() had installed on the very same shared material. Every
+  // instanced wall then sampled stretched box UVs again, and because the merged
+  // kit materials are shared the damage spread to the kit geometry too.
+  // The injector now composes with whatever is already attached and is
+  // idempotent per (material, kind).
+  if ((material.userData as Record<string, unknown>).cicraftArchSurface === kind) {
+    return material;
+  }
+  (material.userData as Record<string, unknown>).cicraftArchSurface = kind;
+  const previousCompile = material.onBeforeCompile;
+  const previousKey = material.customProgramCacheKey;
+
+  material.onBeforeCompile = (shader, renderer) => {
+    previousCompile?.call(material, shader, renderer);
     shader.vertexShader = `
 varying vec3 vCicraftWorldPos;
 varying vec3 vCicraftLocalPos;
@@ -742,7 +758,17 @@ ${shader.fragmentShader}`.replace(
       );
     }
   };
-  material.customProgramCacheKey = () => cacheKey;
+  material.customProgramCacheKey = () => {
+    let base = 'standard';
+    if (typeof previousKey === 'function') {
+      try {
+        base = previousKey.call(material) ?? 'standard';
+      } catch {
+        base = 'standard';
+      }
+    }
+    return `${base}|${cacheKey}`;
+  };
   return material;
 }
 
@@ -750,8 +776,10 @@ export function mergeBufferGeometries(geometries: THREE.BufferGeometry[]): THREE
   const positions: number[] = [];
   const normals: number[] = [];
   const uvs: number[] = [];
+  const colors: number[] = [];
   const indices: number[] = [];
   let vertexOffset = 0;
+  const hasColors = geometries.some((geo) => Boolean(geo.getAttribute('color')));
 
   for (const geo of geometries) {
     const pos = geo.getAttribute('position');
@@ -759,6 +787,7 @@ export function mergeBufferGeometries(geometries: THREE.BufferGeometry[]): THREE
     if (!geo.getAttribute('normal')) geo.computeVertexNormals();
     const norm = geo.getAttribute('normal');
     const uv = geo.getAttribute('uv');
+    const color = geo.getAttribute('color');
     const idx = geo.getIndex();
 
     for (let i = 0; i < pos.count; i++) {
@@ -772,6 +801,13 @@ export function mergeBufferGeometries(geometries: THREE.BufferGeometry[]): THREE
         uvs.push(uv.getX(i), uv.getY(i));
       } else {
         uvs.push(0.5, 0.5);
+      }
+      if (hasColors) {
+        if (color) {
+          colors.push(color.getX(i), color.getY(i), color.getZ(i));
+        } else {
+          colors.push(1, 1, 1);
+        }
       }
     }
 
@@ -791,6 +827,9 @@ export function mergeBufferGeometries(geometries: THREE.BufferGeometry[]): THREE
   merged.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   merged.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
   merged.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  if (hasColors) {
+    merged.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  }
   merged.setIndex(indices);
   return merged;
 }
@@ -1133,4 +1172,100 @@ export function createTerrainSurfaceMaps(): {
     roughness: make(roughnessData, 42),
     grain: make(grainData, 26, true),
   };
+}
+
+/**
+ * CI CRAFT 6.2 — terrain ground-detail shader.
+ *
+ * The island is one 208 x 208 mesh, so per-vertex colour can only describe
+ * features larger than ~2.6 m. Everything finer (sand grain, gravel, grass
+ * blades, wet-sand sheen, rock speckle) is added here, procedurally, in world
+ * space: three octaves of value noise modulate albedo, a slope mask exposes
+ * rock chips, a height mask adds beach grain, and a second derivative of the
+ * noise perturbs the normal so the ground catches light instead of reading as
+ * flat paint. No textures, no extra draw calls, no collision change.
+ */
+export function applyTerrainGroundDetail(
+  material: THREE.MeshStandardMaterial
+): THREE.MeshStandardMaterial {
+  material.onBeforeCompile = (shader) => {
+    shader.vertexShader = `
+varying vec3 vCicraftGroundPos;
+varying vec3 vCicraftGroundNormal;
+${shader.vertexShader}`.replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+      vec4 cicraftGroundWorld = modelMatrix * vec4(transformed, 1.0);
+      vCicraftGroundPos = cicraftGroundWorld.xyz;
+      vCicraftGroundNormal = normalize(mat3(modelMatrix) * objectNormal);`
+    );
+
+    shader.fragmentShader = `
+varying vec3 vCicraftGroundPos;
+varying vec3 vCicraftGroundNormal;
+float cicraftHash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+float cicraftValueNoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(cicraftHash(i), cicraftHash(i + vec2(1.0, 0.0)), u.x),
+             mix(cicraftHash(i + vec2(0.0, 1.0)), cicraftHash(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+${shader.fragmentShader}`.replace(
+      '#include <map_fragment>',
+      `#include <map_fragment>
+      {
+        vec2 gp = vCicraftGroundPos.xz;
+        // Three detail scales: gravel/pebbles, soil mottling, grass clumps.
+        float nFine = cicraftValueNoise(gp * 3.1);
+        float nMid = cicraftValueNoise(gp * 0.62 + 17.0);
+        float nCoarse = cicraftValueNoise(gp * 0.11 + 41.0);
+        float nSpeck = cicraftValueNoise(gp * 9.5 + 5.0);
+
+        float upness = clamp(vCicraftGroundNormal.y, 0.0, 1.0);
+        float slope = 1.0 - upness;
+
+        // Grass / soil grain: subtle luminance break-up that survives mipmaps
+        // because it is generated per fragment, not per vertex.
+        float grain = (nFine - 0.5) * 0.085 + (nMid - 0.5) * 0.10;
+        diffuseColor.rgb *= 1.0 + grain;
+
+        // Fine speckle: reads as gravel, shell fragments and grass blades.
+        float speck = smoothstep(0.82, 0.99, nSpeck);
+        diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 0.82 + vec3(0.04), speck * 0.42);
+
+        // Dry patches and damp hollows at the 10 m scale.
+        float patch = smoothstep(0.58, 0.92, nCoarse);
+        diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(1.11, 1.06, 0.90), patch * 0.30);
+
+        // Exposed rock chips on steep ground and dark scree in the crevices.
+        float rock = smoothstep(0.28, 0.72, slope) * smoothstep(0.45, 0.85, nMid + slope * 0.35);
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.30, 0.31, 0.32) * (0.7 + nFine * 0.6), rock * 0.55);
+
+        // Beach grain: wet, slightly darker and glossier right at the shoreline.
+        float wet = smoothstep(0.30, 0.05, vCicraftGroundPos.y);
+        diffuseColor.rgb *= 1.0 - wet * 0.16;
+
+        // Normal perturbation from the same noise gives the ground real relief.
+        float e = 0.08;
+        float nx = cicraftValueNoise((gp + vec2(e, 0.0)) * 3.1) - nFine;
+        float nz = cicraftValueNoise((gp + vec2(0.0, e)) * 3.1) - nFine;
+        vec3 groundBump = vec3(nx * 2.2, 1.0, nz * 2.2);
+        normal = normalize(mix(normal, normalize(normal + groundBump * 0.35), 0.55));
+      }`
+    ).replace(
+      '#include <roughnessmap_fragment>',
+      `#include <roughnessmap_fragment>
+      {
+        vec2 gp2 = vCicraftGroundPos.xz;
+        float wetMask = smoothstep(0.32, 0.04, vCicraftGroundPos.y);
+        float damp = smoothstep(0.55, 0.95, cicraftValueNoise(gp2 * 0.11 + 41.0));
+        roughnessFactor *= 1.0 - wetMask * 0.45 - damp * 0.10;
+      }`
+    );
+  };
+  material.customProgramCacheKey = () => 'cicraft-terrain-ground-detail';
+  return material;
 }

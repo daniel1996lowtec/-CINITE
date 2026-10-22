@@ -27,6 +27,23 @@ import {
   getLegendaryTowerFloorHeight,
 } from './WorldLayout';
 import {
+  createArchitecturalMaterials,
+  setArchitecturalAnisotropy,
+  type ArchitecturalMaterialLibrary,
+} from './ArchitecturalMaterials';
+import {
+  KitBuilder,
+  mergeKitParts,
+  addBalcony,
+  addDoorPortal,
+  addFlatRoofDetail,
+  addGableRoof,
+  addPlinthAndCornice,
+  addRainwaterGoods,
+  addWindowUnit,
+  type KitSlot,
+} from './BuildingKit';
+import {
   BuildablePieceState,
   BuildMaterialType,
   BuildPieceType,
@@ -109,6 +126,8 @@ export class IslandWorld {
   private worldGroup = new THREE.Group();
   public foliageGroup = new THREE.Group();
   public propInstancesGroup = new THREE.Group();
+  /** Fine kit trim for the island houses, dropped on Low/Medium quality. */
+  public readonly houseDetailGroup = new THREE.Group();
   public readonly mapExpansion: MapExpansionBuilder;
   public readonly expansionGroup: THREE.Group;
   public readonly expansionDetailGroup: THREE.Group;
@@ -158,6 +177,16 @@ export class IslandWorld {
   private patternTextures: Map<string, THREE.CanvasTexture | null> = new Map();
   /** Shared PBR surface maps for the whole island (one GPU copy each). */
   public readonly pbrTextures = createPbrSurfaceTextures();
+  /**
+   * CI CRAFT 6.2 — authored architectural material library (512 px albedo /
+   * normal / roughness sets with world-scale UV projection). Built once and
+   * shared by the island houses and every expansion district.
+   */
+  public readonly architecturalMaterials: ArchitecturalMaterialLibrary =
+    createArchitecturalMaterials();
+  /** Real facade/roof geometry for the original island houses. */
+  private readonly houseKit = new KitBuilder(this.architecturalMaterials);
+  private islandKitGroup: THREE.Group | null = null;
   private animTime = 0;
 
   private getPatternTexture(kind: 'wood' | 'stone' | 'metal'): THREE.CanvasTexture | null {
@@ -214,6 +243,8 @@ export class IslandWorld {
     this.terrain = new TerrainGenerator();
     this.scene.add(this.worldGroup);
     this.scene.add(this.foliageGroup);
+    this.houseDetailGroup.name = 'IslandHouseDetail';
+    this.scene.add(this.houseDetailGroup);
     this.mapExpansion = new MapExpansionBuilder(this, this.scene);
     this.expansionGroup = this.mapExpansion.expansionGroup;
     this.expansionDetailGroup = this.mapExpansion.expansionDetailGroup;
@@ -316,6 +347,7 @@ export class IslandWorld {
    */
   public setTextureAnisotropy(maxAnisotropy: number): void {
     const anisotropy = Math.max(1, Math.min(4, maxAnisotropy));
+    setArchitecturalAnisotropy(this.architecturalMaterials, anisotropy);
     const seen = new Set<THREE.Texture>();
     const apply = (texture?: THREE.Texture | null) => {
       if (!texture || seen.has(texture)) return;
@@ -361,6 +393,7 @@ export class IslandWorld {
     this.buildMirrorLakeAndBridge();
     this.buildFrontendFarms();
     this.buildLegacyRuins();
+    this.finalizeHouseKit();
     // Additive districts register their colliders/loot before procedural
     // wilderness placement, allowing every later tree/rock/crate pass to
     // reject building footprints deterministically.
@@ -376,6 +409,19 @@ export class IslandWorld {
     this.branding?.dispose();
     this.branding = new WorldBranding(this.scene, this.terrain.terrainMesh.geometry,
       (x, z) => this.terrain.getTerrainHeight(x, z));
+  }
+
+  /**
+   * Merges the authored facade kit for the original island houses into one mesh
+   * per material slot (plus the fine-trim group that quality tiers can drop).
+   */
+  private finalizeHouseKit(): void {
+    const merged = mergeKitParts(this.houseKit, this.architecturalMaterials, 'IslandHouseKit');
+    for (const { mesh, detail } of merged) {
+      if (detail) this.houseDetailGroup.add(mesh);
+      else this.worldGroup.add(mesh);
+    }
+    this.houseKit.resetParts();
   }
 
   private disposeObject3D(obj: THREE.Object3D): void {
@@ -666,31 +712,6 @@ export class IslandWorld {
       flatShading: false,
       roughness: 0.76,
     });
-    const trimMat = new THREE.MeshStandardMaterial({
-      color: 0xf8fafc,
-      normalMap: this.pbrTextures.facadeNormal,
-      normalScale: new THREE.Vector2(0.35, 0.35),
-      flatShading: false,
-      roughness: 0.46,
-    });
-    const glassMat = applyArchitectureSurfaceShader(
-      new THREE.MeshStandardMaterial({
-        color: 0xbae6fd,
-        map: this.pbrTextures.windowAlbedo,
-        normalMap: this.pbrTextures.windowNormal,
-        normalScale: new THREE.Vector2(0.55, 0.55),
-        emissive: 0x0284c7,
-        emissiveIntensity: 0.18,
-        roughness: 0.08,
-        metalness: 0.65,
-        envMapIntensity: 1.55,
-        flatShading: false,
-        transparent: true,
-        opacity: 0.74,
-      }),
-      'glass'
-    );
-
     const wallThick = 0.45;
     const hw = width / 2;
     const hd = depth / 2;
@@ -756,78 +777,105 @@ export class IslandWorld {
     );
     const lintel = new THREE.Mesh(new THREE.BoxGeometry(doorWidth, height - 3.0, wallThick), wallMat);
     lintel.position.set(0, height - (height - 3.0) / 2, hd);
-    const awning = new THREE.Mesh(new THREE.BoxGeometry(doorWidth + 1.2, 0.18, 1.35), roofMat);
-    awning.position.set(0, 3.25, hd + 0.58);
-    awning.rotation.x = 0.2;
-    const extLantern = new THREE.Mesh(
-      new THREE.SphereGeometry(0.18, 8, 8),
-      new THREE.MeshBasicMaterial({ color: 0xfef08a })
-    );
-    extLantern.position.set(doorWidth / 2 + 0.45, 2.55, hd + 0.28);
-    group.add(lintel, awning, extLantern);
+    group.add(lintel);
 
-    // Compound architectural stone trim (sills, lintels, quoins, cornice & door architrave)
-    // and compound multi-facade window glazing (rear, left, right & front windows) in 2 meshes
-    const trimParts: THREE.BufferGeometry[] = [];
-    const glassParts: THREE.BufferGeometry[] = [];
-    const pushBox = (
-      target: THREE.BufferGeometry[],
-      bx: number,
-      by: number,
-      bz: number,
-      sx: number,
-      sy: number,
-      sz: number
-    ) => {
-      const g = new THREE.BoxGeometry(sx, sy, sz);
-      g.translate(bx, by, bz);
-      target.push(g);
-    };
+    // CI CRAFT 6.2 — authored facade kit. Instead of thin decals floating on
+    // the wall plane, each opening gets a shadowed reveal, a projecting frame,
+    // muntins, a drip-moulded stone sill and a bracketed head; the entrance
+    // gets an architrave, panelled leaf, threshold steps, canopy and lantern.
+    // The kit writes world-space geometry, so push the house transform once.
+    this.houseKit.pushTransform(cx, baseY, cz);
+    this.houseKit.wallTint = new THREE.Color(wallColor);
+    const kit = this.houseKit;
+    // The structural walls are centred on the footprint edge, so their outer
+    // faces sit half a wall thickness further out. Facade detail must mount on
+    // that face, otherwise every window ends up buried inside the wall.
+    const wallOut = wallThick / 2;
+    const faceZ = hd + wallOut;
+    const faceBackZ = -hd - wallOut;
+    const faceX = hw + wallOut;
 
-    // Rear window glass, sill & lintel
-    pushBox(glassParts, 0, 1.85, -hd, winW - 0.1, 1.5, 0.1);
-    pushBox(trimParts, 0, 1.12, -hd, winW + 0.28, 0.14, wallThick + 0.16);
-    pushBox(trimParts, 0, 2.64, -hd, winW + 0.32, 0.15, wallThick + 0.18);
+    addPlinthAndCornice(kit, {
+      width,
+      depth,
+      height,
+      floors: hasSecondFloor ? 2 : 1,
+      midFloorY: hasSecondFloor ? height * 0.52 : undefined,
+    });
 
-    // Side-wall framed windows (left & right facades)
-    for (const side of [-1, 1]) {
-      for (const wz of [-depth * 0.24, depth * 0.24]) {
-        pushBox(glassParts, side * (hw + 0.21), 1.95, wz, 0.08, 1.32, 1.52);
-        pushBox(trimParts, side * (hw + 0.2), 1.24, wz, 0.16, 0.13, 1.72);
-        pushBox(trimParts, side * (hw + 0.2), 2.66, wz, 0.18, 0.14, 1.76);
+    // Rear window (matches the structural opening in the back wall).
+    addWindowUnit(kit, {
+      x: 0,
+      y: 1.92,
+      z: faceBackZ,
+      width: winW,
+      height: 1.72,
+      facing: 'back',
+      style: 'punched',
+      planter: true,
+      lit: true,
+    });
+
+    // Side windows, one pair per facade.
+    const sideWindowZ = Math.min(depth * 0.26, hd - 1.5);
+    for (const side of [-1, 1] as const) {
+      for (const wz of [-sideWindowZ, sideWindowZ]) {
+        addWindowUnit(kit, {
+          x: side * faceX,
+          y: 1.95,
+          z: wz,
+          width: 1.5,
+          height: 1.5,
+          facing: side < 0 ? 'left' : 'right',
+          style: 'punched',
+          shutters: Math.abs(wz) > sideWindowZ * 0.9,
+          lit: Math.abs(wz) < sideWindowZ * 1.1,
+        });
       }
     }
 
-    // Front facade side windows flanking the entrance doorway
-    if (sideWidth >= 2.6) {
-      for (const side of [-1, 1]) {
+    // Front windows flanking the entrance.
+    if (sideWidth >= 2.4) {
+      for (const side of [-1, 1] as const) {
         const fwx = side * (doorWidth / 2 + sideWidth * 0.5);
-        pushBox(glassParts, fwx, 1.95, hd + 0.21, 1.36, 1.28, 0.08);
-        pushBox(trimParts, fwx, 1.26, hd + 0.2, 1.56, 0.13, 0.16);
-        pushBox(trimParts, fwx, 2.64, hd + 0.2, 1.6, 0.14, 0.18);
+        addWindowUnit(kit, {
+          x: fwx,
+          y: 1.98,
+          z: faceZ,
+          width: Math.min(1.7, sideWidth * 0.72),
+          height: 1.5,
+          facing: 'front',
+          style: 'punched',
+          planter: side > 0,
+          lit: side < 0,
+        });
       }
     }
 
-    // Door frame, threshold step, corner quoins & upper cornice molding
-    pushBox(trimParts, 0, 3.05, hd, doorWidth + 0.45, 0.22, wallThick + 0.22);
-    pushBox(trimParts, -doorWidth / 2 - 0.12, 1.55, hd + 0.06, 0.22, 3.0, wallThick + 0.14);
-    pushBox(trimParts, doorWidth / 2 + 0.12, 1.55, hd + 0.06, 0.22, 3.0, wallThick + 0.14);
-    pushBox(trimParts, 0, 0.09, hd + 0.38, doorWidth + 0.9, 0.18, 0.9);
-    for (const [qx, qz] of [
-      [-hw, -hd],
-      [hw, -hd],
-      [-hw, hd],
-      [hw, hd],
-    ]) {
-      pushBox(trimParts, qx, height / 2, qz, 0.62, height + 0.1, 0.62);
-    }
-    pushBox(trimParts, 0, height - 0.08, 0, width + 0.58, 0.18, depth + 0.58);
+    // Entrance portal in the structural doorway.
+    addDoorPortal(kit, {
+      x: 0,
+      y: 0,
+      z: faceZ,
+      width: doorWidth - 0.2,
+      height: 2.72,
+      facing: 'front',
+      style: hasSecondFloor ? 'residential' : 'residential',
+      steps: 2,
+      canopy: true,
+      lantern: true,
+      tint: 0x2d3a4a,
+    });
 
-    const mergedTrim = new THREE.Mesh(mergeBufferGeometries(trimParts), trimMat);
-    mergedTrim.castShadow = true;
-    mergedTrim.receiveShadow = true;
-    const mergedGlass = new THREE.Mesh(mergeBufferGeometries(glassParts), glassMat);
-    group.add(mergedTrim, mergedGlass);
+    addRainwaterGoods(kit, {
+      width,
+      depth,
+      height,
+      gutterY: height - 0.1,
+      downpipes: 2,
+    });
+    kit.wallTint = null;
+    kit.popFrame();
 
     // Rich Interior Details: Tech Desk + Dual Glowing Monitors + Chair + Server Rack + Bookshelf + Ceiling Lamp
     const woodDarkMat = new THREE.MeshStandardMaterial({
@@ -890,28 +938,6 @@ export class IslandWorld {
     });
 
     if (hasSecondFloor) {
-      const parapetL = new THREE.Mesh(new THREE.BoxGeometry(width * 0.42, 0.9, 0.32), trimMat);
-      parapetL.position.set(-hw * 0.5, height + 0.75, hd);
-      const parapetR = new THREE.Mesh(new THREE.BoxGeometry(width * 0.42, 0.9, 0.32), trimMat);
-      parapetR.position.set(hw * 0.5, height + 0.75, -hd);
-      const acUnit = new THREE.Mesh(
-        new THREE.BoxGeometry(1.5, 1.15, 1.25),
-        new THREE.MeshStandardMaterial({
-          color: 0x64748b,
-          normalMap: this.pbrTextures.metalNormal,
-          flatShading: false,
-          roughness: 0.42,
-          metalness: 0.65,
-        })
-      );
-      acUnit.position.set(-hw * 0.5, height + 0.85, -hd * 0.4);
-      const antenna = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.05, 0.08, 2.6, 6),
-        new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.7, roughness: 0.3 })
-      );
-      antenna.position.set(-hw * 0.5, height + 2.1, -hd * 0.4);
-      group.add(parapetL, parapetR, acUnit, antenna);
-
       const rampWidth = 2.4;
       const rampLen = depth * 0.95;
       const rampOriginX = cx + hw + rampWidth / 2 + 0.2;
@@ -923,7 +949,7 @@ export class IslandWorld {
       const rampMesh = new THREE.Mesh(
         new THREE.BoxGeometry(rampWidth, 0.25, rampSlopeLen),
         new THREE.MeshStandardMaterial({
-          color: 0x9a5b25,
+          color: 0x7c5a38,
           map: this.pbrTextures.barkAlbedo,
           normalMap: this.pbrTextures.barkNormal,
           flatShading: false,
@@ -949,15 +975,37 @@ export class IslandWorld {
       });
 
       this.lootSpawnPoints.push(new THREE.Vector3(cx, baseY + height + 0.6, cz));
+
+      // Authored flat roof: capped parapets with a ramp opening, skylights,
+      // louvred plant, vent stacks and a service hatch.
+      this.houseKit.pushTransform(cx, baseY, cz);
+      this.houseKit.wallTint = new THREE.Color(wallColor);
+      addFlatRoofDetail(this.houseKit, {
+        width,
+        depth,
+        deckY: height + 0.32,
+        parapetTopY: height + 1.12,
+        variant: Math.abs(Math.round(cx + cz)) % 3,
+        parapet: true,
+        coping: true,
+        parapetGapSides: ['right'],
+        gapHalfWidth: 1.3,
+      });
+      this.houseKit.wallTint = null;
+      this.houseKit.popFrame();
     } else {
-      const cone = new THREE.Mesh(
-        new THREE.ConeGeometry(Math.max(width, depth) * 0.78, 2.8, 4),
-        roofMat
-      );
-      cone.position.set(0, height + 1.55, 0);
-      cone.rotation.y = Math.PI / 4;
-      cone.castShadow = true;
-      group.add(cone);
+      // Pitched clay-tile roof with eaves, soffit, ridge, chimney and dormer.
+      this.houseKit.pushTransform(cx, baseY, cz);
+      this.houseKit.wallTint = new THREE.Color(wallColor);
+      addGableRoof(this.houseKit, {
+        width,
+        depth,
+        height: height + 0.06,
+        overhang: 0.58,
+        pitch: 0.6,
+      });
+      this.houseKit.wallTint = null;
+      this.houseKit.popFrame();
     }
 
     this.chestSpawnPoints.push(new THREE.Vector3(cx - hw * 0.45, baseY + 0.4, cz - hd * 0.45));

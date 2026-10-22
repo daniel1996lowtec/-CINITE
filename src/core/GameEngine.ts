@@ -1034,6 +1034,7 @@ export class GameEngine {
     if (quality === 'ultra') {
       this.world.detailFoliageGroup.visible = !reduced;
       this.world.expansionDetailGroup.visible = !reduced;
+      this.world.houseDetailGroup.visible = !reduced;
       if (this.world.terrain.atmosphereMotes) {
         this.world.terrain.atmosphereMotes.visible = !reduced;
       }
@@ -1041,6 +1042,7 @@ export class GameEngine {
     } else if (quality === 'high') {
       this.world.detailFoliageGroup.visible = !reduced;
       this.world.expansionDetailGroup.visible = !reduced;
+      this.world.houseDetailGroup.visible = !reduced;
       if (this.world.terrain.atmosphereMotes) {
         this.world.terrain.atmosphereMotes.visible = !reduced;
       }
@@ -1125,6 +1127,7 @@ export class GameEngine {
       this.world.foliageGroup.visible = false;
       this.world.detailFoliageGroup.visible = false;
       this.world.expansionDetailGroup.visible = false;
+      this.world.houseDetailGroup.visible = false;
       this.world.terrain.distantIslandsGroup.visible = false;
       this.tpCamera.camera.far = getCameraFarForQuality(quality);
       this.tpCamera.camera.updateProjectionMatrix();
@@ -1142,6 +1145,7 @@ export class GameEngine {
       this.world.foliageGroup.visible = true;
       this.world.detailFoliageGroup.visible = false;
       this.world.expansionDetailGroup.visible = false;
+      this.world.houseDetailGroup.visible = false;
       this.world.terrain.distantIslandsGroup.visible = true;
       this.tpCamera.camera.far = getCameraFarForQuality(quality);
       this.tpCamera.camera.updateProjectionMatrix();
@@ -1159,6 +1163,7 @@ export class GameEngine {
       this.world.foliageGroup.visible = true;
       this.world.detailFoliageGroup.visible = true;
       this.world.expansionDetailGroup.visible = true;
+      this.world.houseDetailGroup.visible = true;
       this.world.terrain.distantIslandsGroup.visible = true;
       this.tpCamera.camera.far = getCameraFarForQuality(quality);
       this.tpCamera.camera.updateProjectionMatrix();
@@ -1176,6 +1181,7 @@ export class GameEngine {
       this.world.foliageGroup.visible = true;
       this.world.detailFoliageGroup.visible = true;
       this.world.expansionDetailGroup.visible = true;
+      this.world.houseDetailGroup.visible = true;
       this.world.terrain.distantIslandsGroup.visible = true;
       this.tpCamera.camera.far = getCameraFarForQuality(quality);
       this.tpCamera.camera.updateProjectionMatrix();

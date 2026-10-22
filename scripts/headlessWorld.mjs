@@ -22,6 +22,11 @@ export async function loadWorldModules() {
       ["from './WorldBrandingLayout'", "from './WorldBrandingLayout.mjs'"],
     ]);
     emit('src/world/VisualAtmosphere.ts', 'VisualAtmosphere.mjs');
+    emit('src/world/ArchitecturalMaterials.ts', 'ArchitecturalMaterials.mjs');
+    emit('src/world/BuildingKit.ts', 'BuildingKit.mjs', [
+      ["from './ArchitecturalMaterials'", "from './ArchitecturalMaterials.mjs'"],
+      ["from './VisualAtmosphere'", "from './VisualAtmosphere.mjs'"],
+    ]);
     emit('src/world/TerrainGenerator.ts', 'TerrainGenerator.mjs', [
       [/import\s+\{\s*TimeOfDayPreset\s*\}\s+from\s+['"]\.\.\/network\/schemas['"];?\n?/, ''],
       ["from './VisualAtmosphere'", "from './VisualAtmosphere.mjs'"],
@@ -31,6 +36,7 @@ export async function loadWorldModules() {
       ["from './WorldBrandingLayout'", "from './WorldBrandingLayout.mjs'"],
       ["from './TerrainGenerator'", "from './TerrainGenerator.mjs'"],
       ["from './VisualAtmosphere'", "from './VisualAtmosphere.mjs'"],
+      ["from './BuildingKit'", "from './BuildingKit.mjs'"],
       ["from './WorldLayout'", "from './WorldLayout.mjs'"],
     ]);
     emit('src/world/IslandWorld.ts', 'IslandWorld.mjs', [
@@ -39,6 +45,8 @@ export async function loadWorldModules() {
       ["from './TerrainGenerator'", "from './TerrainGenerator.mjs'"],
       ["from './MapExpansionBuilder'", "from './MapExpansionBuilder.mjs'"],
       ["from './VisualAtmosphere'", "from './VisualAtmosphere.mjs'"],
+      ["from './ArchitecturalMaterials'", "from './ArchitecturalMaterials.mjs'"],
+      ["from './BuildingKit'", "from './BuildingKit.mjs'"],
       ["from './WorldLayout'", "from './WorldLayout.mjs'"],
       [/import\s+\{\s*BuildablePieceState,[\s\S]*?\}\s+from\s+['"]\.\.\/network\/schemas['"];?\n?/, ''],
     ]);
@@ -51,7 +59,22 @@ export async function loadWorldModules() {
     const worldModule = await import(pathToFileURL(path.join(tmpDir, 'IslandWorld.mjs')).href);
     const brandingLayout = await import(pathToFileURL(path.join(tmpDir, 'WorldBrandingLayout.mjs')).href);
     const brandingModule = await import(pathToFileURL(path.join(tmpDir, 'WorldBranding.mjs')).href);
-    return { THREE, layout, terrainModule, brandingLayout, brandingModule, IslandWorld: worldModule.IslandWorld };
+    const archMaterials = await import(
+      pathToFileURL(path.join(tmpDir, 'ArchitecturalMaterials.mjs')).href
+    );
+    const atmosphere = await import(pathToFileURL(path.join(tmpDir, 'VisualAtmosphere.mjs')).href);
+    const buildingKit = await import(pathToFileURL(path.join(tmpDir, 'BuildingKit.mjs')).href);
+    return {
+      THREE,
+      layout,
+      terrainModule,
+      brandingLayout,
+      brandingModule,
+      archMaterials,
+      atmosphere,
+      buildingKit,
+      IslandWorld: worldModule.IslandWorld,
+    };
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

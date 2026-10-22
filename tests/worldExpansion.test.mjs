@@ -57,6 +57,45 @@ function collectSceneStats(scene) {
   return { objects, meshes, instancedMeshes, instances, triangles: Math.round(triangles) };
 }
 
+/**
+ * CI CRAFT 6.2 splits architecture into an always-on tier (walls, roofs,
+ * glazing, doors, road surfaces) and a decorative tier (window frames, sills,
+ * dentils, railings, gutters, fine foliage) that GameEngine hides on Low and
+ * Medium. Budgets are therefore asserted per tier: the always-on cost must
+ * stay at or below the pre-6.2 ceiling, while the full-detail cost is capped
+ * separately so High/Ultra can be genuinely richer without becoming
+ * unbounded.
+ */
+function collectTierTriangles(scene, world) {
+  const detailGroups = new Set([
+    world.expansionDetailGroup,
+    world.houseDetailGroup,
+    world.detailFoliageGroup,
+  ]);
+  let total = 0;
+  let detail = 0;
+  scene.traverse((object) => {
+    if (!object.isMesh) return;
+    const geometry = object.geometry;
+    const triCount = geometry?.index
+      ? geometry.index.count / 3
+      : (geometry?.attributes?.position?.count || 0) / 3;
+    const weighted = triCount * (object.isInstancedMesh ? object.count : 1);
+    total += weighted;
+    let inDetail = false;
+    let node = object;
+    while (node) {
+      if (detailGroups.has(node)) {
+        inDetail = true;
+        break;
+      }
+      node = node.parent;
+    }
+    if (inDetail) detail += weighted;
+  });
+  return { total: Math.round(total), detail: Math.round(detail), essential: Math.round(total - detail) };
+}
+
 test('world layout: original POIs preserved, districts varied, and footprints do not overlap/block routes', async () => {
   const { layout, terrainModule } = await loadWorldModules();
   const {
@@ -223,9 +262,18 @@ test('generated world: deterministic expansion, safe loot/props, and performance
   assert.ok(world.lootSpawnPoints.length >= 85, `expected at least 85 ground-loot points, got ${world.lootSpawnPoints.length}`);
   assert.ok(stats.instancedMeshes >= 25, `expected instanced architecture/foliage, got ${stats.instancedMeshes}`);
   assert.ok(stats.meshes <= 900, `mesh budget exceeded: ${stats.meshes}`);
-  // CI CRAFT 6.1 detail-tier geometry (facade relief, botanical foliage,
-  // street furniture) is shared-instanced and hidden on reduced detail.
-  assert.ok(stats.triangles <= 340000, `triangle budget exceeded: ${stats.triangles}`);
+  // CI CRAFT 6.2 tiered budgets (see collectTierTriangles). The always-on tier
+  // must not regress past the pre-6.2 total, and the full-detail tier is capped.
+  const tierTriangles = collectTierTriangles(first.scene, world);
+  assert.ok(
+    tierTriangles.essential <= 330000,
+    `always-on triangle budget exceeded: ${tierTriangles.essential}`
+  );
+  assert.ok(
+    tierTriangles.total <= 560000,
+    `full-detail triangle budget exceeded: ${tierTriangles.total}`
+  );
+  assert.ok(stats.triangles <= 560000, `triangle budget exceeded: ${stats.triangles}`);
   assert.ok(first.generationMs < 6000, `world generation too slow: ${first.generationMs}ms`);
   assert.ok(
     world.boxColliders.length + world.cylinderColliders.length <= 1450,
