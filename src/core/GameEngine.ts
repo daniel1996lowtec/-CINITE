@@ -1182,6 +1182,10 @@ export class GameEngine {
     }
     this.renderer.shadowMap.needsUpdate = true;
 
+    // Sharpen the new tiling detail maps at grazing angles (roads, cliffs,
+    // facades) on every tier that can afford the extra texture samples.
+    const maxAnisotropy = this.renderer.capabilities?.getMaxAnisotropy?.() ?? 1;
+    this.world.setTextureAnisotropy(quality === 'low' ? 1 : maxAnisotropy);
     this.stormSystem.setDetailEnabled(quality !== 'low' && !this.adaptiveDetailReduced);
     this.world.setLandmarkDetail(quality !== 'low' && !this.adaptiveDetailReduced);
     this.applyTimeOfDay(this.settings.timeOfDay);

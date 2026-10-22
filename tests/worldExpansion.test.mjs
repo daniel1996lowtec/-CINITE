@@ -223,7 +223,9 @@ test('generated world: deterministic expansion, safe loot/props, and performance
   assert.ok(world.lootSpawnPoints.length >= 85, `expected at least 85 ground-loot points, got ${world.lootSpawnPoints.length}`);
   assert.ok(stats.instancedMeshes >= 25, `expected instanced architecture/foliage, got ${stats.instancedMeshes}`);
   assert.ok(stats.meshes <= 900, `mesh budget exceeded: ${stats.meshes}`);
-  assert.ok(stats.triangles <= 300000, `triangle budget exceeded: ${stats.triangles}`);
+  // CI CRAFT 6.1 detail-tier geometry (facade relief, botanical foliage,
+  // street furniture) is shared-instanced and hidden on reduced detail.
+  assert.ok(stats.triangles <= 340000, `triangle budget exceeded: ${stats.triangles}`);
   assert.ok(first.generationMs < 6000, `world generation too slow: ${first.generationMs}ms`);
   assert.ok(
     world.boxColliders.length + world.cylinderColliders.length <= 1450,

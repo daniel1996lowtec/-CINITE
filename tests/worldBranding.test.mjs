@@ -103,7 +103,10 @@ test('3.6 gameplay fingerprint is byte-identical to 3.5: collision, routes, fixe
   assert.ok(world.raycastMeshes.every(mesh=>!branded.has(mesh)));
   let meshes=0,triangles=0;
   scene.traverse(mesh=>{if(mesh.isMesh){meshes++;triangles+=(mesh.geometry.index?.count??mesh.geometry.attributes.position.count)/3*(mesh.isInstancedMesh?mesh.count:1)}});
-  assert.ok(meshes<=900);assert.ok(triangles<=300000);
+  // Draw calls (meshes) are unchanged by CI CRAFT 6.1 while the static
+  // detail-tier triangle budget absorbs the richer facades/foliage, which
+  // are hidden on the reduced-detail tier.
+  assert.ok(meshes<=900);assert.ok(triangles<=340000);
   assert.ok(world.boxColliders.length+world.cylinderColliders.length<=1450);
   console.log(JSON.stringify({branding36:{meshes,triangles,colliders:1414,signs:branding.BUILDING_BRANDING.length,roadMarkings:branding.ROAD_BRANDING.length,batches:world.branding.group.children.length}}));
 });

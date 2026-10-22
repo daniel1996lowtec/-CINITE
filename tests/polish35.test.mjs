@@ -94,7 +94,11 @@ test('3.5 navigation paint follows existing supported surfaces; landmark light i
       const floor=world.getGroundHeightAt(position.x,position.y+.1,position.z);
       assert.ok(Math.abs(position.y-floor)<.15,`${o.name} paint unsupported at ${position.toArray()}: ${floor}`);decals++}
   });
-  assert.ok(decals>20);assert.ok(triangles<=300000);
+  // CI CRAFT 6.1 detail budget: the extra static detail-tier architecture
+  // (cornices, mullions, rooftop plant, street furniture) stays inside the
+  // shared instanced batches and is dropped on the reduced-detail tier; the
+  // draw-call/mesh count and the exact collider fingerprint are unchanged.
+  assert.ok(decals>20);assert.ok(triangles<=340000);
   const light=scene.getObjectByName('LegendaryTowerVaultLight');world.update(.1,new THREE.Vector3(500,50,500));assert.equal(light.visible,false);
   world.setLandmarkDetail(false);world.update(.1,new THREE.Vector3(0,55,0));assert.equal(light.visible,false);
   world.setLandmarkDetail(true);world.update(.1,new THREE.Vector3(0,55,0));assert.equal(light.visible,true);assert.ok(light.intensity>=71&&light.intensity<=85);

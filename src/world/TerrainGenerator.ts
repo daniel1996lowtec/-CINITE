@@ -2,8 +2,10 @@ import * as THREE from 'three';
 import { TimeOfDayPreset } from '../network/schemas';
 import {
   SKY_DOME_RADIUS,
+  weldAndSmoothGeometry,
   STARFIELD_RADIUS,
   SUN_DISTANCE,
+  createTerrainSurfaceMaps,
   getSunDirection,
   getEnvironmentPreset,
   getSurfaceVariation,
@@ -172,7 +174,17 @@ export class TerrainGenerator {
   private waterTexture: THREE.CanvasTexture | null = null;
   private waterBumpTexture: THREE.CanvasTexture | null = null;
   private terrainDetailTexture: THREE.CanvasTexture | null = null;
+  private terrainSurfaceMaps: ReturnType<typeof createTerrainSurfaceMaps> | null = null;
   private time = 0;
+
+  /**
+   * Deterministic per-cell tonal value for paving slabs, cobbles, gravel and
+   * tilled rows. Keeps large ground planes from reading as flat colour bands.
+   */
+  private stoneTone(cellX: number, cellZ: number): number {
+    const h = Math.sin(cellX * 12.9898 + cellZ * 78.233) * 43758.5453;
+    return h - Math.floor(h);
+  }
 
   /**
    * Small deterministic pads under expansion structures. POI/settlement
@@ -592,43 +604,57 @@ export class TerrainGenerator {
         // Warm Mediterranean coastal sand & riverbank pebble-sand
         color.setHex(0xdcc59a).lerp(new THREE.Color(0xe8d7b4), fineVariation * 0.65);
       } else if (Math.hypot(vx, vz) < 30) {
-        // Pipeline Plaza paved town square tiles with warm travertine/slate tones
-        const tile = (Math.floor(vx * 0.35) + Math.floor(vz * 0.35)) % 2 === 0;
-        color.setHex(tile ? 0x94a3b8 : 0xb8c4d0);
+        // Pipeline Plaza paving: individual travertine slabs with mortar
+        // joints and per-slab tonal variation instead of a two-tone checker.
+        const slabX = Math.floor(vx * 0.62 + Math.sin(vz * 0.31) * 0.4);
+        const slabZ = Math.floor(vz * 0.62);
+        const slabTone = this.stoneTone(slabX, slabZ);
+        const joint =
+          Math.abs(vx * 0.62 + Math.sin(vz * 0.31) * 0.4 - slabX - 0.5) > 0.45 ||
+          Math.abs(vz * 0.62 - slabZ - 0.5) > 0.45;
+        color.setHex(0xa9b3bd).offsetHSL(0, -0.02, slabTone * 0.05);
+        if (joint) color.multiplyScalar(0.9);
       } else if (roadDist < 3.6) {
-        // Navigable cobblestone & compacted limestone road
-        const cobble = (Math.floor(vx * 0.55) + Math.floor(vz * 0.55)) % 2 === 0;
-        color.setHex(cobble ? 0xb59567 : 0xc6a87a);
+        // Compacted limestone road with aggregate variation and tar seams.
+        const aggregate = this.stoneTone(Math.floor(vx * 1.4), Math.floor(vz * 1.4));
+        color.setHex(0xb08f63).offsetHSL(0, 0.02 * aggregate, aggregate * 0.055);
+        const seam = Math.abs(((vx + vz) * 0.35) % 1 - 0.5) < 0.02;
+        if (seam) color.multiplyScalar(0.88);
       } else if (roadDist < 5.1) {
         // Smooth dirt road shoulder transition into surrounding meadow
         const shoulderT = Math.min(1, Math.max(0, (roadDist - 3.6) / 1.5));
         color.copy(dirtShoulderColor).lerp(new THREE.Color(0x4d7c42), shoulderT * 0.65);
       } else if (expansionSettlement) {
-        const checker = (Math.floor(vx * 0.32) + Math.floor(vz * 0.32)) % 2 === 0;
+        // Settlement grounds use layered, noise-driven material variation
+        // (paving slabs, gravel aggregate, tilled furrows, dune ripples)
+        // rather than a hard two-tone checkerboard.
+        const tone = this.stoneTone(Math.floor(vx * 0.5), Math.floor(vz * 0.5));
         switch (expansionSettlement.ground) {
           case 'paved':
-            color.setHex(checker ? 0x94a3b8 : 0xb0bccb);
+            color.setHex(0xa3aeb9).offsetHSL(0, -0.02, tone * 0.05);
             break;
           case 'industrial':
-            color.setHex(checker ? 0x78716c : 0x8b8580);
+            color.setHex(0x827a72).offsetHSL(0, 0.01, tone * 0.05);
             break;
           case 'farm':
-            color.setHex(Math.sin(vz * 1.25) > 0 ? 0x9a6b26 : 0x5c8432);
+            color
+              .setHex(0x8a6a34)
+              .lerp(new THREE.Color(0x5c8432), 0.35 + fineVariation * 0.35)
+              .offsetHSL(0, 0, tone * 0.04);
             break;
           case 'sand':
-            color.setHex(checker ? 0xdcc59a : 0xe8d7b4);
+            color.setHex(0xdfcaa2).offsetHSL(0, 0.01, tone * 0.035);
             break;
           case 'alpine':
-            color.setHex(checker ? 0xcbd5e1 : 0xe2e8f0);
+            color.setHex(0xd6dfe8).offsetHSL(0, -0.01, tone * 0.03);
             break;
           case 'dirt':
           default:
-            color.setHex(checker ? 0xa88458 : 0xb89466);
+            color.setHex(0xac8862).offsetHSL(0, 0.015, tone * 0.045);
             break;
         }
       } else if (distKeep < 25) {
-        const keepTile = (Math.floor(vx * 0.3) + Math.floor(vz * 0.3)) % 2 === 0;
-        color.setHex(keepTile ? 0x64748b : 0x526071);
+        color.setHex(0x5c6875).offsetHSL(0, 0, this.stoneTone(Math.floor(vx * 0.8), Math.floor(vz * 0.8)) * 0.05);
       } else if (distSilos < 22) {
         color.setHex(0x64748b);
       } else if (distDocks < 22) {
@@ -672,14 +698,23 @@ export class TerrainGenerator {
     geo.computeVertexNormals();
 
     this.terrainDetailTexture = this.createTerrainMicroTexture();
+    // Two independent detail scales: the authored macro overlay breaks up
+    // biome transitions across the whole island, while the tiling normal and
+    // roughness maps add real, close-range surface relief to grass, sand,
+    // dirt and asphalt (about 7 m per tile).
+    this.terrainSurfaceMaps = createTerrainSurfaceMaps();
     const terrainMat = new THREE.MeshStandardMaterial({
       vertexColors: true,
       map: this.terrainDetailTexture,
-      bumpMap: this.terrainDetailTexture,
-      bumpScale: 0.055,
+      normalMap: this.terrainSurfaceMaps.normal,
+      normalScale: new THREE.Vector2(0.62, 0.62),
+      roughnessMap: this.terrainSurfaceMaps.roughness,
+      bumpMap: this.terrainSurfaceMaps.grain,
+      bumpScale: 0.02,
       flatShading: false,
-      roughness: 0.82,
+      roughness: 0.9,
       metalness: 0.02,
+      envMapIntensity: 0.55,
     });
 
     this.terrainMesh = new THREE.Mesh(geo, terrainMat);
@@ -882,24 +917,41 @@ export class TerrainGenerator {
 
     this.applyTimeOfDaySky('day');
 
+    // Soft-shaded cumulus puffs: welded icosahedron shells with flattened
+    // undersides catch the directional light like real cloud tops instead of
+    // reading as faceted grey rocks.
     const cloudMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
-      emissive: 0xe0f2fe,
-      emissiveIntensity: 0.25,
-      flatShading: true,
-      roughness: 0.9,
+      emissive: 0xdbeafe,
+      emissiveIntensity: 0.34,
+      flatShading: false,
+      roughness: 0.95,
+      metalness: 0,
+      envMapIntensity: 0.4,
     });
+    const cloudPuffGeo = weldAndSmoothGeometry(new THREE.IcosahedronGeometry(1, 1), 1e-3);
+    const cloudPuffPos = cloudPuffGeo.getAttribute('position');
+    for (let i = 0; i < cloudPuffPos.count; i++) {
+      const py = cloudPuffPos.getY(i);
+      // Flatten the underside and billow the crown.
+      const billow = py > 0 ? 1 + py * 0.18 : 0.55;
+      cloudPuffPos.setXYZ(
+        i,
+        cloudPuffPos.getX(i) * (1 + 0.08 * Math.sin(i * 1.7)),
+        py * billow,
+        cloudPuffPos.getZ(i) * (1 + 0.07 * Math.cos(i * 2.1))
+      );
+    }
+    cloudPuffGeo.computeVertexNormals();
 
     for (let i = 0; i < 20; i++) {
       const cluster = new THREE.Group();
       const puffs = 3 + (i % 3);
       for (let p = 0; p < puffs; p++) {
-        const puff = new THREE.Mesh(
-          new THREE.DodecahedronGeometry(6 + (p % 2) * 3.5, 0),
-          cloudMat
-        );
+        const radius = 6 + (p % 2) * 3.5;
+        const puff = new THREE.Mesh(cloudPuffGeo, cloudMat);
         puff.position.set((p - 1.2) * 6.5, (p % 2) * 1.8, (p % 3 - 1) * 2.5);
-        puff.scale.set(1.35, 0.65, 1.0);
+        puff.scale.set(radius * 1.35, radius * 0.65, radius * 1.0);
         cluster.add(puff);
       }
 
