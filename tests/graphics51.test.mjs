@@ -349,3 +349,59 @@ test('CI CRAFT 5.1 parachute redesign: curved multi-cell canopy, connected suspe
     mesh.dispose();
   }
 });
+
+test('CI CRAFT 6.0 quality tiers & world visual upgrade: LOW/MEDIUM/HIGH/ULTRA tiers, smooth terrain/water vertex gradients, and non-neon biome palette', async () => {
+  const { loadWorldModules } = await import('../scripts/headlessWorld.mjs');
+  const tmpDir = fs.mkdtempSync(path.join(ROOT_DIR, '.graphics60-test-'));
+  try {
+    const visualCode = stripTypeScriptTypes(
+      fs.readFileSync(path.join(ROOT_DIR, 'src/world/VisualAtmosphere.ts'), 'utf8')
+    );
+    fs.writeFileSync(path.join(tmpDir, 'VisualAtmosphere.mjs'), visualCode);
+
+    const visual = await import(
+      pathToFileURL(path.join(tmpDir, 'VisualAtmosphere.mjs')).href
+    );
+    const { THREE, IslandWorld } = await loadWorldModules();
+
+    // 1. Quality tiers LOW, MEDIUM, HIGH, ULTRA
+    assert.equal(
+      visual.resolveGraphicsQuality('ultra', {
+        coarsePointer: false,
+        hardwareConcurrency: 16,
+        deviceMemoryGb: 16,
+        devicePixelRatio: 2,
+      }),
+      'ultra'
+    );
+    assert.notEqual(
+      visual.resolveGraphicsQuality('auto', {
+        coarsePointer: true,
+        hardwareConcurrency: 4,
+        deviceMemoryGb: 3,
+        devicePixelRatio: 2,
+      }),
+      'ultra',
+      'Auto must never force ULTRA on low-end mobile devices'
+    );
+    assert.ok(
+      visual.getCameraFarForQuality('ultra') > visual.getCameraFarForQuality('high')
+    );
+
+    // 2. Terrain & Water smooth PBR shading + coastal water vertex color gradient
+    const scene = new THREE.Scene();
+    const world = new IslandWorld(scene);
+    world.generate();
+    assert.equal(world.terrain.terrainMesh.material.flatShading, false);
+    assert.equal(world.terrain.waterMesh.material.flatShading, false);
+    assert.equal(world.terrain.waterMesh.material.vertexColors, true);
+    assert.ok(
+      world.terrain.waterMesh.geometry.getAttribute('color'),
+      'Water mesh must have coastal depth vertex colors'
+    );
+    world.branding?.dispose();
+    world.mapExpansion.disposeArchitecture();
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

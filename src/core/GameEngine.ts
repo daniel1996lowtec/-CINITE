@@ -1031,7 +1031,14 @@ export class GameEngine {
     this.stormSystem.setDetailEnabled(quality !== 'low' && !reduced);
     this.world.setLandmarkDetail(quality !== 'low' && !reduced);
 
-    if (quality === 'high') {
+    if (quality === 'ultra') {
+      this.world.detailFoliageGroup.visible = !reduced;
+      this.world.expansionDetailGroup.visible = !reduced;
+      if (this.world.terrain.atmosphereMotes) {
+        this.world.terrain.atmosphereMotes.visible = !reduced;
+      }
+      this.setShadowMapSize(reduced ? 1536 : 2048);
+    } else if (quality === 'high') {
       this.world.detailFoliageGroup.visible = !reduced;
       this.world.expansionDetailGroup.visible = !reduced;
       if (this.world.terrain.atmosphereMotes) {
@@ -1099,9 +1106,11 @@ export class GameEngine {
     this.adaptiveSlowChecks = 0;
     this.adaptiveDetailReduced = false;
     const quality = this.getResolvedGraphicsQuality();
-    setFoliageWindStrength(quality === 'high' ? 1 : quality === 'medium' ? 0.65 : 0);
+    setFoliageWindStrength(
+      quality === 'ultra' || quality === 'high' ? 1 : quality === 'medium' ? 0.65 : 0
+    );
     this.particles?.setQualityScale(
-      quality === 'high' ? 1 : quality === 'medium' ? 0.8 : 0.55
+      quality === 'ultra' || quality === 'high' ? 1 : quality === 'medium' ? 0.8 : 0.55
     );
 
     if (quality === 'low') {
@@ -1133,6 +1142,23 @@ export class GameEngine {
       this.world.foliageGroup.visible = true;
       this.world.detailFoliageGroup.visible = false;
       this.world.expansionDetailGroup.visible = false;
+      this.world.terrain.distantIslandsGroup.visible = true;
+      this.tpCamera.camera.far = getCameraFarForQuality(quality);
+      this.tpCamera.camera.updateProjectionMatrix();
+    } else if (quality === 'ultra') {
+      this.basePixelRatio = Math.min(deviceDpr, 2.0);
+      this.renderer.setPixelRatio(this.getEffectivePixelRatio());
+      this.renderer.shadowMap.enabled = true;
+      this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      this.dirLight.castShadow = true;
+      this.setShadowMapSize(2048);
+      this.world.terrain.cloudsGroup.visible = true;
+      if (this.world.terrain.atmosphereMotes) {
+        this.world.terrain.atmosphereMotes.visible = true;
+      }
+      this.world.foliageGroup.visible = true;
+      this.world.detailFoliageGroup.visible = true;
+      this.world.expansionDetailGroup.visible = true;
       this.world.terrain.distantIslandsGroup.visible = true;
       this.tpCamera.camera.far = getCameraFarForQuality(quality);
       this.tpCamera.camera.updateProjectionMatrix();

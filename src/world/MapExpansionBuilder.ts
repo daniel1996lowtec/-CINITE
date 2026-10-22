@@ -3192,27 +3192,48 @@ export class MapExpansionBuilder {
 
     const standardMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
-      flatShading: true,
-      roughness: 0.88,
-      metalness: 0.03,
+      flatShading: false,
+      roughness: 0.78,
+      metalness: 0.04,
+      envMapIntensity: 0.9,
+      roughnessMap: textures.roughness,
+      bumpMap: textures.roughness,
+      bumpScale: 0.022,
+    });
+    const metalMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.34,
+      metalness: 0.82,
+      envMapIntensity: 1.25,
+      roughnessMap: textures.roughness,
+      bumpMap: textures.roughness,
+      bumpScale: 0.015,
+    });
+    const paintMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.54,
+      metalness: 0.18,
       roughnessMap: textures.roughness,
     });
-    const metalMat = new THREE.MeshStandardMaterial({color:0xffffff, roughness:.42,
-      metalness:.78, envMapIntensity:1.15, roughnessMap:textures.roughness});
-    const paintMat = new THREE.MeshStandardMaterial({color:0xffffff, roughness:.6,
-      metalness:.18, roughnessMap:textures.roughness});
-    const contactMat = new THREE.MeshBasicMaterial({color:0x0b1220, map:textures.contact,
-      transparent:true, opacity:.32, depthWrite:false, polygonOffset:true, polygonOffsetFactor:-1});
+    const contactMat = new THREE.MeshBasicMaterial({
+      color: 0x0b1220,
+      map: textures.contact,
+      transparent: true,
+      opacity: 0.38,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+    });
     const glassMat = new THREE.MeshStandardMaterial({
       color: 0xe0f2fe,
       emissive: 0xbad8ef,
-      emissiveIntensity: 0.12,
-      envMapIntensity: 1.25,
-      flatShading: true,
-      roughness: 0.18,
-      metalness: 0.36,
+      emissiveIntensity: 0.14,
+      envMapIntensity: 1.55,
+      flatShading: false,
+      roughness: 0.08,
+      metalness: 0.62,
       transparent: true,
-      opacity: 0.64,
+      opacity: 0.72,
     });
     const glowMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
 

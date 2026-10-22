@@ -547,7 +547,7 @@ export interface GameSettings {
   touchSensitivity?: number;
   audioVolume: number;
   sfxVolume?: number;
-  graphicsQuality: 'auto' | 'low' | 'medium' | 'high';
+  graphicsQuality: 'auto' | 'low' | 'medium' | 'high' | 'ultra';
   timeOfDay: TimeOfDayPreset;
   showFps: boolean;
 }

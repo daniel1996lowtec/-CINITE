@@ -1229,7 +1229,7 @@ window.addEventListener('DOMContentLoaded', () => {
   const gfxSelect = document.getElementById('setting-graphics') as HTMLSelectElement;
   gfxSelect?.addEventListener('change', () => {
     engine.applySettings({
-      graphicsQuality: gfxSelect.value as 'auto' | 'low' | 'medium' | 'high',
+      graphicsQuality: gfxSelect.value as 'auto' | 'low' | 'medium' | 'high' | 'ultra',
     });
   });
 
