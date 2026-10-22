@@ -673,9 +673,11 @@ export class TerrainGenerator {
     const terrainMat = new THREE.MeshStandardMaterial({
       vertexColors: true,
       map: this.terrainDetailTexture,
-      flatShading: true,
-      roughness: 0.84,
-      metalness: 0.0,
+      bumpMap: this.terrainDetailTexture,
+      bumpScale: 0.055,
+      flatShading: false,
+      roughness: 0.82,
+      metalness: 0.02,
     });
 
     this.terrainMesh = new THREE.Mesh(geo, terrainMat);
@@ -697,12 +699,13 @@ export class TerrainGenerator {
       bumpMap: this.waterBumpTexture,
       bumpScale: 0.18,
       emissive: 0x0369a1,
-      emissiveIntensity: 0.16,
-      roughness: 0.08,
-      metalness: 0.02,
+      emissiveIntensity: 0.12,
+      roughness: 0.06,
+      metalness: 0.08,
+      envMapIntensity: 1.15,
       transparent: true,
-      opacity: 0.9,
-      flatShading: true,
+      opacity: 0.92,
+      flatShading: false,
     });
     this.waterMesh = new THREE.Mesh(waterGeo, waterMat);
     this.waterMesh.position.y = -0.28;

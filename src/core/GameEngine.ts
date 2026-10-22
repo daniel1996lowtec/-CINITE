@@ -906,8 +906,9 @@ export class GameEngine {
     this.dirLight.shadow.camera.right = d;
     this.dirLight.shadow.camera.top = d;
     this.dirLight.shadow.camera.bottom = -d;
-    this.dirLight.shadow.bias = -0.00035;
-    this.dirLight.shadow.normalBias = 0.035;
+    this.dirLight.shadow.bias = -0.00028;
+    this.dirLight.shadow.normalBias = 0.028;
+    this.dirLight.shadow.radius = 2.0;
     this.dirLightTarget = new THREE.Object3D();
     this.scene.add(this.dirLightTarget);
     this.dirLight.target = this.dirLightTarget;
