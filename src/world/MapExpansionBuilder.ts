@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { BUILDING_BRANDING } from './WorldBrandingLayout';
 import type {
   BoxCollider,
   CylinderCollider,
@@ -2212,7 +2213,10 @@ export class MapExpansionBuilder {
     const parkingPadWidth = kind === 'shop' || kind === 'warehouse' ? placement.width * 0.82 : doorWidth + 2.2;
     box(0, 0.045, hd + 2.0, parkingPadWidth, 0.09, 3.4, 0x64748b);
     if (kind === 'shop') {
-      box(0, 3.52, hd + 0.18, placement.width * 0.72, 0.68, 0.2, placement.accentColor, { tier: 'detail' });
+      // A branded fascia must remain a real mounting surface on Low/adaptive tiers.
+      // Reclassify the existing five panels; no new geometry or colliders.
+      const brandedFascia = BUILDING_BRANDING.some(sign => sign.buildingId === placement.id && sign.support === 'shop-fascia');
+      box(0, 3.52, hd + 0.18, placement.width * 0.72, 0.68, 0.2, placement.accentColor, { tier: brandedFascia ? 'essential' : 'detail' });
       box(0, 3.08, hd + 0.58, placement.width * 0.7, 0.14, 1.15, placement.roofColor, { rotationX: 0.18 });
     } else if (kind === 'house' || kind === 'cabin') {
       box(0, 3.08, hd + 0.5, doorWidth + 1.4, 0.14, 1.0, placement.roofColor, { rotationX: 0.16, tier: 'detail' });

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { TerrainGenerator, ISLAND_POIS } from './TerrainGenerator';
 import { MapExpansionBuilder } from './MapExpansionBuilder';
+import { WorldBranding } from './WorldBranding';
 import { applyFoliageWind, setFoliageWindTime } from './VisualAtmosphere';
 import {
   ISLAND_SETTLEMENTS,
@@ -66,6 +67,7 @@ export class IslandWorld {
   public setLandmarkDetail(enabled: boolean): void { this.landmarkDetail = enabled; }
   public scene: THREE.Scene;
   public terrain: TerrainGenerator;
+  public branding: WorldBranding | null = null;
   public boxColliders: BoxCollider[] = [];
   public cylinderColliders: CylinderCollider[] = [];
   public walkableSurfaces: WalkableSurface[] = [];
@@ -312,6 +314,9 @@ export class IslandWorld {
     this.buildInstancedFoliage();
     this.mapExpansion.buildDetailFoliage();
     this.mapExpansion.finalizeArchitecture();
+    this.branding?.dispose();
+    this.branding = new WorldBranding(this.scene, this.terrain.terrainMesh.geometry,
+      (x, z) => this.terrain.getTerrainHeight(x, z));
   }
 
   private disposeObject3D(obj: THREE.Object3D): void {

@@ -15,6 +15,12 @@ export async function loadWorldModules() {
 
   try {
     emit('src/world/WorldLayout.ts', 'WorldLayout.mjs');
+    emit('src/world/WorldBrandingLayout.ts', 'WorldBrandingLayout.mjs', [
+      ["from './WorldLayout'", "from './WorldLayout.mjs'"],
+    ]);
+    emit('src/world/WorldBranding.ts', 'WorldBranding.mjs', [
+      ["from './WorldBrandingLayout'", "from './WorldBrandingLayout.mjs'"],
+    ]);
     emit('src/world/VisualAtmosphere.ts', 'VisualAtmosphere.mjs');
     emit('src/world/TerrainGenerator.ts', 'TerrainGenerator.mjs', [
       [/import\s+\{\s*TimeOfDayPreset\s*\}\s+from\s+['"]\.\.\/network\/schemas['"];?\n?/, ''],
@@ -22,11 +28,13 @@ export async function loadWorldModules() {
       ["from './WorldLayout'", "from './WorldLayout.mjs'"],
     ]);
     emit('src/world/MapExpansionBuilder.ts', 'MapExpansionBuilder.mjs', [
+      ["from './WorldBrandingLayout'", "from './WorldBrandingLayout.mjs'"],
       ["from './TerrainGenerator'", "from './TerrainGenerator.mjs'"],
       ["from './VisualAtmosphere'", "from './VisualAtmosphere.mjs'"],
       ["from './WorldLayout'", "from './WorldLayout.mjs'"],
     ]);
     emit('src/world/IslandWorld.ts', 'IslandWorld.mjs', [
+      ["from './WorldBranding'", "from './WorldBranding.mjs'"],
       ["from './TerrainGenerator'", "from './TerrainGenerator.mjs'"],
       ["from './MapExpansionBuilder'", "from './MapExpansionBuilder.mjs'"],
       ["from './VisualAtmosphere'", "from './VisualAtmosphere.mjs'"],
@@ -40,7 +48,9 @@ export async function loadWorldModules() {
       pathToFileURL(path.join(tmpDir, 'TerrainGenerator.mjs')).href
     );
     const worldModule = await import(pathToFileURL(path.join(tmpDir, 'IslandWorld.mjs')).href);
-    return { THREE, layout, terrainModule, IslandWorld: worldModule.IslandWorld };
+    const brandingLayout = await import(pathToFileURL(path.join(tmpDir, 'WorldBrandingLayout.mjs')).href);
+    const brandingModule = await import(pathToFileURL(path.join(tmpDir, 'WorldBranding.mjs')).href);
+    return { THREE, layout, terrainModule, brandingLayout, brandingModule, IslandWorld: worldModule.IslandWorld };
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
