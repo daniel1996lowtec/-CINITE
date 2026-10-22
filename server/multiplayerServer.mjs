@@ -11,6 +11,8 @@
 import { createWorldLootMap, getChestRewards, validateLootClaim } from './worldLoot.mjs';
 import { resetInventory, inventoryAction, advanceInventory, fireInventory, collectInventory, inventorySnapshot, cancelInventoryAction, weaponStats as catalogueStats } from './inventory.mjs';
 import { canReachLoot, hasLineOfSight, worldProps, buildTransform, isPlayerPositionClear, safeSpawnPosition } from './worldGeometry.mjs';
+import { validateChatText, createChatRateLimiter } from './textChat.mjs';
+const allowChatAttempt = createChatRateLimiter();
 import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -2424,6 +2426,33 @@ server.on('upgrade', (req, socket) => {
                 'Server-authoritative progression only; client-submitted wins, XP, and eliminations are rejected.',
             })
           );
+          continue;
+        }
+
+        if (msg.type === 'chat_send') {
+          const player = currentRoom?.players.get(currentSessionToken);
+          if (!currentRoom || currentRoom.closed || !player || !player.isConnected ||
+              player.isBot || player.socket !== socket ||
+              (msg.roomCode !== undefined && msg.roomCode !== currentRoom.code)) {
+            socket.write(encodeWsFrame({type:'chat_rejected',code:'not_in_lobby'}));
+            continue;
+          }
+          // Account quota survives a removed pre-match seat or socket replacement.
+          const identity = player.accountId ? `account:${player.accountId}` : `session:${player.sessionToken}`;
+          if (!allowChatAttempt(identity)) {
+            socket.write(encodeWsFrame({type:'chat_rejected',roomCode:currentRoom.code,code:'rate_limited'}));
+            continue;
+          }
+          const text = validateChatText(msg.text);
+          if (text === null) {
+            socket.write(encodeWsFrame({type:'chat_rejected',roomCode:currentRoom.code,code:'invalid_text'}));
+            continue;
+          }
+          // Plain-text JSON only. Clients render both name and text via textContent,
+          // never HTML. No client-selected recipient, sender identity, ID or timestamp.
+          broadcastToRoom(currentRoom, {type:'chat_message',roomCode:currentRoom.code,
+            id:crypto.randomUUID(),senderId:player.id,senderName:player.name,
+            text,sentAt:Date.now()});
           continue;
         }
 

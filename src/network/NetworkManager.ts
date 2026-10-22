@@ -1,3 +1,4 @@
+import { RoomTextChat } from './RoomTextChat';
 import {
   BackAccessoryType,
   BuildMaterialType,
@@ -339,6 +340,7 @@ function normalizeRoomSnapshot(
 export class NetworkManager {
   public localPlayerId: string = 'player_local_1';
   public state: MatchState;
+  public readonly textChat = new RoomTextChat();
   public isOnlineRoom: boolean = false;
   public roomConnected: boolean = false;
   public connectionState: NetworkConnectionState = 'idle';
@@ -966,8 +968,10 @@ export class NetworkManager {
 
     try {
       this.ws = new WebSocket(wsUrl);
+      const socket = this.ws;
 
       this.ws.onopen = () => {
+        if (this.ws !== socket) return;
         this.roomConnected = true;
         this.connectionState = 'connected';
         this.onConnectionStatusChange?.(
@@ -981,6 +985,7 @@ export class NetworkManager {
       };
 
       this.ws.onmessage = (event) => {
+        if (this.ws !== socket) return;
         try {
           const rawStr = typeof event.data === 'string' ? event.data : '';
           this.packetsReceived++;
@@ -1003,6 +1008,10 @@ export class NetworkManager {
       };
 
       this.ws.onclose = () => {
+        if (this.ws !== socket) return;
+        this.textChat.reset();
+        socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null;
+        this.ws = null;
         this.roomConnected = false;
         const shouldReconnect =
           this.wantsRoomConnection &&
@@ -1031,6 +1040,8 @@ export class NetworkManager {
       };
 
       this.ws.onerror = () => {
+        if (this.ws !== socket) return;
+        this.textChat.reset();
         this.roomConnected = false;
         this.connectionState = 'error';
         this.onConnectionStatusChange?.(
@@ -1053,11 +1064,13 @@ export class NetworkManager {
   }
 
   private closeSocketOnly(): void {
+    this.textChat.reset();
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
     if (this.ws) {
+      this.ws.onopen = null;
       this.ws.onclose = null;
       this.ws.onerror = null;
       this.ws.onmessage = null;
@@ -1065,6 +1078,15 @@ export class NetworkManager {
       this.ws = null;
     }
     this.roomConnected = false;
+  }
+
+  public sendChat(text: string): boolean {
+    if (!this.textChat.roomCode || !this.isOnlineRoom || !this.roomConnected ||
+      !this.ws || this.ws.readyState !== WebSocket.OPEN || !text.trim() || text.length > 240) return false;
+    try {
+      this.ws.send(JSON.stringify({type:'chat_send',roomCode:this.textChat.roomCode,text}));
+      return true;
+    } catch { return false; } // Never queue/replay a message after reconnect.
   }
 
   public disconnectMultiplayerRoom(): void {
@@ -1075,6 +1097,7 @@ export class NetworkManager {
 
   /** Explicitly release the current room seat, unlike a temporary disconnect. */
   public leaveRoom(): void {
+    this.textChat.reset();
     const socketToClose = this.ws;
     if (socketToClose && socketToClose.readyState === WebSocket.OPEN) {
       try {
@@ -1098,6 +1121,7 @@ export class NetworkManager {
     this.onConnectionStatusChange?.('🚪 LEFT ROOM', false, 'idle', 0);
 
     if (socketToClose) {
+      socketToClose.onopen = null;
       socketToClose.onclose = null;
       socketToClose.onerror = null;
       socketToClose.onmessage = null;
@@ -1561,6 +1585,10 @@ export class NetworkManager {
         break;
       }
 
+      case 'chat_message':
+      case 'chat_rejected':
+        this.textChat.receive(msg);
+        break;
       case 'room_joined': {
         // Unacknowledged commands on the old socket are never retransmitted.
         // A fresh owner snapshot follows; discard predictions rather than
@@ -1578,6 +1606,7 @@ export class NetworkManager {
         this.roomCode = snapshot.roomCode;
         if (snapshot.selfPlayerId) this.serverPlayerId = snapshot.selfPlayerId;
         this.lastJoinRejection = null;
+        this.textChat.joined(snapshot.roomCode);
         this.onRoomSnapshot?.(snapshot);
         break;
       }

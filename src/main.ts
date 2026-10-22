@@ -1,3 +1,4 @@
+import { TextChat } from './ui/TextChat';
 import { MobileHud } from './ui/MobileHud';
 import './styles/main.css';
 import { GameEngine } from './core/GameEngine';
@@ -23,7 +24,7 @@ import {
   OUTFIT_PRESETS,
 } from './systems/ProgressionSystem';
 import { MobileTouchControls } from './input/MobileTouchControls';
-import { MobileLandscapeManager } from './input/MobileLandscapeManager';
+import { MobileLandscapeManager, isTextEntryElement } from './input/MobileLandscapeManager';
 import { LobbyBrowserClient } from './network/LobbyBrowserClient';
 import { getLobbyJoinBlock, parseLobbyInviteCode } from './network/lobbyBrowserUtils';
 import { LobbyBrowserUI } from './ui/LobbyBrowser';
@@ -37,6 +38,14 @@ import { getOutfitVisualProfile } from './entities/CharacterCosmetics';
 window.addEventListener('DOMContentLoaded', () => {
   const container = document.getElementById('game-canvas-container')!;
   const engine = new GameEngine(container);
+  const textChat = new TextChat(document, engine.network.textChat,
+    text => engine.network.sendChat(text), () => {
+      engine.keys.clear(); engine.clearTransientInput();
+      if (document.pointerLockElement) document.exitPointerLock();
+    });
+  window.addEventListener('pagehide', event => {
+    if (!event.persisted) textChat.destroy();
+  });
 
   // =========================================================================
   // 1. CAREER PROGRESSION & STORAGE BADGE RENDERING
@@ -1200,6 +1209,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // Mouse Wheel Slot Cycling
   window.addEventListener('wheel', (e) => {
+    if (textChat.ownsTarget(e.target) || textChat.isTyping()) return;
     if (!engine.isRunningMatch || engine.isPaused) return;
     engine.pendingSlotSelect = e.deltaY > 0 ? -2 : -3;
   });
@@ -1217,6 +1227,10 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // Keyboard Controls
   window.addEventListener('keydown', (e) => {
+    if (isTextEntryElement(e.target) || textChat.ownsTarget(e.target)) return;
+    if (e.code === 'KeyT' && engine.isRunningMatch && !engine.isPaused && engine.network.textChat.roomCode) {
+      e.preventDefault(); textChat.open(true); return;
+    }
     if (e.code === 'F3') {
       e.preventDefault();
       engine.togglePerfMonitor();
@@ -1262,7 +1276,7 @@ window.addEventListener('DOMContentLoaded', () => {
   // by WASD/mouse, so solo, legacy online, and human-only multiplayer all
   // receive identical movement/combat/build behaviour.
   const mobileTouchControls = MobileTouchControls.fromDocument(document, {
-    isGameplayActive: () => engine.isRunningMatch && !engine.isPaused,
+    isGameplayActive: () => engine.isRunningMatch && !engine.isPaused && !textChat.isTyping(),
     onMove: (moveX, moveZ, sprint) => {
       engine.mobileMoveX = moveX;
       engine.mobileMoveZ = moveZ;
