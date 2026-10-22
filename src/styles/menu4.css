@@ -32,17 +32,32 @@ html, body { max-width: 100%; overflow: hidden; }
 .menu-profile input[aria-invalid] { border-color: #ff998b; }
 #name-status { grid-column: 1/-1; margin: 0; color: #adc6d6; font-size: 11px; line-height: 1.4; }
 #btn-save-name, #menu-back, #menu-utilities button { border: 1px solid #365266; background: #152a3d; color: #dfedf7; border-radius: 8px; padding: 8px 12px; font: 600 12px system-ui; }
-.menu-section-heading { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 16px 0 12px; }
+.menu-section-heading { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 14px 0 10px; }
 .menu-section-heading h2 { font-size: 16px; font-weight: 600; color: #d7e5f1; margin: 0; }
-#lobby-overlay .primary-mode-pills { display: grid; grid-template-columns: 1fr; gap: 10px; margin: 0; }
-#lobby-overlay .primary-mode-pills .nav-pill { min-height: 62px; text-align: left; padding: 16px 20px; color: #e5faff; background: #15364b; border: 1px solid #328eaa; font-size: 17px; letter-spacing: .06em; border-radius: 10px; box-shadow: none; }
+#game-mode-choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 0 0 10px; }
+.game-mode-choice {
+  display: flex; flex-direction: column; align-items: flex-start; justify-content: center;
+  gap: 2px; padding: 9px 10px; min-height: 54px; text-align: left;
+  border: 1px solid #2b475c; border-radius: 10px; background: #102437; color: #c7dceb;
+  transition: border-color .15s ease, background .15s ease, transform .12s ease;
+}
+.game-mode-choice .gm-tag { font-size: 9px; font-weight: 700; letter-spacing: .07em; color: #7ac7dc; text-transform: uppercase; }
+.game-mode-choice .gm-title { font-size: 13px; font-weight: 700; line-height: 1.15; color: #f0f9ff; }
+.game-mode-choice .gm-meta { font-size: 10px; line-height: 1.2; color: #94b1c7; }
+.game-mode-choice.active {
+  background: linear-gradient(155deg, #17465f 0%, #103247 100%);
+  border-color: #4dd0e1; box-shadow: 0 0 0 1px #4dd0e155 inset;
+}
+.game-mode-choice.active .gm-tag { color: #fde047; }
+.lobby-badge.mode { background: #164e63; border-color: #38bdf8; color: #e0f2fe; font-weight: 700; }
+#lobby-overlay .primary-mode-pills { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 0; }
+#lobby-overlay .primary-mode-pills .nav-pill { min-height: 56px; text-align: left; padding: 12px 16px; color: #e5faff; background: #15364b; border: 1px solid #328eaa; font-size: 15px; letter-spacing: .05em; border-radius: 10px; box-shadow: none; }
 #lobby-overlay #btn-mode-online { background: #123044; border-color: #325e76; }
-#menu-utilities { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; margin-top: 16px; }
+#menu-utilities { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; margin-top: 12px; }
 #menu-utilities button { margin: 0; width: 100%; }
 #lobby-overlay[data-menu-section="home"] .lobby-form,
 #lobby-overlay[data-menu-section="account"] .lobby-form,
-#lobby-overlay:not([data-menu-section="home"]) .primary-mode-pills,
-#lobby-overlay:not([data-menu-section="home"]) #menu-utilities { display: none; }
+#lobby-overlay:not([data-menu-section="home"]) :is(#game-mode-choices, .primary-mode-pills, #menu-utilities) { display: none; }
 #lobby-overlay .lobby-form { margin: 0; }
 #lobby-overlay .form-row { gap: 12px; }
 #lobby-overlay .deployment-preference { margin: 10px 0; }
@@ -86,14 +101,18 @@ html, body { max-width: 100%; overflow: hidden; }
   .overlay-screen .end-title { font-size: 28px; }
 }
 @media (max-width: 380px) {
+  #game-mode-choices { grid-template-columns: 1fr; gap: 6px; }
+  .game-mode-choice { min-height: 46px; padding: 7px 10px; }
+  #lobby-overlay .primary-mode-pills { grid-template-columns: 1fr; gap: 8px; }
   #lobby-overlay :is(.lobby-filter-grid, .create-lobby-grid, .my-lobby-share-grid) { grid-template-columns: minmax(0,1fr); }
   #lobby-overlay .lobby-browser-hero-actions > * { flex: 1 1 90px; }
 }
 @media (max-height: 500px) and (min-width: 550px) {
-  #lobby-overlay[data-menu-section="home"] > .lobby-card { max-width: 740px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; }
+  #lobby-overlay[data-menu-section="home"] > .lobby-card { max-width: 760px; display: grid; grid-template-columns: 1fr 1.15fr; gap: 6px 14px; }
   #lobby-overlay[data-menu-section="home"] :is(.lobby-top-bar,.game-title,.game-subtitle,.menu-profile) { grid-column: 1; margin: 0; }
   #lobby-overlay[data-menu-section="home"] .menu-section-heading { grid-column: 2; grid-row: 1; margin: 0; }
-  #lobby-overlay[data-menu-section="home"] .primary-mode-pills { grid-column: 2; grid-row: 2 / 5; }
+  #lobby-overlay[data-menu-section="home"] #game-mode-choices { grid-column: 2; grid-row: 2 / 4; margin: 0; }
+  #lobby-overlay[data-menu-section="home"] .primary-mode-pills { grid-column: 2; grid-row: 4 / 5; }
   #lobby-overlay[data-menu-section="home"] #menu-utilities { grid-column: 1/-1; grid-template-columns: repeat(4,minmax(0,1fr)); margin: 0; }
 }
 /* A shared header keeps drag/reset accessible without adding HUD height. */

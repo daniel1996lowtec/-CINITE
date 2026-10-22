@@ -34,6 +34,7 @@ export async function loadWorldModules() {
       ["from './WorldLayout'", "from './WorldLayout.mjs'"],
     ]);
     emit('src/world/IslandWorld.ts', 'IslandWorld.mjs', [
+      ["from '../../shared/buildPlacement.mjs'", `from '${pathToFileURL(path.join(ROOT_DIR,'shared/buildPlacement.mjs')).href}'`],
       ["from './WorldBranding'", "from './WorldBranding.mjs'"],
       ["from './TerrainGenerator'", "from './TerrainGenerator.mjs'"],
       ["from './MapExpansionBuilder'", "from './MapExpansionBuilder.mjs'"],

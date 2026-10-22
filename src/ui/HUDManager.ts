@@ -9,6 +9,12 @@ import {
   PlayerState,
 } from '../network/schemas';
 import {
+  computeTeamScores,
+  formatMatchClock,
+  normalizeTdmTeam,
+  tdmTeamLabel,
+} from '../../shared/matchRules.mjs';
+import {
   RARITY_COLORS,
   getWeaponVisualProfile,
 } from '../weapons/WeaponDefinitions';
@@ -205,7 +211,22 @@ export class HUDManager {
 
   public showFinalStandings(snapshot: RoomSnapshot, placements: Record<string, number>): void {
     const winner = document.getElementById('end-winner');
-    if (winner) winner.textContent = snapshot.winnerName ? `WINNER · ${snapshot.winnerName}` : 'MATCH COMPLETE';
+    if (winner) {
+      if (snapshot.isDraw) {
+        winner.textContent =
+          snapshot.matchMode === 'team_deathmatch'
+            ? `DRAW · RED ${snapshot.teamScores.red} — ${snapshot.teamScores.blue} BLUE`
+            : 'DRAW · TIED AT TIME EXPIRATION';
+      } else if (snapshot.matchMode === 'team_deathmatch') {
+        winner.textContent = `${
+          snapshot.winnerName || 'WINNING TEAM'
+        } · RED ${snapshot.teamScores.red} — ${snapshot.teamScores.blue} BLUE`;
+      } else {
+        winner.textContent = snapshot.winnerName
+          ? `WINNER · ${snapshot.winnerName}`
+          : 'MATCH COMPLETE';
+      }
+    }
     const list = document.getElementById('end-standings');
     if (!list) return;
     list.replaceChildren();
@@ -215,8 +236,12 @@ export class HUDManager {
       const row = document.createElement('div');
       row.className = 'end-standing-row';
       row.classList.toggle('is-self',player.id === snapshot.selfPlayerId);
-      row.classList.toggle('is-winner',placements[player.id] === 1);
-      row.textContent = `#${placements[player.id] || '—'} · ${player.name} · ${player.eliminations ?? 0} ELIMS`;
+      row.classList.toggle('is-winner',!snapshot.isDraw && placements[player.id] === 1);
+      const teamPrefix =
+        snapshot.matchMode === 'team_deathmatch'
+          ? `[${tdmTeamLabel(player.teamId || player.teamIndex).replace(' TEAM', '')}] `
+          : '';
+      row.textContent = `#${placements[player.id] || '—'} · ${teamPrefix}${player.name} · ${player.eliminations ?? 0} ELIMS`;
       list.appendChild(row);
     }
   }
@@ -638,11 +663,13 @@ export class HUDManager {
 
     // Match Counters
     this.aliveCountEl.textContent = `${match.aliveCount}`;
-    this.killCountEl.textContent = `${player.eliminations}`;
+    if (match.matchMode === 'free_for_all') {
+      this.killCountEl.textContent = `${player.eliminations}/${match.targetKills || 50}`;
+    } else {
+      this.killCountEl.textContent = `${player.eliminations}`;
+    }
 
-    // Storm Status: phaseTimer is preparation time while waiting and
-    // remaining movement time while shrinking; label that distinction so
-    // players can plan rotations through tall districts.
+    // Storm Status or Mode Timer/Score Readout
     if (this.combatCueTimer > 0) {
       this.combatCueTimer = Math.max(0, this.combatCueTimer - dt);
       if (this.combatCueTimer === 0) document.getElementById('hud-combat-cue')?.classList.add('hidden');
@@ -651,23 +678,65 @@ export class HUDManager {
     this.stormReadoutTimer += dt;
     if (this.stormReadoutTimer >= .2) {
       this.stormReadoutTimer = 0;
-      const notice = this.zoneNotices.update(match.storm.phase,match.storm.isShrinking,isOutsideStorm);
-      if (notice) { this.zoneNotice = notice; this.zoneNoticeTimer = 1.6; }
-      const displayPhase = Math.min(8, Math.max(1, match.storm.phase));
-      const rawStatus = getStormStatusLabel(match.storm);
-      const status = this.zoneNoticeTimer > 0 ? this.zoneNotice
-        : rawStatus === 'SHRINKS IN' ? 'NEXT IN' : rawStatus === 'SHRINKING' ? 'CLOSING' : 'HOLD';
-      const label = `${match.storm.phase >= 6 ? 'FINAL' : 'PHASE'} ${displayPhase} · ${status}`;
-      if (this.stormPhaseEl.textContent !== label) this.stormPhaseEl.textContent = label;
-      this.stormPhaseEl.classList.toggle('final-zone',match.storm.phase >= 6);
-      const sec = Math.max(0,Math.ceil(match.storm.phaseTimer));
-      const distance = Math.max(0,Math.ceil(Math.hypot(player.position.x-match.storm.targetCenterX,
-        player.position.z-match.storm.targetCenterZ)-match.storm.targetRadius));
-      const direction = safeZoneBearing(player.position.x,player.position.z,match.storm.targetCenterX,match.storm.targetCenterZ);
-      const timer = isFinalStormPhase(match.storm) ? `FINAL · ${Math.round(match.storm.currentRadius)}m`
-        : `${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`;
-      const text = timer + (distance > 0 && (isOutsideStorm || match.storm.phase >= 6) ? ` · ${distance}m ${direction}` : '');
-      if (this.stormTimerEl.textContent !== text) this.stormTimerEl.textContent = text;
+      if (match.matchMode === 'team_deathmatch') {
+        const scores = computeTeamScores(
+          Array.from(match.players.values()),
+          match.teamScores
+        );
+        const selfTeam = normalizeTdmTeam(player.teamId ?? player.teamIndex);
+        const teamTag = selfTeam ? ` (${selfTeam.toUpperCase()})` : '';
+        const target = match.targetKills || 50;
+        const label = `TDM${teamTag} · RED ${scores.red} – ${scores.blue} BLUE`;
+        if (this.stormPhaseEl.textContent !== label) {
+          this.stormPhaseEl.textContent = label;
+        }
+        this.stormPhaseEl.classList.remove('final-zone');
+        const remaining =
+          typeof match.timeRemaining === 'number'
+            ? match.timeRemaining
+            : Math.max(0, (match.durationSeconds || 600) - match.matchTimer);
+        const timerText = `${formatMatchClock(remaining)} · TO ${target}`;
+        if (this.stormTimerEl.textContent !== timerText) {
+          this.stormTimerEl.textContent = timerText;
+        }
+      } else if (match.matchMode === 'free_for_all') {
+        let topKills = player.eliminations;
+        for (const p of match.players.values()) {
+          if (p.eliminations > topKills) topKills = p.eliminations;
+        }
+        const target = match.targetKills || 50;
+        const label = `FFA · LEAD ${topKills}/${target} KILLS`;
+        if (this.stormPhaseEl.textContent !== label) {
+          this.stormPhaseEl.textContent = label;
+        }
+        this.stormPhaseEl.classList.remove('final-zone');
+        const remaining =
+          typeof match.timeRemaining === 'number'
+            ? match.timeRemaining
+            : Math.max(0, (match.durationSeconds || 600) - match.matchTimer);
+        const timerText = `${formatMatchClock(remaining)} · FIRST TO ${target}`;
+        if (this.stormTimerEl.textContent !== timerText) {
+          this.stormTimerEl.textContent = timerText;
+        }
+      } else {
+        const notice = this.zoneNotices.update(match.storm.phase,match.storm.isShrinking,isOutsideStorm);
+        if (notice) { this.zoneNotice = notice; this.zoneNoticeTimer = 1.6; }
+        const displayPhase = Math.min(8, Math.max(1, match.storm.phase));
+        const rawStatus = getStormStatusLabel(match.storm);
+        const status = this.zoneNoticeTimer > 0 ? this.zoneNotice
+          : rawStatus === 'SHRINKS IN' ? 'NEXT IN' : rawStatus === 'SHRINKING' ? 'CLOSING' : 'HOLD';
+        const label = `${match.storm.phase >= 6 ? 'FINAL' : 'PHASE'} ${displayPhase} · ${status}`;
+        if (this.stormPhaseEl.textContent !== label) this.stormPhaseEl.textContent = label;
+        this.stormPhaseEl.classList.toggle('final-zone',match.storm.phase >= 6);
+        const sec = Math.max(0,Math.ceil(match.storm.phaseTimer));
+        const distance = Math.max(0,Math.ceil(Math.hypot(player.position.x-match.storm.targetCenterX,
+          player.position.z-match.storm.targetCenterZ)-match.storm.targetRadius));
+        const direction = safeZoneBearing(player.position.x,player.position.z,match.storm.targetCenterX,match.storm.targetCenterZ);
+        const timer = isFinalStormPhase(match.storm) ? `FINAL · ${Math.round(match.storm.currentRadius)}m`
+          : `${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`;
+        const text = timer + (distance > 0 && (isOutsideStorm || match.storm.phase >= 6) ? ` · ${distance}m ${direction}` : '');
+        if (this.stormTimerEl.textContent !== text) this.stormTimerEl.textContent = text;
+      }
     }
     this.stormVignette.classList.toggle('active', isOutsideStorm);
 
@@ -868,14 +937,25 @@ export class HUDManager {
       }
     }
 
-    // Nearby Combatants
+    // Nearby Combatants & Teammates
+    const selfTdmTeam =
+      match.matchMode === 'team_deathmatch'
+        ? normalizeTdmTeam(player.teamId ?? player.teamIndex)
+        : null;
     for (const other of match.players.values()) {
       if (!other.alive || other.id === player.id) continue;
+      const otherTdmTeam =
+        match.matchMode === 'team_deathmatch'
+          ? normalizeTdmTeam(other.teamId ?? other.teamIndex)
+          : null;
+      const isTeammate = Boolean(
+        selfTdmTeam && otherTdmTeam && selfTdmTeam === otherTdmTeam
+      );
       const dist = Math.hypot(
         other.position.x - player.position.x,
         other.position.z - player.position.z
       );
-      if (dist < 85) {
+      if (dist < 85 || isTeammate) {
         ctx.beginPath();
         ctx.arc(
           cx + other.position.x * scale,
@@ -884,7 +964,7 @@ export class HUDManager {
           0,
           Math.PI * 2
         );
-        ctx.fillStyle = '#ef4444';
+        ctx.fillStyle = isTeammate ? '#38bdf8' : '#ef4444';
         ctx.fill();
       }
     }

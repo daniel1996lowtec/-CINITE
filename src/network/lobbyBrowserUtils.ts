@@ -1,10 +1,19 @@
 import type {
+  GameModeChoice,
   LobbyMapId,
   LobbyStatus,
   LobbySummary,
   LobbyStartCondition,
   TeamMode,
 } from './schemas';
+
+function normalizeModeFilter(raw: unknown): GameModeChoice | null {
+  const v = String(raw ?? '').trim().toLowerCase();
+  if (v === 'battle_royale' || v === 'br') return 'battle_royale';
+  if (v === 'free_for_all' || v === 'ffa') return 'free_for_all';
+  if (v === 'team_deathmatch' || v === 'tdm') return 'team_deathmatch';
+  return null;
+}
 
 export type LobbyBrowserSort =
   | 'most_players'
@@ -19,6 +28,7 @@ export interface LobbyBrowserFilters {
   visibility: 'all' | 'public' | 'private';
   matchType: 'all' | 'human_only' | 'ai_fill';
   humanOnly: boolean;
+  matchMode?: 'all' | GameModeChoice;
   teamMode: 'all' | TeamMode;
   availability: LobbyAvailabilityFilter;
   status: 'all' | LobbyStatus;
@@ -30,6 +40,7 @@ export const DEFAULT_LOBBY_FILTERS: LobbyBrowserFilters = {
   visibility: 'all',
   matchType: 'all',
   humanOnly: false,
+  matchMode: 'all',
   teamMode: 'all',
   availability: 'all',
   status: 'all',
@@ -68,6 +79,15 @@ export function filterAndSortLobbies(
     if (filters.humanOnly && !lobby.humanOnly) return false;
     if (filters.matchType === 'human_only' && !lobby.humanOnly) return false;
     if (filters.matchType === 'ai_fill' && lobby.humanOnly) return false;
+    if (filters.matchMode && filters.matchMode !== 'all') {
+      const targetMode = normalizeModeFilter(filters.matchMode);
+      if (targetMode) {
+        const lobbyMode =
+          normalizeModeFilter(lobby.matchMode || lobby.gameMode) ||
+          'battle_royale';
+        if (lobbyMode !== targetMode) return false;
+      }
+    }
     if (filters.teamMode !== 'all' && lobby.teamMode !== filters.teamMode) return false;
     if (!availabilityMatches(lobby, filters.availability)) return false;
     if (filters.status !== 'all' && lobby.status !== filters.status) return false;
@@ -124,6 +144,20 @@ export function teamModeLabel(teamMode: TeamMode): string {
   if (teamMode === 'duo') return 'Duo';
   if (teamMode === 'squad') return 'Squad';
   return 'Solo';
+}
+
+export function matchModeLabel(
+  mode: GameModeChoice | string | undefined,
+  short = false
+): string {
+  const normalized = normalizeModeFilter(mode) || 'battle_royale';
+  if (normalized === 'free_for_all') {
+    return short ? 'FFA' : 'Free for All';
+  }
+  if (normalized === 'team_deathmatch') {
+    return short ? 'TDM' : 'Team Deathmatch';
+  }
+  return short ? 'BR' : 'Battle Royale';
 }
 
 export function lobbyStatusLabel(status: LobbyStatus): string {

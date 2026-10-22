@@ -81,7 +81,7 @@
     <div id="lobby-overlay" class="overlay-screen lobby-split-screen" data-menu-section="home">
       <div class="lobby-card">
         <div class="lobby-top-bar">
-          <div class="brand-badge">STYLIZED 3D THIRD-PERSON BATTLE ROYALE</div>
+          <div class="brand-badge">3D TACTICAL ARENA • BR • FFA • TDM</div>
           <button
             id="btn-lobby-fullscreen"
             class="mini-util-btn"
@@ -93,15 +93,62 @@
           </button>
         </div>
         <h1 class="game-title">CI <span>CRAFT</span></h1>
-        <p class="game-subtitle">Your island. Your squad. Your next victory.</p>
+        <p class="game-subtitle">Battle Royale · Free for All · Team Deathmatch</p>
         <div id="menu-profile" class="menu-profile">
           <button id="btn-save-name" type="button">Save name</button>
           <p id="name-status" role="status">3–18 characters: letters, numbers, spaces, _ or -.</p>
         </div>
         <div class="menu-section-heading">
           <button id="menu-back" type="button" hidden>← Main menu</button>
-          <h2 id="menu-section-title">Choose your next drop</h2>
+          <h2 id="menu-section-title">Choose your game mode</h2>
         </div>
+
+        <!-- Three Primary Game Mode Choices (CI CRAFT 5.0) -->
+        <input type="hidden" id="selected-game-mode" value="battle_royale" />
+        <div
+          id="game-mode-choices"
+          class="game-mode-choices"
+          role="radiogroup"
+          aria-label="Select Game Mode"
+        >
+          <button
+            id="btn-game-mode-br"
+            class="game-mode-choice active"
+            type="button"
+            role="radio"
+            aria-checked="true"
+            data-game-mode="battle_royale"
+          >
+            <span class="gm-tag">SURVIVAL</span>
+            <strong class="gm-title">Battle Royale</strong>
+            <small class="gm-meta">Last Standing · Storm</small>
+          </button>
+          <button
+            id="btn-game-mode-ffa"
+            class="game-mode-choice"
+            type="button"
+            role="radio"
+            aria-checked="false"
+            data-game-mode="free_for_all"
+          >
+            <span class="gm-tag">50 KILLS · 10M</span>
+            <strong class="gm-title">Free for All</strong>
+            <small class="gm-meta">Auto-Respawn · Solo</small>
+          </button>
+          <button
+            id="btn-game-mode-tdm"
+            class="game-mode-choice"
+            type="button"
+            role="radio"
+            aria-checked="false"
+            data-game-mode="team_deathmatch"
+          >
+            <span class="gm-tag">RED VS BLUE</span>
+            <strong class="gm-title">Team Deathmatch</strong>
+            <small class="gm-meta">50 Team Kills · 10M</small>
+          </button>
+        </div>
+
         <!-- Quick Mode & Menu Navigation Tabs -->
         <div class="lobby-nav-pills primary-mode-pills">
           <button id="btn-mode-solo" class="nav-pill active-pill" type="button">
@@ -325,6 +372,15 @@
 
               <div class="lobby-filter-grid">
                 <div class="form-group">
+                  <label for="lobby-filter-game-mode">Mode</label>
+                  <select id="lobby-filter-game-mode">
+                    <option value="all" selected>All Modes (BR / FFA / TDM)</option>
+                    <option value="battle_royale">Battle Royale</option>
+                    <option value="free_for_all">Free for All (50 Kills)</option>
+                    <option value="team_deathmatch">Team Deathmatch (RED vs BLUE)</option>
+                  </select>
+                </div>
+                <div class="form-group">
                   <label for="lobby-filter-visibility">Visibility</label>
                   <select id="lobby-filter-visibility">
                     <option value="all" selected>Public + Private</option>
@@ -333,11 +389,11 @@
                   </select>
                 </div>
                 <div class="form-group">
-                  <label for="lobby-filter-match-type">Game Mode</label>
+                  <label for="lobby-filter-match-type">Lobby Type</label>
                   <select id="lobby-filter-match-type">
-                    <option value="all" selected>All Battle Royale modes</option>
+                    <option value="all" selected>All Lobby Types</option>
                     <option value="human_only">Human Players Only — No Bots</option>
-                    <option value="ai_fill">AI Fill Battle Royale</option>
+                    <option value="ai_fill">AI Fill Enabled</option>
                   </select>
                 </div>
                 <div class="form-group">
@@ -441,6 +497,15 @@
                     placeholder="Commander's Lobby"
                     autocomplete="off"
                   />
+                </div>
+
+                <div class="form-group">
+                  <label for="create-lobby-game-mode">Game Mode</label>
+                  <select id="create-lobby-game-mode">
+                    <option value="battle_royale" selected>Battle Royale (Last Standing · Storm)</option>
+                    <option value="free_for_all">Free for All (First to 50 Kills · 10:00)</option>
+                    <option value="team_deathmatch">Team Deathmatch (RED vs BLUE · 50 Kills · 10:00)</option>
+                  </select>
                 </div>
 
                 <div class="form-group">
@@ -638,7 +703,17 @@
           </section>
 
 
-          <section id="solo-session-controls" class="solo-session-controls" aria-label="Solo battle royale settings">
+          <section id="solo-session-controls" class="solo-session-controls" aria-label="Solo game mode settings">
+          <div class="form-row">
+            <div class="form-group">
+              <label for="solo-game-mode-select">Game Mode</label>
+              <select id="solo-game-mode-select">
+                <option value="battle_royale" selected>Battle Royale (Last Standing · Storm)</option>
+                <option value="free_for_all">Free for All (First to 50 Kills · 10:00)</option>
+                <option value="team_deathmatch">Team Deathmatch (RED vs BLUE · 50 Kills · 10:00)</option>
+              </select>
+            </div>
+          </div>
           <div class="form-row">
             <div class="form-group">
               <label for="lobby-bot-count">AI Combatants</label>

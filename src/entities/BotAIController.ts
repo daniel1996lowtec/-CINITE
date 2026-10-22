@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import {
   BotAIState,
   BotDifficulty,
+  GameModeChoice,
   InventorySlot,
   LootItemState,
   MatchState,
@@ -10,6 +11,12 @@ import {
   WeaponCategory,
   WeaponRarity,
 } from '../network/schemas';
+import {
+  areTeammates,
+  isRespawnMode,
+  isStormEnabledForMode,
+  normalizeGameMode,
+} from '../../shared/matchRules.mjs';
 import { IslandWorld } from '../world/IslandWorld';
 import { ISLAND_ROUTE_POINTS } from '../world/TerrainGenerator';
 import { createWeaponStats, RARITY_COLORS } from '../weapons/WeaponDefinitions';
@@ -142,22 +149,36 @@ export class BotAIController {
     count: number,
     state: MatchState,
     world: IslandWorld,
-    skyDrop: boolean
+    skyDrop: boolean,
+    matchMode: GameModeChoice = state.matchMode || 'battle_royale'
   ): PlayerState[] {
     this.memories.clear();
     const spawned: PlayerState[] = [];
+    const normalizedMode = normalizeGameMode(matchMode);
+    const respawnMode = isRespawnMode(normalizedMode);
+    const effectiveSkyDrop = respawnMode ? false : skyDrop;
 
     for (let i = 0; i < count; i++) {
       const id = `bot_${i + 1}`;
       const name = BOT_NAMES[i % BOT_NAMES.length];
-      const palette = SKIN_PALETTE[i % SKIN_PALETTE.length];
+      const isTdm = normalizedMode === 'team_deathmatch';
+      // Local player starts on 'red' (teamIndex 0), so bot_1 joins 'blue', bot_2 joins 'red', etc.
+      const tdmTeam = i % 2 === 0 ? 'blue' : 'red';
+      const palette = isTdm
+        ? tdmTeam === 'red'
+          ? { outfitId: 'crimson_striker' as OutfitPresetId, skin: 0xdc2626, accent: 0xfca5a5 }
+          : { outfitId: 'vanguard_blue' as OutfitPresetId, skin: 0x0284c7, accent: 0x38bdf8 }
+        : SKIN_PALETTE[i % SKIN_PALETTE.length];
 
-      const angle = (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.35;
-      const dist = 35 + Math.random() * 145;
-      const x = Math.cos(angle) * dist;
-      const z = Math.sin(angle) * dist;
+      const angle = (i / Math.max(1, count)) * Math.PI * 2 + (Math.random() - 0.5) * 0.35;
+      const dist = 35 + Math.random() * 115;
+      const rawX = Math.cos(angle) * dist;
+      const rawZ = Math.sin(angle) * dist;
+      const openPos = this.findOpenWaypoint(world, rawX, rawZ, 18);
+      const x = openPos.x;
+      const z = openPos.z;
       const groundY = world.terrain.getTerrainHeight(x, z);
-      const startY = skyDrop ? 78 + Math.random() * 35 : Math.max(1.0, groundY + 0.2);
+      const startY = effectiveSkyDrop ? 78 + Math.random() * 35 : Math.max(1.0, groundY + 0.2);
 
       const harvesterStats = createWeaponStats('harvester', 'rare');
       const starterWeapons: WeaponCategory[] = [
@@ -171,7 +192,7 @@ export class BotAIController {
         'tactical_shotgun',
       ];
       const starterCat = starterWeapons[i % starterWeapons.length];
-      const starterStats = createWeaponStats(starterCat, 'common');
+      const starterStats = createWeaponStats(starterCat, respawnMode ? 'uncommon' : 'common');
 
       const inv: (InventorySlot | null)[] = [
         {
@@ -189,7 +210,7 @@ export class BotAIController {
           weaponId: starterStats.id,
           name: starterStats.name,
           category: starterCat,
-          rarity: 'common',
+          rarity: respawnMode ? 'uncommon' : 'common',
           clipAmmo: starterStats.clipSize,
           maxClipAmmo: starterStats.clipSize,
           ammoType: starterStats.ammoType,
@@ -206,8 +227,15 @@ export class BotAIController {
         id,
         name,
         isBot: true,
+        participantType: 'bot',
+        isParticipant: true,
         isConnected: true,
+        teamId: isTdm ? tdmTeam : `solo_${id}`,
+        teamIndex: isTdm ? (tdmTeam === 'red' ? 0 : 1) : i + 1,
         alive: true,
+        livesRemaining: respawnMode ? null : 1,
+        deaths: 0,
+        respawns: 0,
         position: { x, y: startY, z },
         velocity: { x: 0, y: 0, z: 0 },
         yaw: initialYaw,
@@ -215,7 +243,7 @@ export class BotAIController {
         pitch: 0,
         health: 100,
         maxHealth: 100,
-        shield: 25,
+        shield: respawnMode ? 50 : 25,
         maxShield: 100,
         eliminations: 0,
         damageDealt: 0,
@@ -229,8 +257,8 @@ export class BotAIController {
         ammo: { none: 0, light: 90, medium: 75, shells: 24, heavy: 12 },
         isAiming: false,
         isSprinting: false,
-        isGrounded: !skyDrop,
-        isGliding: skyDrop,
+        isGrounded: !effectiveSkyDrop,
+        isGliding: effectiveSkyDrop,
         isReloading: false,
         reloadTimer: 0,
         reloadDuration: 0,
@@ -270,7 +298,62 @@ export class BotAIController {
       });
     }
 
-    return spawned;
+      return spawned;
+  }
+
+  public respawnBot(
+    bot: PlayerState,
+    state: MatchState,
+    world: IslandWorld
+  ): { x: number; y: number; z: number } {
+    const poiIdx =
+      (Math.max(0, Number(bot.respawns || 0)) +
+        Math.max(0, Number(bot.teamIndex || 0)) * 3) %
+      ISLAND_ROUTE_POINTS.length;
+    const basePoi = ISLAND_ROUTE_POINTS[poiIdx];
+    const openPos = this.findOpenWaypoint(world, basePoi.x, basePoi.z, 26);
+    const groundY = world.terrain.getTerrainHeight(openPos.x, openPos.z);
+    const spawnY = Math.max(1.0, groundY + 0.2);
+
+    bot.alive = true;
+    bot.health = 100;
+    bot.maxHealth = 100;
+    bot.shield = 50;
+    bot.maxShield = 100;
+    bot.livesRemaining = null;
+    bot.respawns = (bot.respawns || 0) + 1;
+    bot.isGliding = false;
+    bot.isGrounded = true;
+    bot.isReloading = false;
+    bot.isHealing = false;
+    bot.position.x = openPos.x;
+    bot.position.y = spawnY;
+    bot.position.z = openPos.z;
+    bot.velocity.x = 0;
+    bot.velocity.y = 0;
+    bot.velocity.z = 0;
+    bot.ammo = { none: 0, light: 90, medium: 75, shells: 24, heavy: 12 };
+    for (const slot of bot.inventory) {
+      if (slot && !slot.isConsumable && slot.maxClipAmmo > 0) {
+        slot.clipAmmo = slot.maxClipAmmo;
+      }
+    }
+
+    const mem = this.memories.get(bot.id);
+    if (mem) {
+      mem.aiState = 'PATROLLING';
+      mem.targetEnemyId = null;
+      mem.targetLootId = null;
+      mem.lastKnownHealth = 150;
+      mem.lastPos.set(openPos.x, spawnY, openPos.z);
+      const nextPoi =
+        ISLAND_ROUTE_POINTS[(poiIdx + 2) % ISLAND_ROUTE_POINTS.length];
+      const wp = this.findOpenWaypoint(world, nextPoi.x, nextPoi.z, 22);
+      mem.waypoint.set(wp.x, nextPoi.baseHeight, wp.z);
+      mem.waypointTimer = 8;
+    }
+
+    return { x: openPos.x, y: spawnY, z: openPos.z };
   }
 
   public updateBots(
@@ -347,7 +430,9 @@ export class BotAIController {
         bot.position.x - stormCenterX,
         bot.position.z - stormCenterZ
       );
-      const isOutsideStorm = distFromStormCenter > stormRadius * 0.88;
+      const isOutsideStorm =
+        isStormEnabledForMode(state.matchMode) &&
+        distFromStormCenter > stormRadius * 0.88;
 
       // 4. Staggered Perception Scan (~6.25 Hz per bot) + Continuous Target Tracking (60 Hz)
       let nearestEnemy: PlayerState | null = null;
@@ -359,6 +444,7 @@ export class BotAIController {
 
         for (const other of state.players.values()) {
           if (!other.alive || other.id === bot.id) continue;
+          if (areTeammates(state.matchMode, bot, other, 'solo')) continue;
           const d = Math.hypot(
             other.position.x - bot.position.x,
             other.position.z - bot.position.z
@@ -403,7 +489,11 @@ export class BotAIController {
         // Use cached perception target at 60Hz and update live distance
         if (mem.targetEnemyId) {
           const cachedEnemy = state.players.get(mem.targetEnemyId);
-          if (cachedEnemy && cachedEnemy.alive) {
+          if (
+            cachedEnemy &&
+            cachedEnemy.alive &&
+            !areTeammates(state.matchMode, bot, cachedEnemy, 'solo')
+          ) {
             const d = Math.hypot(
               cachedEnemy.position.x - bot.position.x,
               cachedEnemy.position.z - bot.position.z

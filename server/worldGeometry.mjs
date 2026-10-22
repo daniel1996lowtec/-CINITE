@@ -1,3 +1,5 @@
+import { overlapsBuildGeometry, normalizeBuildYaw, buildBounds } from '../shared/buildPlacement.mjs';
+import { normalizeTdmTeam } from '../shared/matchRules.mjs';
 import geometry from './worldCollisionManifest.json' with { type:'json' };
 // Immutable generated collision data; no Three.js scene or render assets on server.
 export const worldProps = new Map(geometry.props.map(p => [p.id,p]));
@@ -28,6 +30,7 @@ function segmentCylinder(a,b,c) {
   return lo<=hi && hi>0.001 && lo<0.999;
 }
 export function buildTransform(b) {
+  b = {...b, yaw: normalizeBuildYaw(b.yaw)};
   const x=Math.round((b.x-Math.sin(b.yaw)*3.5)/2)*2;
   const z=Math.round((b.z-Math.cos(b.yaw)*3.5)/2)*2;
   if (Math.hypot(x,z)>236) return null;
@@ -93,6 +96,135 @@ export function safeSpawnPosition(room,p) {
   }
   return {x:0,y:80,z:0}; // clear sky above the tower; normal glider/landing handles descent
 }
+
+export const RESPAWN_ANCHORS = Object.freeze([
+  { x: -58, z: -24, team: 'red' },
+  { x: -74, z: 22, team: 'red' },
+  { x: -46, z: 56, team: 'red' },
+  { x: -48, z: -62, team: 'red' },
+  { x: -96, z: -14, team: 'red' },
+  { x: -88, z: 54, team: 'red' },
+  { x: -34, z: 28, team: 'red' },
+  { x: -34, z: -32, team: 'red' },
+  { x: 58, z: 24, team: 'blue' },
+  { x: 74, z: -22, team: 'blue' },
+  { x: 46, z: -56, team: 'blue' },
+  { x: 48, z: 62, team: 'blue' },
+  { x: 96, z: 14, team: 'blue' },
+  { x: 88, z: -54, team: 'blue' },
+  { x: 34, z: -28, team: 'blue' },
+  { x: 34, z: 32, team: 'blue' },
+]);
+
+function overlapsPlacedBuildable(room, p) {
+  if (!room?.buildables || room.buildables.size === 0) return false;
+  const r = 0.45;
+  const bottom = p.y + 0.05;
+  const top = p.y + 1.7;
+  for (const b of room.buildables.values()) {
+    const t = buildTransform(b);
+    if (!t) continue;
+    const box = buildBounds(b.pieceType, t);
+    if (
+      top > box.minY &&
+      bottom < box.maxY &&
+      p.x + r > box.minX &&
+      p.x - r < box.maxX &&
+      p.z + r > box.minZ &&
+      p.z - r < box.maxZ
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function safeRespawnPosition(room = {}, player = null) {
+  const safeRoom = room && typeof room === 'object' ? room : {};
+  const seq = (safeRoom.respawnSeq = (Number(safeRoom.respawnSeq) || 0) + 1);
+  const playerTeam = normalizeTdmTeam(player?.teamId ?? player?.teamIndex);
+  const others = [];
+  if (safeRoom.players instanceof Map) {
+    for (const candidate of safeRoom.players.values()) {
+      if (!candidate || !candidate.alive || candidate.id === player?.id) continue;
+      if (candidate.position && Number.isFinite(candidate.position.x) && Number.isFinite(candidate.position.z)) {
+        others.push(candidate);
+      }
+    }
+  } else if (Array.isArray(safeRoom.players)) {
+    for (const candidate of safeRoom.players) {
+      if (!candidate || !candidate.alive || candidate.id === player?.id) continue;
+      if (candidate.position && Number.isFinite(candidate.position.x) && Number.isFinite(candidate.position.z)) {
+        others.push(candidate);
+      }
+    }
+  }
+
+  let bestPos = null;
+  let bestScore = -Infinity;
+  const total = RESPAWN_ANCHORS.length;
+
+  for (let i = 0; i < total; i++) {
+    const idx = (i + seq) % total;
+    const anchor = RESPAWN_ANCHORS[idx];
+    const groundY = terrainBand(anchor).max;
+    const resolved = safeSpawnPosition(safeRoom, {
+      x: anchor.x,
+      y: Math.max(1.0, groundY + 0.15),
+      z: anchor.z,
+    });
+    if (
+      !isPlayerPositionClear(safeRoom, resolved) ||
+      overlapsPlacedBuildable(safeRoom, resolved) ||
+      resolved.y > 45
+    ) {
+      continue;
+    }
+
+    let minEnemyDist = 220;
+    let minAnyDist = 220;
+    for (const other of others) {
+      const dist = Math.hypot(
+        resolved.x - Number(other.position.x || 0),
+        resolved.z - Number(other.position.z || 0)
+      );
+      if (dist < minAnyDist) minAnyDist = dist;
+      const otherTeam = normalizeTdmTeam(other.teamId ?? other.teamIndex);
+      const isTeammate = Boolean(playerTeam && otherTeam && playerTeam === otherTeam);
+      if (!isTeammate && dist < minEnemyDist) {
+        minEnemyDist = dist;
+      }
+    }
+
+    const teamBonus =
+      playerTeam && anchor.team === playerTeam
+        ? 28
+        : playerTeam && anchor.team !== playerTeam
+          ? -14
+          : 0;
+    const crowdPenalty = minAnyDist < 3.0 ? -120 : 0;
+    const score = minEnemyDist + teamBonus + crowdPenalty - i * 0.25;
+    if (score > bestScore) {
+      bestScore = score;
+      bestPos = resolved;
+    }
+  }
+
+  if (bestPos) {
+    return {
+      x: Math.round(bestPos.x * 100) / 100,
+      y: Math.round(bestPos.y * 100) / 100,
+      z: Math.round(bestPos.z * 100) / 100,
+    };
+  }
+
+  const fallback = safeSpawnPosition(safeRoom, { x: -24, y: 6, z: 18 });
+  return {
+    x: Math.round(fallback.x * 100) / 100,
+    y: Math.round(fallback.y * 100) / 100,
+    z: Math.round(fallback.z * 100) / 100,
+  };
+}
 export function hasLineOfSight(room,a,b,ignoreId) {
   const exists = c => (!ignoreId || c.destructibleId !== ignoreId) && !(c.destructibleId && room.destroyedProps?.has(c.destructibleId));
   for(const box of geometry.boxes) if(exists(box) && segmentBox(a,b,box)) return false;
@@ -105,4 +237,10 @@ export function hasLineOfSight(room,a,b,ignoreId) {
 export function canReachLoot(room,player,item) {
   return hasLineOfSight(room,{...player.position,y:player.position.y+1.2},
     {...item.position,y:item.position.y+.35});
+}
+
+export function isBuildPlacementClear(room, build) {
+  const t=buildTransform(build);
+  if(!t)return false;
+  return !overlapsBuildGeometry(build.pieceType,t,geometry.boxes.filter(b=>!room.destroyedProps?.has(b.destructibleId)),geometry.cylinders.filter(c=>!room.destroyedProps?.has(c.destructibleId)));
 }

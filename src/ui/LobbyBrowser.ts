@@ -1,6 +1,7 @@
 import type {
   BotDifficulty,
   CreateLobbyRequest,
+  GameModeChoice,
   LobbyStartCondition,
   LobbySummary,
   RoomSnapshot,
@@ -13,11 +14,18 @@ import {
   filterAndSortLobbies,
   getLobbyJoinBlock,
   lobbyStatusLabel,
+  matchModeLabel,
   startConditionLabel,
   teamModeLabel,
   type LobbyBrowserFilters,
   type LobbyBrowserSort,
 } from '../network/lobbyBrowserUtils';
+import {
+  DEFAULT_GAME_MODE,
+  isValidGameMode,
+  normalizeGameMode,
+  tdmTeamLabel,
+} from '../../shared/matchRules.mjs';
 import type { LobbyDirectoryConnectionState } from '../network/LobbyBrowserClient';
 import { OUTFIT_PRESETS } from '../systems/ProgressionSystem';
 
@@ -233,6 +241,11 @@ export class LobbyBrowserUI {
       });
     };
 
+    bindSelect('lobby-filter-game-mode', (value) => {
+      this.filters.matchMode = isValidGameMode(value)
+        ? normalizeGameMode(value)
+        : 'all';
+    });
     bindSelect('lobby-filter-visibility', (value) => {
       this.filters.visibility =
         value === 'public' || value === 'private' ? value : 'all';
@@ -315,6 +328,9 @@ export class LobbyBrowserUI {
     element<HTMLSelectElement>('create-lobby-fill')?.addEventListener('change', () => {
       this.syncCreateDynamicControls();
     });
+    element<HTMLSelectElement>('create-lobby-game-mode')?.addEventListener('change', () => {
+      this.syncCreateDynamicControls();
+    });
 
     element('btn-create-lobby-submit')?.addEventListener('click', () => {
       const request = this.buildCreateRequest();
@@ -366,10 +382,18 @@ export class LobbyBrowserUI {
     const maxPlayers = ([2, 4, 8, 16, 20] as const).includes(maxRaw as 2)
       ? (maxRaw as 2 | 4 | 8 | 16 | 20)
       : 20;
+    const modeRaw =
+      element<HTMLSelectElement>('create-lobby-game-mode')?.value ||
+      element<HTMLInputElement>('selected-game-mode')?.value ||
+      DEFAULT_GAME_MODE;
+    const matchMode: GameModeChoice = normalizeGameMode(modeRaw);
     const formatRaw = element<HTMLSelectElement>('create-lobby-format')?.value;
     const teamMode: TeamMode =
-      formatRaw === 'duo' || formatRaw === 'squad' ? formatRaw : 'solo';
-    if (!humanOnly && teamMode !== 'solo') {
+      matchMode === 'battle_royale' &&
+      (formatRaw === 'duo' || formatRaw === 'squad')
+        ? formatRaw
+        : 'solo';
+    if (!humanOnly && matchMode === 'battle_royale' && teamMode !== 'solo') {
       this.showMessage('Duo and Squad require Human Players Only. AI Fill uses Solo format.', true);
       return null;
     }
@@ -396,7 +420,9 @@ export class LobbyBrowserUI {
       humanOnly,
       maxPlayers,
       mapId: 'ci_island',
+      matchMode,
       teamMode,
+      gameMode: matchMode !== 'battle_royale' ? matchMode : teamMode,
       botCount: humanOnly
         ? 0
         : Math.max(0, Math.min(19, Number(element<HTMLSelectElement>('create-lobby-bot-count')?.value || 14))),
@@ -410,6 +436,11 @@ export class LobbyBrowserUI {
   private syncCreateDynamicControls(): void {
     const visibility = element<HTMLSelectElement>('create-lobby-visibility')?.value;
     const humanOnly = element<HTMLSelectElement>('create-lobby-fill')?.value !== 'ai';
+    const matchMode = normalizeGameMode(
+      element<HTMLSelectElement>('create-lobby-game-mode')?.value ||
+        element<HTMLInputElement>('selected-game-mode')?.value ||
+        DEFAULT_GAME_MODE
+    );
     element('create-lobby-password-row')?.classList.toggle('hidden', visibility !== 'private');
     element('create-lobby-bot-row')?.classList.toggle('hidden', humanOnly);
     element('create-lobby-human-note')?.classList.toggle('hidden', !humanOnly);
@@ -422,12 +453,13 @@ export class LobbyBrowserUI {
 
     const format = element<HTMLSelectElement>('create-lobby-format');
     if (format) {
+      const lockToSolo = !humanOnly || matchMode !== 'battle_royale';
       Array.from(format.options).forEach((option) => {
         if (option.value === 'duo' || option.value === 'squad') {
-          option.disabled = !humanOnly;
+          option.disabled = lockToSolo;
         }
       });
-      if (!humanOnly && format.value !== 'solo') format.value = 'solo';
+      if (lockToSolo && format.value !== 'solo') format.value = 'solo';
     }
   }
 
@@ -505,11 +537,20 @@ export class LobbyBrowserUI {
     const isCurrent = this.snapshot?.roomCode === lobby.roomCode;
     const card = makeElement('article', `lobby-room-card ${lobby.humanOnly ? 'human-only' : 'ai-fill'} status-${lobby.status}`);
 
+    const lobbyMode = normalizeGameMode(
+      lobby.matchMode || lobby.gameMode || DEFAULT_GAME_MODE
+    );
+    const modeTitle =
+      lobbyMode === 'battle_royale'
+        ? `${teamModeLabel(lobby.teamMode)} Battle Royale`
+        : lobbyMode === 'free_for_all'
+          ? 'Free for All • First to 50 Kills • 10:00'
+          : 'Team Deathmatch • RED vs BLUE • First to 50';
     const header = makeElement('div', 'lobby-room-card-header');
     const titleWrap = makeElement('div', 'lobby-room-title-wrap');
     titleWrap.appendChild(makeElement('h3', 'lobby-room-title', lobby.name));
     titleWrap.appendChild(
-      makeElement('div', 'lobby-room-subtitle', `${lobby.mapName} • ${teamModeLabel(lobby.teamMode)} Battle Royale`)
+      makeElement('div', 'lobby-room-subtitle', `${lobby.mapName} • ${modeTitle}`)
     );
     header.appendChild(titleWrap);
     header.appendChild(
@@ -518,6 +559,9 @@ export class LobbyBrowserUI {
     card.appendChild(header);
 
     const badges = makeElement('div', 'lobby-room-badges');
+    badges.appendChild(
+      makeElement('span', 'lobby-badge mode', matchModeLabel(lobbyMode).toUpperCase())
+    );
     if (lobby.humanOnly) {
       badges.appendChild(makeElement('span', 'lobby-badge no-bots', '🚫🤖 NO BOTS'));
       badges.appendChild(makeElement('span', 'lobby-badge humans', '👥 HUMAN PLAYERS ONLY'));
@@ -721,7 +765,11 @@ export class LobbyBrowserUI {
 
     const stats = element('my-lobby-stats');
     if (stats) {
+      const snapshotMode = normalizeGameMode(
+        snapshot.matchMode || snapshot.gameMode || DEFAULT_GAME_MODE
+      );
       stats.replaceChildren(
+        this.countItem('MODE', matchModeLabel(snapshotMode)),
         this.countItem('HOST', snapshot.hostName),
         this.countItem('PLAYERS', `${snapshot.connectedHumans}/${snapshot.maxPlayers}`),
         this.countItem('HUMANS', `${snapshot.connectedHumans}`),
@@ -729,7 +777,14 @@ export class LobbyBrowserUI {
         this.countItem('READY', `${snapshot.readyHumans}/${snapshot.authenticatedHumans}`),
         this.countItem('OPEN SLOTS', `${snapshot.availableSlots}`),
         this.countItem('MAP', snapshot.mapName),
-        this.countItem('FORMAT', teamModeLabel(snapshot.teamMode)),
+        this.countItem(
+          'FORMAT',
+          snapshotMode === 'team_deathmatch'
+            ? 'RED vs BLUE'
+            : snapshotMode === 'free_for_all'
+              ? '50 Kills FFA'
+              : teamModeLabel(snapshot.teamMode)
+        ),
         this.countItem('TYPE', snapshot.humanOnly ? 'Human Only' : 'AI Fill'),
         this.countItem('VISIBILITY', snapshot.hasPassword ? 'Private • Password' : snapshot.visibility),
         this.countItem('START RULE', startConditionLabel(snapshot.startCondition)),
@@ -790,7 +845,12 @@ export class LobbyBrowserUI {
         if (outfitPreset) {
           badges.appendChild(makeElement('span', 'mini-badge outfit', outfitPreset.name.toUpperCase()));
         }
-        if (snapshot.teamMode !== 'solo' && player.teamIndex >= 0) {
+        if (snapshot.matchMode === 'team_deathmatch') {
+          const teamText = tdmTeamLabel(player.teamId || player.teamIndex);
+          if (teamText) {
+            badges.appendChild(makeElement('span', 'mini-badge team', teamText));
+          }
+        } else if (snapshot.teamMode !== 'solo' && player.teamIndex >= 0) {
           badges.appendChild(makeElement('span', 'mini-badge team', `TEAM ${player.teamIndex + 1}`));
         }
         left.appendChild(badges);
