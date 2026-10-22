@@ -23,6 +23,19 @@ try {
   // a bounded functional wait, not a wall-clock timing/performance assertion.
   await page.waitForFunction(()=>document.getElementById('countdown-overlay').classList.contains('hidden'),{},{timeout:45000});
   await page.waitForFunction(()=>document.getElementById('hud-storm-phase').textContent.includes('PHASE'),{},{timeout:45000});
+  // Real compiled main/GameEngine/Solo lifecycle: no room ACK or UI injection.
+  await page.waitForSelector('#chat-toggle',{state:'visible'});
+  const chatBounds=await page.evaluate(()=>{
+    const rect=id=>{const r=document.querySelector(id).getBoundingClientRect();return {x:r.x,y:r.y,right:r.right,bottom:r.bottom}};
+    return {chat:rect('#chat-toggle'),map:rect('.minimap-wrapper'),build:rect('#touch-build-toggle-btn')};
+  });
+  assert.ok(chatBounds.chat.y>=chatBounds.map.bottom);
+  assert.ok(chatBounds.chat.x>=chatBounds.build.right || chatBounds.chat.y>=chatBounds.build.bottom || chatBounds.chat.bottom<=chatBounds.build.y);
+  await page.tap('#chat-toggle');assert.equal(await page.locator('#chat-panel').isVisible(),true);
+  assert.equal(await page.locator('#chat-send').isDisabled(),true);
+  assert.match(await page.locator('#chat-status').textContent(),/Solo/);
+  if(process.env.CHAT_QA_SCREENSHOT)await page.screenshot({path:process.env.CHAT_QA_SCREENSHOT});
+  await page.tap('#chat-toggle');assert.equal(await page.locator('#chat-panel').isVisible(),false);
   await page.tap('#touch-build-toggle-btn');
   assert.equal(await page.locator('#touch-build-toggle-btn').getAttribute('aria-expanded'),'true');
   await page.tap('#touch-build-close-btn');

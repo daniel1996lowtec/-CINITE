@@ -2,6 +2,8 @@
 
 Date: 2026-10-22
 
+> Historical report for the original implementation, merged in PR #7. The subsequent [in-game visibility fix](TEXT_CHAT_VISIBILITY_FIX.md) supersedes the Solo/disconnected visibility and positioning behavior described below. The control now remains visible during actual gameplay; only sending requires acknowledged multiplayer membership. See that report for the latest compiled-game verification and remaining live-server checks.
+
 Branch: `arena/a41a3d63-cinite` · Existing PR: [#7](https://github.com/daniel1996lowtec/-CINITE/pull/7)
 
 Baseline: completed CI Craft 3.6, `2df3eb05ea1173a2aaa6dd76871b6920fa8d6c80`.

@@ -14,7 +14,7 @@ function emit(source) {
   const output=path.join(tmp,path.relative(root,source).replace(/\.ts$/,'.mjs'));
   if(emitted.has(source))return output;
   emitted.add(source);
-  let code=ts.transpileModule(fs.readFileSync(source,'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;
+  let code=ts.transpileModule(fs.readFileSync(source,'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText.replaceAll('import.meta.env', 'globalThis.__chatTestEnv');
   code=code.replace(/from ['"](\.[^'"]+)['"]/g,(_,specifier)=>{
     const dependency=emit(path.resolve(path.dirname(source),specifier+'.ts'));
     return `from '${pathToFileURL(dependency).href}'`;
@@ -92,4 +92,26 @@ test('text chat: actual NetworkManager gates sending on ACK and detaches old soc
     const last=network.ws;network.leaveRoom();assert.equal(last.onmessage,null);assert.equal(network.sendChat('left'),false);
     assert.equal(network.textChat.listeners.size,1);off();assert.equal(network.textChat.listeners.size,0);
   }finally{network.disconnectMultiplayerRoom();globalThis.window=savedWindow;globalThis.WebSocket=savedWS}
+});
+
+
+test('text chat uses the existing multiplayer URL: secure same-origin production and explicit build overrides',()=>{
+  const previousWindow=globalThis.window,previousEnv=globalThis.__chatTestEnv;
+  try {
+    globalThis.window={location:{protocol:'https:',host:'cicraft-battle-royale.onrender.com'}};
+    const network=new NetworkManager();
+    globalThis.__chatTestEnv={};
+    assert.equal(network.resolveWebSocketUrl(),'wss://cicraft-battle-royale.onrender.com/ws');
+    globalThis.window.location={protocol:'http:',host:'localhost:2567'};
+    assert.equal(network.resolveWebSocketUrl(),'ws://localhost:2567/ws');
+    globalThis.__chatTestEnv={VITE_MULTIPLAYER_SERVER_URL:' https://multiplayer.example.test/ '};
+    assert.equal(network.resolveWebSocketUrl(),'wss://multiplayer.example.test/ws');
+    globalThis.__chatTestEnv={VITE_MULTIPLAYER_SERVER_URL:'http://localhost:2567/'};
+    assert.equal(network.resolveWebSocketUrl(),'ws://localhost:2567/ws');
+    globalThis.__chatTestEnv={VITE_MULTIPLAYER_SERVER_URL:'https://ignored.example.test',VITE_MULTIPLAYER_WS_URL:' wss://socket.example.test/ws '};
+    assert.equal(network.resolveWebSocketUrl(),'wss://socket.example.test/ws');
+  } finally {
+    globalThis.window=previousWindow;
+    if(previousEnv===undefined)delete globalThis.__chatTestEnv;else globalThis.__chatTestEnv=previousEnv;
+  }
 });
