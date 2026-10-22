@@ -315,6 +315,59 @@ function createSuspensionLineMesh(
   return mesh;
 }
 
+// Self-contained armour and fabric surface relief. A deterministic woven
+// fabric normal map under the armour plates and a fine micro-scratch map on
+// hard composite keep close-up character detail from reading as flat colour.
+function createCharacterNormalMap(kind: 'fabric' | 'composite'): THREE.DataTexture {
+  const size = 64;
+  const data = new Uint8Array(size * size * 4);
+  const height = new Float32Array(size * size);
+  let seed = kind === 'fabric' ? 330917 : 884213;
+  const rand = (): number => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed / 4294967296;
+  };
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const weave =
+        kind === 'fabric'
+          ? (Math.sin((x / size) * Math.PI * 64) * Math.sin((y / size) * Math.PI * 64)) * 0.35
+          : 0;
+      const scratch =
+        kind === 'composite'
+          ? Math.sin(x * 2.3 + y * 0.7) * Math.sin(y * 1.9) * 0.22
+          : 0;
+      height[y * size + x] = 0.5 + weave + scratch + (rand() - 0.5) * 0.22;
+    }
+  }
+  const mask = size - 1;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const xPrev = (x - 1) & mask;
+      const xNext = (x + 1) & mask;
+      const yPrev = (y - 1) & mask;
+      const yNext = (y + 1) & mask;
+      const dx = (height[y * size + xNext] - height[y * size + xPrev]) * 2.1;
+      const dy = (height[yNext * size + x] - height[yPrev * size + x]) * 2.1;
+      const invLen = 1 / Math.hypot(dx, dy, 1);
+      const i = (y * size + x) * 4;
+      data[i] = Math.round((-dx * invLen * 0.5 + 0.5) * 255);
+      data[i + 1] = Math.round((-dy * invLen * 0.5 + 0.5) * 255);
+      data[i + 2] = Math.round(invLen * 0.5 * 255 + 127);
+      data[i + 3] = 255;
+    }
+  }
+  const tex = new THREE.DataTexture(data, size, size);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(kind === 'fabric' ? 3 : 2, kind === 'fabric' ? 3 : 2);
+  tex.magFilter = tex.minFilter = THREE.LinearFilter;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+const CHARACTER_FABRIC_NORMAL = createCharacterNormalMap('fabric');
+const CHARACTER_COMPOSITE_NORMAL = createCharacterNormalMap('composite');
+
 // Shared unit geometries for procedural outfit attachments. Smooth contoured
 // primitives replace raw cubes so no boxy placeholders ever appear on the character.
 const OUTFIT_PAULDRON_GEO = (() => {
@@ -332,6 +385,19 @@ const OUTFIT_BOX_GEO = (() => {
 const OUTFIT_CYLINDER_GEO = new THREE.CylinderGeometry(0.5, 0.5, 1, 12);
 const OUTFIT_CONE_GEO = new THREE.ConeGeometry(0.5, 1, 10);
 const OUTFIT_OCTA_GEO = new THREE.OctahedronGeometry(0.5, 1);
+const OUTFIT_THIGH_PLATE_GEO = (() => {
+  const geo = new THREE.SphereGeometry(0.5, 12, 8, 0, Math.PI * 1.05, 0, Math.PI * 0.62);
+  geo.rotateY(-Math.PI * 0.52);
+  geo.computeVertexNormals();
+  return geo;
+})();
+const OUTFIT_KNEE_GUARD_GEO = (() => {
+  const geo = new THREE.SphereGeometry(0.5, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.55);
+  geo.scale(1, 1.25, 0.7);
+  geo.computeVertexNormals();
+  return geo;
+})();
+const OUTFIT_CUFF_GEO = new THREE.CylinderGeometry(0.42, 0.5, 0.55, 12, 1, true);
 
 function quatKeyframes(
   boneName: string,
@@ -1216,6 +1282,8 @@ export class CharacterMesh {
               color: this.accentColorHex,
               emissive: this.accentColorHex,
               emissiveIntensity: profile.visorEmissiveIntensity * 0.62,
+              normalMap: CHARACTER_COMPOSITE_NORMAL,
+              normalScale: new THREE.Vector2(0.25, 0.25),
               roughness: Math.max(0.06, profile.roughness * 0.35),
               metalness: Math.min(0.92, profile.metalness + 0.42),
               envMapIntensity: profile.envMapIntensity + 0.35,
@@ -1242,6 +1310,12 @@ export class CharacterMesh {
             if (this.armorTexture && !this.reducedDetail) {
               customBodyMat.bumpMap = this.armorTexture;
               customBodyMat.bumpScale = 0.015;
+            }
+            if (!this.reducedDetail) {
+              // Woven-suit micro relief so the character's torso, sleeves and
+              // trousers read as fabric and composite instead of flat paint.
+              customBodyMat.normalMap = CHARACTER_FABRIC_NORMAL;
+              customBodyMat.normalScale = new THREE.Vector2(0.45, 0.45);
             }
             mesh.material = customBodyMat;
             this.gltfBodyMat = customBodyMat;
@@ -1450,6 +1524,8 @@ export class CharacterMesh {
     const armorMat = new THREE.MeshStandardMaterial({
       color: tacticalPlateColor,
       map: this.armorTexture,
+      normalMap: CHARACTER_COMPOSITE_NORMAL,
+      normalScale: new THREE.Vector2(0.55, 0.55),
       roughness: Math.max(0.42, profile.roughness),
       metalness: Math.min(0.55, profile.metalness + 0.12),
       envMapIntensity: profile.envMapIntensity,
@@ -1467,8 +1543,10 @@ export class CharacterMesh {
     const darkMat = new THREE.MeshStandardMaterial({
       color: 0x1e293b,
       map: this.armorTexture,
-      roughness: Math.min(0.74, profile.roughness + 0.18),
-      metalness: 0.28,
+      normalMap: CHARACTER_FABRIC_NORMAL,
+      normalScale: new THREE.Vector2(0.75, 0.75),
+      roughness: Math.min(0.8, profile.roughness + 0.18),
+      metalness: 0.22,
       envMapIntensity: profile.envMapIntensity * 0.75,
       flatShading: false,
     });
@@ -1517,6 +1595,79 @@ export class CharacterMesh {
         0,
         side * -0.18
       );
+
+    // Shared armour layers: thigh plates, knee guards, glove cuffs and a
+    // chest harness. All are contoured capsule/sphere-bounded shells bound to
+    // the animated limb bones, so nothing floats or clips during sprint,
+    // freefall, gliding or reloads.
+    for (const side of [-1, 1] as const) {
+      const suffix = side < 0 ? 'left' : 'right';
+      add(
+        `thigh_plate_${suffix}`,
+        OUTFIT_THIGH_PLATE_GEO,
+        armorMat,
+        side * 0.105,
+        0.86,
+        0.045,
+        0.19,
+        0.26,
+        0.19,
+        0,
+        side * 0.4,
+        side * 0.12
+      );
+      add(
+        `knee_guard_${suffix}`,
+        OUTFIT_KNEE_GUARD_GEO,
+        darkMat,
+        side * 0.105,
+        0.47,
+        0.075,
+        0.15,
+        0.17,
+        0.15,
+        0.14,
+        0,
+        side * 0.1
+      );
+      add(
+        `glove_cuff_${suffix}`,
+        OUTFIT_CUFF_GEO,
+        accentMat,
+        0,
+        0.03,
+        0,
+        0.075,
+        0.06,
+        0.075,
+        Math.PI / 2,
+        0,
+        0
+      );
+    }
+    add(
+      'chest_harness',
+      OUTFIT_CYLINDER_GEO,
+      darkMat,
+      0,
+      1.34,
+      -0.16,
+      0.22,
+      0.045,
+      0.19,
+      Math.PI / 2
+    );
+    add(
+      'harness_buckle',
+      OUTFIT_OCTA_GEO,
+      accentMat,
+      0,
+      1.32,
+      -0.205,
+      0.05,
+      0.055,
+      0.022
+    );
 
     switch (profile.armorStyle) {
       case 'solar':
@@ -1590,23 +1741,52 @@ export class CharacterMesh {
       const y = object.position.y;
       const isLeftPauldron = object.name.includes('left_pauldron');
       const isRightPauldron = object.name.includes('right_pauldron');
-      const bone =
-        y > 1.72
-          ? this.gltfBones.head
-          : isLeftPauldron
-            ? (this.gltfBones.leftShoulder ?? this.gltfBones.spine2)
-            : isRightPauldron
-              ? (this.gltfBones.rightShoulder ?? this.gltfBones.spine2)
-              : y < 1.1
-                ? this.gltfBones.hips
-                : this.gltfBones.spine2;
+      const isLeftLeg = /(_left$|_left_)/.test(object.name) && object.name.includes('thigh');
+      const isRightLeg = /(_right$|_right_)/.test(object.name) && object.name.includes('thigh');
+      const isLeftKnee = /(_left$|_left_)/.test(object.name) && object.name.includes('knee');
+      const isRightKnee = /(_right$|_right_)/.test(object.name) && object.name.includes('knee');
+      const isLeftCuff = object.name.includes('glove_cuff_left');
+      const isRightCuff = object.name.includes('glove_cuff_right');
+      const bone = isLeftLeg
+        ? (this.gltfBones.leftUpLeg ?? this.gltfBones.hips)
+        : isRightLeg
+          ? (this.gltfBones.rightUpLeg ?? this.gltfBones.hips)
+          : isLeftKnee
+            ? (this.gltfBones.leftLeg ?? this.gltfBones.hips)
+            : isRightKnee
+              ? (this.gltfBones.rightLeg ?? this.gltfBones.hips)
+              : isLeftCuff
+                ? (this.gltfBones.leftHand ?? this.gltfBones.leftForeArm ?? this.gltfBones.spine2)
+                : isRightCuff
+                  ? (this.gltfBones.rightHand ?? this.gltfBones.rightForeArm ?? this.gltfBones.spine2)
+                  : y > 1.72
+                    ? this.gltfBones.head
+                    : isLeftPauldron
+                      ? (this.gltfBones.leftShoulder ?? this.gltfBones.spine2)
+                      : isRightPauldron
+                        ? (this.gltfBones.rightShoulder ?? this.gltfBones.spine2)
+                        : y < 1.1
+                          ? this.gltfBones.hips
+                          : this.gltfBones.spine2;
       const rest = bone && this.attachmentRest.get(bone);
       if (!bone || !rest) continue;
 
       // Map fallback coordinates onto the exact surface of soldier.glb
       const gltfPos = object.position.clone();
       const gltfScale = object.scale.clone();
-      if (isLeftPauldron) {
+      if (isLeftLeg || isRightLeg || isLeftKnee || isRightKnee) {
+        // Thigh plates and knee guards sit on the limb's own bone so they
+        // follow the running/freefall animation instead of the hips.
+        gltfPos.set(
+          isLeftLeg || isLeftKnee ? -0.11 : 0.11,
+          isLeftKnee || isRightKnee ? 0.42 : 0.82,
+          0.02
+        );
+        gltfScale.multiplyScalar(0.9);
+      } else if (isLeftCuff || isRightCuff) {
+        gltfPos.set(0, 0.03, 0);
+        gltfScale.multiplyScalar(0.86);
+      } else if (isLeftPauldron) {
         gltfPos.set(-0.182, 1.405, -0.042);
         gltfScale.multiplyScalar(0.76);
       } else if (isRightPauldron) {

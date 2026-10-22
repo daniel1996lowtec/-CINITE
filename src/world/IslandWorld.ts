@@ -3,7 +3,22 @@ import * as THREE from 'three';
 import { TerrainGenerator, ISLAND_POIS } from './TerrainGenerator';
 import { MapExpansionBuilder } from './MapExpansionBuilder';
 import { WorldBranding } from './WorldBranding';
-import { applyFoliageWind, setFoliageWindTime } from './VisualAtmosphere';
+import {
+  applyArchitectureSurfaceShader,
+  applyFoliageWind,
+  createArchedPalmFrondGeometry,
+  createBotanicalCrownGeometry,
+  createBotanicalShrubGeometry,
+  createBotanicalTreeTrunkGeometry,
+  createCrossedGrassTuftGeometry,
+  createFramedSupplyCrateGeometry,
+  createPbrSurfaceTextures,
+  createScallopedPineTierGeometry,
+  createSculptedBoulderGeometry,
+  mergeBufferGeometries,
+  setFoliageWindTime,
+  weldAndSmoothGeometry,
+} from './VisualAtmosphere';
 import {
   ISLAND_SETTLEMENTS,
   LEGENDARY_TOWER,
@@ -141,6 +156,8 @@ export class IslandWorld {
   private windmillBlades: THREE.Group | null = null;
   private lighthouseBeam: THREE.Group | null = null;
   private patternTextures: Map<string, THREE.CanvasTexture | null> = new Map();
+  /** Shared PBR surface maps for the whole island (one GPU copy each). */
+  public readonly pbrTextures = createPbrSurfaceTextures();
   private animTime = 0;
 
   private getPatternTexture(kind: 'wood' | 'stone' | 'metal'): THREE.CanvasTexture | null {
@@ -289,6 +306,47 @@ export class IslandWorld {
     g.position.set(px, py, pz);
     g.rotation.set(rotX, rotY, 0);
     return g;
+  }
+
+  /**
+   * Raises anisotropic filtering on the world's tiling detail maps. Without
+   * this, terrain, facades and roads smear into mush at grazing angles on
+   * every device that can afford it; the value is clamped to 4 so phones keep
+   * their texture bandwidth.
+   */
+  public setTextureAnisotropy(maxAnisotropy: number): void {
+    const anisotropy = Math.max(1, Math.min(4, maxAnisotropy));
+    const seen = new Set<THREE.Texture>();
+    const apply = (texture?: THREE.Texture | null) => {
+      if (!texture || seen.has(texture)) return;
+      seen.add(texture);
+      texture.anisotropy = anisotropy;
+      texture.needsUpdate = true;
+    };
+    const groups: THREE.Object3D[] = [
+      this.scene,
+      this.terrain.terrainMesh,
+      this.terrain.waterMesh,
+      this.propInstancesGroup,
+      this.foliageGroup,
+      this.expansionGroup,
+      this.expansionDetailGroup,
+      this.detailFoliageGroup,
+    ];
+    for (const group of groups) {
+      group?.traverse((object) => {
+        const mesh = object as THREE.Mesh;
+        if (!mesh.isMesh || !mesh.material) return;
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const material of materials) {
+          const standard = material as THREE.MeshStandardMaterial;
+          apply(standard.map);
+          apply(standard.normalMap);
+          apply(standard.roughnessMap);
+          apply(standard.bumpMap);
+        }
+      });
+    }
   }
 
   public generate(): void {
@@ -580,45 +638,64 @@ export class IslandWorld {
     const group = new THREE.Group();
     group.position.set(cx, baseY, cz);
 
-    const wallMat = new THREE.MeshStandardMaterial({
-      color: wallColor,
-      map: this.getPatternTexture('stone'),
-      flatShading: false,
-      roughness: 0.68,
-      metalness: 0.04,
-    });
+    const wallMat = applyArchitectureSurfaceShader(
+      new THREE.MeshStandardMaterial({
+        color: wallColor,
+        map: this.pbrTextures.facadeAlbedo,
+        normalMap: this.pbrTextures.facadeNormal,
+        normalScale: new THREE.Vector2(0.55, 0.55),
+        flatShading: false,
+        roughness: 0.68,
+        metalness: 0.04,
+      }),
+      'facade'
+    );
     const roofMat = new THREE.MeshStandardMaterial({
       color: roofColor,
+      normalMap: this.pbrTextures.metalNormal,
+      normalScale: new THREE.Vector2(0.38, 0.38),
       flatShading: false,
-      roughness: 0.52,
-      metalness: 0.06,
+      roughness: 0.48,
+      metalness: 0.14,
     });
     const floorMat = new THREE.MeshStandardMaterial({
       color: 0xd6d3d1,
+      map: this.pbrTextures.facadeAlbedo,
+      normalMap: this.pbrTextures.facadeNormal,
+      normalScale: new THREE.Vector2(0.3, 0.3),
       flatShading: false,
-      roughness: 0.78,
+      roughness: 0.76,
     });
     const trimMat = new THREE.MeshStandardMaterial({
       color: 0xf8fafc,
+      normalMap: this.pbrTextures.facadeNormal,
+      normalScale: new THREE.Vector2(0.35, 0.35),
       flatShading: false,
-      roughness: 0.48,
+      roughness: 0.46,
     });
-    const glassMat = new THREE.MeshStandardMaterial({
-      color: 0xbae6fd,
-      emissive: 0x0284c7,
-      emissiveIntensity: 0.22,
-      roughness: 0.08,
-      metalness: 0.62,
-      envMapIntensity: 1.5,
-      transparent: true,
-      opacity: 0.68,
-    });
+    const glassMat = applyArchitectureSurfaceShader(
+      new THREE.MeshStandardMaterial({
+        color: 0xbae6fd,
+        map: this.pbrTextures.windowAlbedo,
+        normalMap: this.pbrTextures.windowNormal,
+        normalScale: new THREE.Vector2(0.55, 0.55),
+        emissive: 0x0284c7,
+        emissiveIntensity: 0.18,
+        roughness: 0.08,
+        metalness: 0.65,
+        envMapIntensity: 1.55,
+        flatShading: false,
+        transparent: true,
+        opacity: 0.74,
+      }),
+      'glass'
+    );
 
     const wallThick = 0.45;
     const hw = width / 2;
     const hd = depth / 2;
 
-    const floorMesh = new THREE.Mesh(new THREE.BoxGeometry(width, 0.3, depth), floorMat);
+    const floorMesh = new THREE.Mesh(new THREE.BoxGeometry(width + 0.5, 0.3, depth + 0.5), floorMat);
     floorMesh.position.set(0, 0.15, 0);
     floorMesh.receiveShadow = true;
     group.add(floorMesh);
@@ -640,11 +717,7 @@ export class IslandWorld {
     sill.position.set(0, 0.55, -hd);
     const header = new THREE.Mesh(new THREE.BoxGeometry(winW, height - 2.6, wallThick), wallMat);
     header.position.set(0, height - (height - 2.6) / 2, -hd);
-    const winGlass = new THREE.Mesh(new THREE.BoxGeometry(winW - 0.1, 1.5, 0.08), glassMat);
-    winGlass.position.set(0, 1.85, -hd);
-    const winFrame = new THREE.Mesh(new THREE.BoxGeometry(winW + 0.2, 0.12, wallThick + 0.12), trimMat);
-    winFrame.position.set(0, 1.12, -hd);
-    group.add(sill, header, winGlass, winFrame);
+    group.add(sill, header);
 
     // Left Wall (-X) + exterior trim
     this.addWallSegment(group, cx, baseY, cz, -hw, height / 2, 0, wallThick, height, depth, wallMat);
@@ -683,38 +756,91 @@ export class IslandWorld {
     );
     const lintel = new THREE.Mesh(new THREE.BoxGeometry(doorWidth, height - 3.0, wallThick), wallMat);
     lintel.position.set(0, height - (height - 3.0) / 2, hd);
-    const doorFrame = new THREE.Mesh(new THREE.BoxGeometry(doorWidth + 0.4, 0.22, wallThick + 0.2), trimMat);
-    doorFrame.position.set(0, 3.05, hd);
-    const awning = new THREE.Mesh(new THREE.BoxGeometry(doorWidth + 1.0, 0.16, 1.2), roofMat);
-    awning.position.set(0, 3.25, hd + 0.55);
+    const awning = new THREE.Mesh(new THREE.BoxGeometry(doorWidth + 1.2, 0.18, 1.35), roofMat);
+    awning.position.set(0, 3.25, hd + 0.58);
     awning.rotation.x = 0.2;
-    const doorStep = new THREE.Mesh(new THREE.BoxGeometry(doorWidth + 0.8, 0.18, 0.85), trimMat);
-    doorStep.position.set(0, 0.09, hd + 0.35);
     const extLantern = new THREE.Mesh(
       new THREE.SphereGeometry(0.18, 8, 8),
       new THREE.MeshBasicMaterial({ color: 0xfef08a })
     );
     extLantern.position.set(doorWidth / 2 + 0.45, 2.55, hd + 0.28);
-    group.add(lintel, doorFrame, awning, doorStep, extLantern);
+    group.add(lintel, awning, extLantern);
 
-    // Exterior Corner Stone Pilasters / Quoins for crisp architectural silhouette
+    // Compound architectural stone trim (sills, lintels, quoins, cornice & door architrave)
+    // and compound multi-facade window glazing (rear, left, right & front windows) in 2 meshes
+    const trimParts: THREE.BufferGeometry[] = [];
+    const glassParts: THREE.BufferGeometry[] = [];
+    const pushBox = (
+      target: THREE.BufferGeometry[],
+      bx: number,
+      by: number,
+      bz: number,
+      sx: number,
+      sy: number,
+      sz: number
+    ) => {
+      const g = new THREE.BoxGeometry(sx, sy, sz);
+      g.translate(bx, by, bz);
+      target.push(g);
+    };
+
+    // Rear window glass, sill & lintel
+    pushBox(glassParts, 0, 1.85, -hd, winW - 0.1, 1.5, 0.1);
+    pushBox(trimParts, 0, 1.12, -hd, winW + 0.28, 0.14, wallThick + 0.16);
+    pushBox(trimParts, 0, 2.64, -hd, winW + 0.32, 0.15, wallThick + 0.18);
+
+    // Side-wall framed windows (left & right facades)
+    for (const side of [-1, 1]) {
+      for (const wz of [-depth * 0.24, depth * 0.24]) {
+        pushBox(glassParts, side * (hw + 0.21), 1.95, wz, 0.08, 1.32, 1.52);
+        pushBox(trimParts, side * (hw + 0.2), 1.24, wz, 0.16, 0.13, 1.72);
+        pushBox(trimParts, side * (hw + 0.2), 2.66, wz, 0.18, 0.14, 1.76);
+      }
+    }
+
+    // Front facade side windows flanking the entrance doorway
+    if (sideWidth >= 2.6) {
+      for (const side of [-1, 1]) {
+        const fwx = side * (doorWidth / 2 + sideWidth * 0.5);
+        pushBox(glassParts, fwx, 1.95, hd + 0.21, 1.36, 1.28, 0.08);
+        pushBox(trimParts, fwx, 1.26, hd + 0.2, 1.56, 0.13, 0.16);
+        pushBox(trimParts, fwx, 2.64, hd + 0.2, 1.6, 0.14, 0.18);
+      }
+    }
+
+    // Door frame, threshold step, corner quoins & upper cornice molding
+    pushBox(trimParts, 0, 3.05, hd, doorWidth + 0.45, 0.22, wallThick + 0.22);
+    pushBox(trimParts, -doorWidth / 2 - 0.12, 1.55, hd + 0.06, 0.22, 3.0, wallThick + 0.14);
+    pushBox(trimParts, doorWidth / 2 + 0.12, 1.55, hd + 0.06, 0.22, 3.0, wallThick + 0.14);
+    pushBox(trimParts, 0, 0.09, hd + 0.38, doorWidth + 0.9, 0.18, 0.9);
     for (const [qx, qz] of [
       [-hw, -hd],
       [hw, -hd],
       [-hw, hd],
       [hw, hd],
     ]) {
-      const quoin = new THREE.Mesh(
-        new THREE.BoxGeometry(0.62, height + 0.1, 0.62),
-        trimMat
-      );
-      quoin.position.set(qx, height / 2, qz);
-      group.add(quoin);
+      pushBox(trimParts, qx, height / 2, qz, 0.62, height + 0.1, 0.62);
     }
+    pushBox(trimParts, 0, height - 0.08, 0, width + 0.58, 0.18, depth + 0.58);
+
+    const mergedTrim = new THREE.Mesh(mergeBufferGeometries(trimParts), trimMat);
+    mergedTrim.castShadow = true;
+    mergedTrim.receiveShadow = true;
+    const mergedGlass = new THREE.Mesh(mergeBufferGeometries(glassParts), glassMat);
+    group.add(mergedTrim, mergedGlass);
 
     // Rich Interior Details: Tech Desk + Dual Glowing Monitors + Chair + Server Rack + Bookshelf + Ceiling Lamp
-    const woodDarkMat = new THREE.MeshStandardMaterial({ color: 0x78350f, flatShading: true });
-    const rackMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, flatShading: true });
+    const woodDarkMat = new THREE.MeshStandardMaterial({
+      color: 0x78350f,
+      flatShading: false,
+      roughness: 0.72,
+    });
+    const rackMat = new THREE.MeshStandardMaterial({
+      color: 0x1e293b,
+      flatShading: false,
+      roughness: 0.48,
+      metalness: 0.45,
+    });
     const screenMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8 });
     const tableTop = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.14, 1.05), woodDarkMat);
     tableTop.position.set(hw * 0.45, 0.95, -hd * 0.52);
@@ -770,12 +896,18 @@ export class IslandWorld {
       parapetR.position.set(hw * 0.5, height + 0.75, -hd);
       const acUnit = new THREE.Mesh(
         new THREE.BoxGeometry(1.5, 1.15, 1.25),
-        new THREE.MeshStandardMaterial({ color: 0x64748b, flatShading: true })
+        new THREE.MeshStandardMaterial({
+          color: 0x64748b,
+          normalMap: this.pbrTextures.metalNormal,
+          flatShading: false,
+          roughness: 0.42,
+          metalness: 0.65,
+        })
       );
       acUnit.position.set(-hw * 0.5, height + 0.85, -hd * 0.4);
       const antenna = new THREE.Mesh(
         new THREE.CylinderGeometry(0.05, 0.08, 2.6, 6),
-        new THREE.MeshStandardMaterial({ color: 0x94a3b8 })
+        new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.7, roughness: 0.3 })
       );
       antenna.position.set(-hw * 0.5, height + 2.1, -hd * 0.4);
       group.add(parapetL, parapetR, acUnit, antenna);
@@ -790,7 +922,13 @@ export class IslandWorld {
       const rampAngle = Math.atan2(height, rampLen);
       const rampMesh = new THREE.Mesh(
         new THREE.BoxGeometry(rampWidth, 0.25, rampSlopeLen),
-        new THREE.MeshStandardMaterial({ color: 0xb45309, flatShading: true })
+        new THREE.MeshStandardMaterial({
+          color: 0x9a5b25,
+          map: this.pbrTextures.barkAlbedo,
+          normalMap: this.pbrTextures.barkNormal,
+          flatShading: false,
+          roughness: 0.74,
+        })
       );
       rampMesh.position.set(hw + rampWidth / 2 + 0.2, height / 2, 0);
       rampMesh.rotation.x = rampAngle;
@@ -862,10 +1000,10 @@ export class IslandWorld {
   }
 
   private buildPipelinePlaza(): void {
-    this.createEnterableHouse(-18, -16, 11, 10, 4.6, 0x38bdf8, 0x0284c7, true);
-    this.createEnterableHouse(18, -16, 11, 10, 4.6, 0xf472b6, 0xdb2777, true);
-    this.createEnterableHouse(-18, 16, 10, 9, 4.4, 0xfacc15, 0xd97706, false);
-    this.createEnterableHouse(18, 16, 11, 10, 4.6, 0x4ade80, 0x16a34a, true);
+    this.createEnterableHouse(-18, -16, 11, 10, 4.6, 0xe8edf2, 0x1e3a5f, true);
+    this.createEnterableHouse(18, -16, 11, 10, 4.6, 0xf1ece1, 0x9a3412, true);
+    this.createEnterableHouse(-18, 16, 10, 9, 4.4, 0xead8c3, 0x854d0e, false);
+    this.createEnterableHouse(18, 16, 11, 10, 4.6, 0xe2e8f0, 0x1e6052, true);
 
     const baseY = this.terrain.getTerrainHeight(0, 0);
     // The small former monument has been replaced by The Legendary Tower.
@@ -880,11 +1018,16 @@ export class IslandWorld {
       [0, -17],
       [0, 17],
     ];
-    const poleMat = new THREE.MeshStandardMaterial({ color: 0x334155, flatShading: true });
+    const poleMat = new THREE.MeshStandardMaterial({
+      color: 0x334155,
+      flatShading: false,
+      roughness: 0.38,
+      metalness: 0.72,
+    });
     const bulbMat = new THREE.MeshBasicMaterial({ color: 0xfef08a });
     for (const [lx, lz] of lampPositions) {
       const ly = this.terrain.getTerrainHeight(lx, lz);
-      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.16, 4.4, 6), poleMat);
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.16, 4.4, 8), poleMat);
       pole.position.set(lx, ly + 2.2, lz);
       const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.35, 8, 8), bulbMat);
       bulb.position.set(lx, ly + 4.5, lz);
@@ -897,8 +1040,21 @@ export class IslandWorld {
     }
 
     // Plaza Stone Planters & Tactical Low Cover Barriers
-    const planterMat = new THREE.MeshStandardMaterial({ color: 0x64748b, flatShading: true });
-    const bushTopMat = new THREE.MeshStandardMaterial({ color: 0x22c55e, flatShading: true });
+    const planterMat = new THREE.MeshStandardMaterial({
+      color: 0x94a3b8,
+      map: this.pbrTextures.facadeAlbedo,
+      normalMap: this.pbrTextures.facadeNormal,
+      flatShading: false,
+      roughness: 0.76,
+    });
+    const bushTopMat = new THREE.MeshStandardMaterial({
+      color: 0x2d6a3e,
+      map: this.pbrTextures.foliageAlbedo,
+      normalMap: this.pbrTextures.foliageNormal,
+      flatShading: false,
+      roughness: 0.75,
+    });
+    const shrubGeo = weldAndSmoothGeometry(new THREE.IcosahedronGeometry(0.68, 0));
     for (const [px, pz] of [
       [-20, -5],
       [20, 5],
@@ -909,7 +1065,7 @@ export class IslandWorld {
       const planter = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.95, 1.2), planterMat);
       planter.position.set(px, py + 0.48, pz);
       planter.castShadow = true;
-      const shrub = new THREE.Mesh(new THREE.DodecahedronGeometry(0.68, 0), bushTopMat);
+      const shrub = new THREE.Mesh(shrubGeo, bushTopMat);
       shrub.position.set(px, py + 1.15, pz);
       this.worldGroup.add(planter, shrub);
       this.raycastMeshes.push(planter);
@@ -935,7 +1091,7 @@ export class IslandWorld {
 
   private buildDockerDocks(): void {
     const poi = ISLAND_POIS[1];
-    this.createEnterableHouse(poi.x, poi.z - 12, 14, 10, 5.0, 0xf97316, 0x9a3412, true);
+    this.createEnterableHouse(poi.x, poi.z - 12, 14, 10, 5.0, 0xd6ccc2, 0x9a3412, true);
 
     const pierX = poi.x - 22;
     const pierZ = poi.z + 22;
@@ -945,7 +1101,13 @@ export class IslandWorld {
     const pierY = (pierNorthY + pierSouthY) / 2 + 0.35;
     const pierDeckHeightAt = (z: number): number =>
       pierY + 0.2 + ((z - pierZ) / pierLength) * (pierSouthY - pierNorthY);
-    const pierMat = new THREE.MeshStandardMaterial({ color: 0x92400e, flatShading: true });
+    const pierMat = new THREE.MeshStandardMaterial({
+      color: 0x854d27,
+      map: this.pbrTextures.barkAlbedo,
+      normalMap: this.pbrTextures.barkNormal,
+      flatShading: false,
+      roughness: 0.78,
+    });
     const pierDeck = new THREE.Mesh(new THREE.BoxGeometry(6.8, 0.4, pierLength), pierMat);
     pierDeck.position.set(pierX, pierY, pierZ);
     // Follow the harbour slope instead of burying the southern deck end.
@@ -955,14 +1117,19 @@ export class IslandWorld {
     this.raycastMeshes.push(pierDeck);
 
     // Harbor Mooring Bollards & Support Pilings along the Pier
-    const bollardMat = new THREE.MeshStandardMaterial({ color: 0x334155, flatShading: true });
+    const bollardMat = new THREE.MeshStandardMaterial({
+      color: 0x334155,
+      flatShading: false,
+      roughness: 0.42,
+      metalness: 0.72,
+    });
     for (const dz of [-7, 0, 7]) {
       const deckY = pierDeckHeightAt(pierZ + dz) - 0.2;
-      const pilingL = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 3.2, 6), pierMat);
+      const pilingL = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 3.2, 8), pierMat);
       pilingL.position.set(pierX - 3.0, deckY - 1.4, pierZ + dz);
       const pilingR = pilingL.clone();
       pilingR.position.x = pierX + 3.0;
-      const bollard = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.28, 0.55, 6), bollardMat);
+      const bollard = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.28, 0.55, 8), bollardMat);
       bollard.position.set(pierX - 2.8, deckY + 0.45, pierZ + dz);
       this.worldGroup.add(pilingL, pilingR, bollard);
     }
@@ -979,7 +1146,13 @@ export class IslandWorld {
     );
 
     // Industrial Yellow Harbor Crane + Coastal Lighthouse
-    const craneMat = new THREE.MeshStandardMaterial({ color: 0xeab308, flatShading: true });
+    const craneMat = new THREE.MeshStandardMaterial({
+      color: 0xd99b26,
+      normalMap: this.pbrTextures.metalNormal,
+      flatShading: false,
+      roughness: 0.42,
+      metalness: 0.58,
+    });
     const craneX = poi.x - 16;
     const craneZ = poi.z + 4;
     const craneY = this.terrain.getTerrainHeight(craneX, craneZ);
@@ -1004,18 +1177,35 @@ export class IslandWorld {
     const lhZ = poi.z + 26;
     const lhY = Math.max(0.8, this.terrain.getTerrainHeight(lhX, lhZ));
     const lhBody = new THREE.Mesh(
-      new THREE.CylinderGeometry(1.5, 2.3, 12.5, 8),
-      new THREE.MeshStandardMaterial({ color: 0xf8fafc, flatShading: true })
+      new THREE.CylinderGeometry(1.5, 2.3, 12.5, 12),
+      new THREE.MeshStandardMaterial({
+        color: 0xf8fafc,
+        map: this.pbrTextures.facadeAlbedo,
+        normalMap: this.pbrTextures.facadeNormal,
+        flatShading: false,
+        roughness: 0.65,
+      })
     );
     lhBody.position.set(lhX, lhY + 6.25, lhZ);
     const lhBand = new THREE.Mesh(
-      new THREE.CylinderGeometry(1.85, 2.05, 3.2, 8),
-      new THREE.MeshStandardMaterial({ color: 0xef4444, flatShading: true })
+      new THREE.CylinderGeometry(1.85, 2.05, 3.2, 12),
+      new THREE.MeshStandardMaterial({
+        color: 0xc83333,
+        normalMap: this.pbrTextures.facadeNormal,
+        flatShading: false,
+        roughness: 0.58,
+      })
     );
     lhBand.position.set(lhX, lhY + 6.0, lhZ);
     const lhTop = new THREE.Mesh(
-      new THREE.ConeGeometry(2.1, 2.4, 8),
-      new THREE.MeshStandardMaterial({ color: 0xef4444, flatShading: true })
+      new THREE.ConeGeometry(2.1, 2.4, 12),
+      new THREE.MeshStandardMaterial({
+        color: 0xb91c1c,
+        normalMap: this.pbrTextures.metalNormal,
+        flatShading: false,
+        roughness: 0.45,
+        metalness: 0.35,
+      })
     );
     lhTop.position.set(lhX, lhY + 13.6, lhZ);
     this.lighthouseBeam = new THREE.Group();
@@ -1043,7 +1233,7 @@ export class IslandWorld {
       maxY: lhY + 12.5,
     });
 
-    const containerColors = [0x0284c7, 0xef4444, 0x22c55e, 0xeab308];
+    const containerColors = [0x1d6fa5, 0xb83b3b, 0x2b7a4b, 0xc98a24];
     const offsets = [
       { dx: -12, dz: 6 },
       { dx: -5, dz: 10 },
@@ -1056,8 +1246,11 @@ export class IslandWorld {
       const cy = this.terrain.getTerrainHeight(cx, cz);
       const mat = new THREE.MeshStandardMaterial({
         color: containerColors[idx % containerColors.length],
-        flatShading: true,
-        roughness: 0.6,
+        normalMap: this.pbrTextures.metalNormal,
+        normalScale: new THREE.Vector2(0.65, 0.65),
+        flatShading: false,
+        roughness: 0.48,
+        metalness: 0.55,
       });
       const container = new THREE.Mesh(new THREE.BoxGeometry(3.2, 3.0, 6.8), mat);
       container.position.set(cx, cy + 1.5, cz);
@@ -1093,7 +1286,7 @@ export class IslandWorld {
 
   private buildKubernetesKeep(): void {
     const poi = ISLAND_POIS[2];
-    this.createEnterableHouse(poi.x, poi.z, 13, 13, 5.4, 0xa855f7, 0x6b21a8, true);
+    this.createEnterableHouse(poi.x, poi.z, 13, 13, 5.4, 0xd6d3d1, 0x3b4252, true);
 
     const corners = [
       [-16, -16],
@@ -1101,19 +1294,31 @@ export class IslandWorld {
       [-16, 16],
       [16, 16],
     ];
-    const towerMat = new THREE.MeshStandardMaterial({ color: 0x64748b, flatShading: true });
-    const roofConeMat = new THREE.MeshStandardMaterial({ color: 0x7e22ce, flatShading: true });
+    const towerMat = new THREE.MeshStandardMaterial({
+      color: 0x788290,
+      map: this.pbrTextures.facadeAlbedo,
+      normalMap: this.pbrTextures.facadeNormal,
+      flatShading: false,
+      roughness: 0.78,
+    });
+    const roofConeMat = new THREE.MeshStandardMaterial({
+      color: 0x334155,
+      normalMap: this.pbrTextures.metalNormal,
+      flatShading: false,
+      roughness: 0.52,
+      metalness: 0.25,
+    });
     const bannerMat = new THREE.MeshBasicMaterial({ color: 0xc084fc });
     for (const [dx, dz] of corners) {
       const tx = poi.x + dx;
       const tz = poi.z + dz;
       const ty = this.terrain.getTerrainHeight(tx, tz);
-      const tower = new THREE.Mesh(new THREE.CylinderGeometry(2.6, 3.0, 7.8, 7), towerMat);
+      const tower = new THREE.Mesh(new THREE.CylinderGeometry(2.6, 3.0, 7.8, 12), towerMat);
       tower.position.set(tx, ty + 3.9, tz);
       tower.castShadow = true;
       tower.receiveShadow = true;
 
-      const cap = new THREE.Mesh(new THREE.ConeGeometry(3.4, 2.8, 7), roofConeMat);
+      const cap = new THREE.Mesh(new THREE.ConeGeometry(3.4, 2.8, 12), roofConeMat);
       cap.position.set(tx, ty + 9.2, tz);
       const banner = new THREE.Mesh(new THREE.BoxGeometry(0.9, 2.4, 0.08), bannerMat);
       banner.position.set(tx, ty + 5.2, tz + (dz > 0 ? 2.85 : -2.85));
@@ -1157,11 +1362,17 @@ export class IslandWorld {
 
   private buildGitGrove(): void {
     const poi = ISLAND_POIS[3];
-    this.createEnterableHouse(poi.x - 11, poi.z - 7, 9, 8, 4.2, 0xb45309, 0x15803d, false);
-    this.createEnterableHouse(poi.x + 12, poi.z + 8, 9, 8, 4.2, 0xd97706, 0x166534, true);
+    this.createEnterableHouse(poi.x - 11, poi.z - 7, 9, 8, 4.2, 0xc2956e, 0x2d5a34, false);
+    this.createEnterableHouse(poi.x + 12, poi.z + 8, 9, 8, 4.2, 0xd4b48c, 0x264e2c, true);
 
     const wy = this.terrain.getTerrainHeight(poi.x, poi.z);
-    const woodMat = new THREE.MeshStandardMaterial({ color: 0x92400e, flatShading: true });
+    const woodMat = new THREE.MeshStandardMaterial({
+      color: 0x854d27,
+      map: this.pbrTextures.barkAlbedo,
+      normalMap: this.pbrTextures.barkNormal,
+      flatShading: false,
+      roughness: 0.78,
+    });
     const platform = new THREE.Mesh(new THREE.BoxGeometry(5.8, 0.4, 5.8), woodMat);
     platform.position.set(poi.x, wy + 3.8, poi.z);
     this.worldGroup.add(platform);
@@ -1182,7 +1393,7 @@ export class IslandWorld {
       [-2.6, 2.6],
       [2.6, 2.6],
     ]) {
-      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.26, 4.8, 6), woodMat);
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.26, 4.8, 8), woodMat);
       post.position.set(poi.x + px, wy + 2.4, poi.z + pz);
       const lantern = new THREE.Mesh(new THREE.OctahedronGeometry(0.28, 0), glowLanternMat);
       lantern.position.set(poi.x + px, wy + 4.95, poi.z + pz);
@@ -1227,18 +1438,20 @@ export class IslandWorld {
 
   private buildServerSilos(): void {
     const poi = ISLAND_POIS[4];
-    this.createEnterableHouse(poi.x - 12, poi.z, 10, 10, 4.6, 0x334155, 0xeab308, true);
+    this.createEnterableHouse(poi.x - 12, poi.z, 10, 10, 4.6, 0xcbd5e1, 0x334155, true);
 
     const siloMat = new THREE.MeshStandardMaterial({
       color: 0x94a3b8,
-      metalness: 0.38,
-      roughness: 0.42,
-      flatShading: true,
+      normalMap: this.pbrTextures.metalNormal,
+      metalness: 0.58,
+      roughness: 0.34,
+      flatShading: false,
     });
     const ringMat = new THREE.MeshStandardMaterial({
       color: 0x38bdf8,
       emissive: 0x0284c7,
-      emissiveIntensity: 0.55,
+      emissiveIntensity: 0.42,
+      flatShading: false,
     });
 
     for (let i = 0; i < 3; i++) {
@@ -1246,19 +1459,19 @@ export class IslandWorld {
       const sz = poi.z - 12 + i * 12;
       const sy = this.terrain.getTerrainHeight(sx, sz);
 
-      const silo = new THREE.Mesh(new THREE.CylinderGeometry(3.4, 3.4, 9.2, 10), siloMat);
+      const silo = new THREE.Mesh(new THREE.CylinderGeometry(3.4, 3.4, 9.2, 14), siloMat);
       silo.position.set(sx, sy + 4.6, sz);
       silo.castShadow = true;
       silo.receiveShadow = true;
       this.worldGroup.add(silo);
       this.raycastMeshes.push(silo);
 
-      const ring = new THREE.Mesh(new THREE.CylinderGeometry(3.55, 3.55, 0.6, 10), ringMat);
+      const ring = new THREE.Mesh(new THREE.CylinderGeometry(3.55, 3.55, 0.6, 14), ringMat);
       ring.position.set(sx, sy + 6.6, sz);
-      const ring2 = new THREE.Mesh(new THREE.CylinderGeometry(3.55, 3.55, 0.4, 10), ringMat);
+      const ring2 = new THREE.Mesh(new THREE.CylinderGeometry(3.55, 3.55, 0.4, 14), ringMat);
       ring2.position.set(sx, sy + 3.2, sz);
       const domeCap = new THREE.Mesh(
-        new THREE.SphereGeometry(3.4, 10, 6, 0, Math.PI * 2, 0, Math.PI * 0.5),
+        new THREE.SphereGeometry(3.4, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.5),
         siloMat
       );
       domeCap.position.set(sx, sy + 9.2, sz);
@@ -1277,7 +1490,7 @@ export class IslandWorld {
     // Overhead Industrial Cooling Conduit Pipe linking the 3 Silos
     const pipeY = this.terrain.getTerrainHeight(poi.x + 8, poi.z) + 8.2;
     const overheadPipe = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.55, 0.55, 24, 8),
+      new THREE.CylinderGeometry(0.55, 0.55, 24, 10),
       siloMat
     );
     overheadPipe.rotation.x = Math.PI / 2;
@@ -1294,20 +1507,30 @@ export class IslandWorld {
     this.spawnTree(-48, 36, 'blossom');
 
     // Decorative Lily Pads & Stepping Stones around Mirror Lake
-    const lilyMat = new THREE.MeshStandardMaterial({ color: 0x22c55e, flatShading: true });
+    const lilyMat = new THREE.MeshStandardMaterial({
+      color: 0x2d6a3e,
+      flatShading: false,
+      roughness: 0.72,
+    });
     for (let i = 0; i < 8; i++) {
       const a = (i / 8) * Math.PI * 2;
       const r = 9.5 + (i % 3) * 3.2;
-      const pad = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.85, 0.08, 7), lilyMat);
+      const pad = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.85, 0.08, 8), lilyMat);
       pad.position.set(-46 + Math.cos(a) * r, -0.22, 38 + Math.sin(a) * r);
       this.worldGroup.add(pad);
     }
 
     // Lakeside Wooden Fishing Dock + Moored Wooden Rowboat & Lantern Post
-    const dockMat = new THREE.MeshStandardMaterial({ color: 0x92400e, flatShading: true });
+    const dockMat = new THREE.MeshStandardMaterial({
+      color: 0x854d27,
+      map: this.pbrTextures.barkAlbedo,
+      normalMap: this.pbrTextures.barkNormal,
+      flatShading: false,
+      roughness: 0.76,
+    });
     const dock = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.3, 9.5), dockMat);
     dock.position.set(-46, 0.4, 17);
-    const dockPost = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 2.4, 6), dockMat);
+    const dockPost = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 2.4, 8), dockMat);
     dockPost.position.set(-44.6, 1.4, 21.2);
     const dockLantern = new THREE.Mesh(
       new THREE.SphereGeometry(0.22, 8, 8),
@@ -1348,7 +1571,7 @@ export class IslandWorld {
     for (const dx of [-5.5, 5.5]) {
       for (const dz of [-2.1, 2.1]) {
         const piling = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.26, 0.3, 3.8, 6),
+          new THREE.CylinderGeometry(0.26, 0.3, 3.8, 8),
           dockMat
         );
         piling.position.set(bridgeX + dx, bridgeY - 1.5, bridgeZ + dz);
@@ -1377,9 +1600,11 @@ export class IslandWorld {
     const bridge2Z = 136;
     const bridge2Y = 1.95;
     const stoneBridgeMat = new THREE.MeshStandardMaterial({
-      color: 0x64748b,
-      flatShading: true,
-      roughness: 0.8,
+      color: 0x7c8694,
+      map: this.pbrTextures.facadeAlbedo,
+      normalMap: this.pbrTextures.facadeNormal,
+      flatShading: false,
+      roughness: 0.78,
     });
     const bridge2Deck = new THREE.Mesh(
       new THREE.BoxGeometry(16.5, 0.4, 4.8),
@@ -1427,21 +1652,26 @@ export class IslandWorld {
 
   private buildFrontendFarms(): void {
     const poi = ISLAND_POIS[6];
-    this.createEnterableHouse(poi.x - 8, poi.z, 13, 11, 5.2, 0xdc2626, 0x7f1d1d, true);
+    this.createEnterableHouse(poi.x - 8, poi.z, 13, 11, 5.2, 0xb84a39, 0x5c2c24, true);
 
     // Red Cylindrical Farm Grain Silo with Silver Dome
     const siloX = poi.x - 18;
     const siloZ = poi.z - 6;
     const siloY = this.terrain.getTerrainHeight(siloX, siloZ);
     const farmSiloBody = new THREE.Mesh(
-      new THREE.CylinderGeometry(2.1, 2.1, 8.4, 10),
-      new THREE.MeshStandardMaterial({ color: 0xb91c1c, flatShading: true })
+      new THREE.CylinderGeometry(2.1, 2.1, 8.4, 12),
+      new THREE.MeshStandardMaterial({
+        color: 0xa8382b,
+        normalMap: this.pbrTextures.metalNormal,
+        flatShading: false,
+        roughness: 0.58,
+      })
     );
     farmSiloBody.position.set(siloX, siloY + 4.2, siloZ);
     farmSiloBody.castShadow = true;
     const farmSiloCap = new THREE.Mesh(
-      new THREE.SphereGeometry(2.1, 10, 6, 0, Math.PI * 2, 0, Math.PI * 0.5),
-      new THREE.MeshStandardMaterial({ color: 0xe2e8f0, metalness: 0.4, roughness: 0.35 })
+      new THREE.SphereGeometry(2.1, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.5),
+      new THREE.MeshStandardMaterial({ color: 0xe2e8f0, metalness: 0.55, roughness: 0.32 })
     );
     farmSiloCap.position.set(siloX, siloY + 8.4, siloZ);
     this.worldGroup.add(farmSiloBody, farmSiloCap);
@@ -1458,8 +1688,14 @@ export class IslandWorld {
     const wx = poi.x + 12;
     const wz = poi.z - 8;
     const wy = this.terrain.getTerrainHeight(wx, wz);
-    const towerMat = new THREE.MeshStandardMaterial({ color: 0xd6d3d1, flatShading: true });
-    const tower = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 2.2, 9.8, 8), towerMat);
+    const towerMat = new THREE.MeshStandardMaterial({
+      color: 0xd6d3d1,
+      map: this.pbrTextures.facadeAlbedo,
+      normalMap: this.pbrTextures.facadeNormal,
+      flatShading: false,
+      roughness: 0.72,
+    });
+    const tower = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 2.2, 9.8, 12), towerMat);
     tower.position.set(wx, wy + 4.9, wz);
     tower.castShadow = true;
     this.worldGroup.add(tower);
@@ -1475,7 +1711,11 @@ export class IslandWorld {
 
     this.windmillBlades = new THREE.Group();
     this.windmillBlades.position.set(wx, wy + 8.6, wz + 1.3);
-    const bladeMat = new THREE.MeshStandardMaterial({ color: 0xfef08a, flatShading: true });
+    const bladeMat = new THREE.MeshStandardMaterial({
+      color: 0xfef08a,
+      flatShading: false,
+      roughness: 0.62,
+    });
     for (let b = 0; b < 4; b++) {
       const blade = new THREE.Mesh(new THREE.BoxGeometry(0.68, 4.6, 0.12), bladeMat);
       blade.rotation.z = (b * Math.PI) / 2;
@@ -1483,7 +1723,13 @@ export class IslandWorld {
     }
     this.worldGroup.add(this.windmillBlades);
 
-    const hayMat = new THREE.MeshStandardMaterial({ color: 0xeab308, flatShading: true });
+    const hayMat = new THREE.MeshStandardMaterial({
+      color: 0xd9a326,
+      map: this.pbrTextures.barkAlbedo,
+      normalMap: this.pbrTextures.barkNormal,
+      flatShading: false,
+      roughness: 0.85,
+    });
     const hayOffsets = [
       [8, 6],
       [12, 9],
@@ -1494,7 +1740,7 @@ export class IslandWorld {
       const hx = poi.x + dx;
       const hz = poi.z + dz;
       const hy = this.terrain.getTerrainHeight(hx, hz);
-      const bale = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.85, 1.3, 8), hayMat);
+      const bale = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.85, 1.3, 12), hayMat);
       bale.rotation.z = Math.PI / 2;
       bale.position.set(hx, hy + 0.85, hz);
       bale.castShadow = true;
@@ -1521,13 +1767,17 @@ export class IslandWorld {
     const ry = this.terrain.getTerrainHeight(poi.x, poi.z);
     const stoneMat = new THREE.MeshStandardMaterial({
       color: 0x94a3b8,
-      flatShading: true,
-      roughness: 0.9,
+      map: this.pbrTextures.rockAlbedo,
+      normalMap: this.pbrTextures.rockNormal,
+      flatShading: false,
+      roughness: 0.84,
     });
     const mossMat = new THREE.MeshStandardMaterial({
-      color: 0x4ade80,
-      flatShading: true,
-      roughness: 0.85,
+      color: 0x3b7a47,
+      map: this.pbrTextures.foliageAlbedo,
+      normalMap: this.pbrTextures.foliageNormal,
+      flatShading: false,
+      roughness: 0.82,
     });
 
     const dais = new THREE.Mesh(new THREE.BoxGeometry(16, 0.8, 16), stoneMat);
@@ -1616,10 +1866,12 @@ export class IslandWorld {
     const labZ = poi.z - 5;
     const labY = this.terrain.getTerrainHeight(labX, labZ);
     const labBaseMat = new THREE.MeshStandardMaterial({
-      color: 0x334155,
-      metalness: 0.45,
-      roughness: 0.4,
-      flatShading: true,
+      color: 0x3b4a5f,
+      normalMap: this.pbrTextures.metalNormal,
+      normalScale: new THREE.Vector2(0.6, 0.6),
+      metalness: 0.5,
+      roughness: 0.38,
+      flatShading: false,
     });
     const labPad = new THREE.Mesh(
       new THREE.CylinderGeometry(6.8, 7.4, 0.5, 12),
@@ -1652,8 +1904,9 @@ export class IslandWorld {
       emissive: 0x0284c7,
       emissiveIntensity: 0.25,
       transparent: true,
-      opacity: 0.38,
-      flatShading: true,
+      opacity: 0.42,
+      envMapIntensity: 1.4,
+      flatShading: false,
       side: THREE.DoubleSide,
     });
     const domeMesh = new THREE.Mesh(domeGeo, domeMat);
@@ -1701,7 +1954,13 @@ export class IslandWorld {
     segments: number,
     alongX: boolean = true
   ): void {
-    const fenceMat = new THREE.MeshStandardMaterial({ color: 0x92400e, flatShading: true });
+    const fenceMat = new THREE.MeshStandardMaterial({
+      color: 0x854d27,
+      map: this.pbrTextures.barkAlbedo,
+      normalMap: this.pbrTextures.barkNormal,
+      flatShading: false,
+      roughness: 0.78,
+    });
     for (let i = 0; i < segments; i++) {
       const fx = startX + (alongX ? i * 3.0 : 0);
       const fz = startZ + (alongX ? 0 : i * 3.0);
@@ -1757,13 +2016,13 @@ export class IslandWorld {
       return (seed - 1) / 2147483646;
     };
 
-    const grassGeo = new THREE.ConeGeometry(0.22, 0.68, 4);
-    grassGeo.translate(0, 0.34, 0);
+    const grassGeo = createCrossedGrassTuftGeometry(0.34, 0.68);
     const grassMat = applyFoliageWind(
       new THREE.MeshStandardMaterial({
-        color: 0x16a34a,
-        flatShading: true,
-        roughness: 0.85,
+        color: 0x347442,
+        flatShading: false,
+        roughness: 0.78,
+        side: THREE.DoubleSide,
       }),
       { strength: 0.06, baseY: 0, height: 0.68 }
     );
@@ -1790,14 +2049,14 @@ export class IslandWorld {
     grassInst.count = placedG;
     this.foliageGroup.add(grassInst);
 
-    const flowerGeo = new THREE.DodecahedronGeometry(0.2, 0);
-    flowerGeo.translate(0, 0.25, 0);
+    const flowerGeo = createCrossedGrassTuftGeometry(0.26, 0.32);
     const flowerMat = applyFoliageWind(
       new THREE.MeshStandardMaterial({
         color: 0xf472b6,
         emissive: 0xdb2777,
-        emissiveIntensity: 0.15,
-        flatShading: true,
+        emissiveIntensity: 0.12,
+        flatShading: false,
+        side: THREE.DoubleSide,
       }),
       { strength: 0.032, baseY: 0.05, height: 0.4 }
     );
@@ -1821,12 +2080,14 @@ export class IslandWorld {
     this.foliageGroup.add(flowerInst);
 
     // Instanced Coastal & Highland Pebbles (220 instances in 1 draw call)
-    const pebbleGeo = new THREE.DodecahedronGeometry(0.28, 0);
+    const pebbleGeo = weldAndSmoothGeometry(new THREE.OctahedronGeometry(0.28, 0));
     pebbleGeo.scale(1.2, 0.55, 1.0);
     const pebbleMat = new THREE.MeshStandardMaterial({
       color: 0x94a3b8,
-      flatShading: true,
-      roughness: 0.9,
+      map: this.pbrTextures.rockAlbedo,
+      normalMap: this.pbrTextures.rockNormal,
+      flatShading: false,
+      roughness: 0.86,
     });
     const pebbleCount = 220;
     const pebbleInst = new THREE.InstancedMesh(pebbleGeo, pebbleMat, pebbleCount);
@@ -1849,15 +2110,16 @@ export class IslandWorld {
     pebbleInst.count = placedP;
     this.foliageGroup.add(pebbleInst);
 
-    // Instanced Stylized Bushes / Shrubs (160 instances in 1 draw call, non-blocking)
-    const bushGeo = new THREE.DodecahedronGeometry(0.62, 1);
-    bushGeo.scale(1.15, 0.78, 1.15);
-    bushGeo.translate(0, 0.42, 0);
+    // Instanced Botanical Bushes / Shrubs (160 instances in 1 draw call, non-blocking)
+    const bushGeo = createBotanicalShrubGeometry(0.62);
     const bushMat = applyFoliageWind(
       new THREE.MeshStandardMaterial({
-        color: 0x15803d,
-        flatShading: true,
-        roughness: 0.82,
+        color: 0x286438,
+        map: this.pbrTextures.foliageAlbedo,
+        normalMap: this.pbrTextures.foliageNormal,
+        normalScale: new THREE.Vector2(0.55, 0.55),
+        flatShading: false,
+        roughness: 0.76,
       }),
       { strength: 0.026, baseY: -0.06, height: 0.96 }
     );
@@ -1888,8 +2150,9 @@ export class IslandWorld {
       new THREE.MeshStandardMaterial({
         color: 0xfacc15,
         emissive: 0xeab308,
-        emissiveIntensity: 0.18,
-        flatShading: true,
+        emissiveIntensity: 0.14,
+        flatShading: false,
+        side: THREE.DoubleSide,
       }),
       { strength: 0.032, baseY: 0.05, height: 0.4 }
     );
@@ -1921,9 +2184,9 @@ export class IslandWorld {
     reedGeo.translate(0, 0.55, 0);
     const reedMat = applyFoliageWind(
       new THREE.MeshStandardMaterial({
-        color: 0x65a30d,
-        flatShading: true,
-        roughness: 0.85,
+        color: 0x5c8d3e,
+        flatShading: false,
+        roughness: 0.8,
       }),
       { strength: 0.072, baseY: 0, height: 1.15 }
     );
@@ -2186,9 +2449,12 @@ export class IslandWorld {
       else totalLeafCrowns += 2;
     }
 
-    const trunkGeo = new THREE.CylinderGeometry(0.28, 0.48, 1.0, 6);
+    const trunkGeo = createBotanicalTreeTrunkGeometry();
     const trunkMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
+      map: this.pbrTextures.barkAlbedo,
+      normalMap: this.pbrTextures.barkNormal,
+      normalScale: new THREE.Vector2(0.65, 0.65),
       flatShading: false,
       roughness: 0.78,
     });
@@ -2196,12 +2462,16 @@ export class IslandWorld {
     trunkInst.castShadow = true;
     trunkInst.receiveShadow = true;
 
-    const coneGeo = new THREE.ConeGeometry(1.0, 1.0, 6);
+    const coneGeo = createScallopedPineTierGeometry();
     const leafMat = applyFoliageWind(
       new THREE.MeshStandardMaterial({
         color: 0xffffff,
+        map: this.pbrTextures.foliageAlbedo,
+        normalMap: this.pbrTextures.foliageNormal,
+        normalScale: new THREE.Vector2(0.55, 0.55),
         flatShading: false,
         roughness: 0.68,
+        side: THREE.DoubleSide,
       }),
       { strength: 0.032, baseY: -1, height: 2 }
     );
@@ -2213,7 +2483,7 @@ export class IslandWorld {
     pineConeInst.castShadow = true;
     pineConeInst.receiveShadow = true;
 
-    const crownGeo = new THREE.DodecahedronGeometry(1.0, 0);
+    const crownGeo = createBotanicalCrownGeometry();
     const leafCrownInst = new THREE.InstancedMesh(
       crownGeo,
       leafMat,
@@ -2222,7 +2492,7 @@ export class IslandWorld {
     leafCrownInst.castShadow = true;
     leafCrownInst.receiveShadow = true;
 
-    const frondGeo = new THREE.BoxGeometry(0.48, 0.12, 2.2);
+    const frondGeo = createArchedPalmFrondGeometry();
     const palmFrondInst = new THREE.InstancedMesh(
       frondGeo,
       leafMat,
@@ -2239,17 +2509,17 @@ export class IslandWorld {
       const { prop, x, y, z, style } = t;
       const tIdx = trunkCursor++;
       const trunkColor =
-        style === 'birch' ? 0xe2e8f0 : style === 'palm' ? 0x92400e : 0x78350f;
+        style === 'birch' ? 0xd8dee6 : style === 'palm' ? 0x8c5832 : 0x6b4226;
       const leafColor =
         style === 'pine'
-          ? 0x15803d
+          ? 0x1f5c34
           : style === 'blossom'
-          ? 0xf472b6
+          ? 0xf48fb1
           : style === 'birch'
-          ? 0x84cc16
+          ? 0x6a9938
           : style === 'palm'
-          ? 0x16a34a
-          : 0x22c55e;
+          ? 0x2a7b3e
+          : 0x2e6f3e;
       const trunkH = style === 'palm' ? 3.4 : 2.6;
       const variationSeed = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453;
       const variation = variationSeed - Math.floor(variationSeed);
@@ -2389,12 +2659,15 @@ export class IslandWorld {
     if (leafCrownInst.instanceColor) leafCrownInst.instanceColor.needsUpdate = true;
     if (palmFrondInst.instanceColor) palmFrondInst.instanceColor.needsUpdate = true;
 
-    // Instanced Rocks
-    const rockGeo = new THREE.DodecahedronGeometry(1.0, 0);
+    // Instanced Sculpted Boulders
+    const rockGeo = createSculptedBoulderGeometry();
     const rockMat = new THREE.MeshStandardMaterial({
-      color: 0x64748b,
-      flatShading: true,
-      roughness: 0.85,
+      color: 0xffffff,
+      map: this.pbrTextures.rockAlbedo,
+      normalMap: this.pbrTextures.rockNormal,
+      normalScale: new THREE.Vector2(0.7, 0.7),
+      flatShading: false,
+      roughness: 0.82,
     });
     const rockInst = new THREE.InstancedMesh(
       rockGeo,
@@ -2403,15 +2676,17 @@ export class IslandWorld {
     );
     rockInst.castShadow = true;
     rockInst.receiveShadow = true;
+    const rockPalette = [0x6e7885, 0x7d766f, 0x646e78, 0x857f78];
 
     this.pendingRockInstances.forEach((r, idx) => {
       const { prop, x, y, z, radius } = r;
+      rockInst.setColorAt(idx, color.setHex(rockPalette[idx % rockPalette.length]));
       const applyRockTransform = (scale: number, shakeAngleZ: number) => {
         if (scale <= 0.001) {
           dummy.position.set(x, -100, z);
           dummy.scale.setScalar(0);
         } else {
-          dummy.position.set(x, y + radius * 0.65, z);
+          dummy.position.set(x, y + radius * 0.58, z);
           dummy.rotation.set(x * 0.3, z * 0.3, shakeAngleZ);
           dummy.scale.setScalar(radius * scale);
         }
@@ -2422,13 +2697,17 @@ export class IslandWorld {
       prop.updateInstanceTransform = applyRockTransform;
       applyRockTransform(1, 0);
     });
+    if (rockInst.instanceColor) rockInst.instanceColor.needsUpdate = true;
 
-    // Instanced Crates
-    const crateGeo = new THREE.BoxGeometry(1.3, 1.3, 1.3);
+    // Instanced Framed Supply Crates
+    const crateGeo = createFramedSupplyCrateGeometry();
     const crateMat = new THREE.MeshStandardMaterial({
-      color: 0xd97706,
-      flatShading: true,
-      roughness: 0.75,
+      color: 0xc9822b,
+      map: this.pbrTextures.crateAlbedo,
+      normalMap: this.pbrTextures.crateNormal,
+      normalScale: new THREE.Vector2(0.65, 0.65),
+      flatShading: false,
+      roughness: 0.7,
     });
     const crateInst = new THREE.InstancedMesh(
       crateGeo,
@@ -2573,18 +2852,49 @@ export class IslandWorld {
       material === 'wood' ? 0x92400e : material === 'stone' ? 0x475569 : 0x0284c7;
     const maxHp = material === 'wood' ? 150 : material === 'stone' ? 220 : 300;
 
+    // Player-built pieces use the same PBR surface language as the island:
+    // real wood grain, masonry relief and brushed metal instead of flat,
+    // glowing placeholder slabs. Gameplay numbers (HP, colliders) are
+    // untouched — this only changes how the pieces are shaded.
+    const buildSurface =
+      material === 'wood'
+        ? {
+            map: this.pbrTextures.crateAlbedo,
+            normalMap: this.pbrTextures.barkNormal,
+            roughness: 0.7,
+            metalness: 0.04,
+          }
+        : material === 'stone'
+          ? {
+              map: this.pbrTextures.facadeAlbedo,
+              normalMap: this.pbrTextures.facadeNormal,
+              roughness: 0.72,
+              metalness: 0.03,
+            }
+          : {
+              map: this.pbrTextures.windowAlbedo,
+              normalMap: this.pbrTextures.metalNormal,
+              roughness: 0.34,
+              metalness: 0.68,
+            };
     const mat = new THREE.MeshStandardMaterial({
       color: colorHex,
-      map: this.getPatternTexture(material),
+      map: buildSurface.map,
+      normalMap: buildSurface.normalMap,
+      normalScale: new THREE.Vector2(0.55, 0.55),
       emissive: colorHex,
-      emissiveIntensity: 0.12,
-      flatShading: true,
-      roughness: 0.55,
+      emissiveIntensity: 0.05,
+      flatShading: false,
+      roughness: buildSurface.roughness,
+      metalness: buildSurface.metalness,
     });
     const trimMat = new THREE.MeshStandardMaterial({
       color: trimHex,
-      flatShading: true,
-      roughness: 0.65,
+      normalMap: this.pbrTextures.metalNormal,
+      normalScale: new THREE.Vector2(0.4, 0.4),
+      flatShading: false,
+      roughness: 0.5,
+      metalness: 0.35,
     });
 
     const isEastWest = Math.abs(Math.sin(snappedYaw)) > 0.7;
