@@ -16,13 +16,13 @@ const output=process.env.CHAT_QA_OUTPUT||'/tmp/cinite-chat-fix';fs.mkdirSync(out
 const browser=await chromium.launch({executablePath:await slim.executablePath(),args:slim.args,headless:true});
 const peers=[];
 const wait=(ws,type)=>new Promise((resolve,reject)=>{
-  const timer=setTimeout(()=>{ws.removeEventListener('message',handler);reject(Error(`Timeout: ${type}`))},15000);
+  const timer=setTimeout(()=>{ws.removeEventListener('message',handler);reject(Error(`Timeout: ${type}`))},type==='match_started'?60000:15000);
   const handler=e=>{const msg=JSON.parse(e.data);if(msg.type===type){clearTimeout(timer);ws.removeEventListener('message',handler);resolve(msg)}};
   ws.addEventListener('message',handler);
 });
 const request=async(ws,payload,type)=>{const result=wait(ws,type);ws.send(JSON.stringify(payload));return result};
 try {
-  const context=await browser.newContext({viewport:{width:1280,height:800},hasTouch:true,isMobile:true,reducedMotion:'reduce'});
+  const context=await browser.newContext({viewport:{width:844,height:390},hasTouch:true,isMobile:true,reducedMotion:'reduce'});
   const page=await context.newPage();page.setDefaultTimeout(30000);
   const errors=[],chatPackets=[],socketURLs=[],scripts=[];
   page.on('pageerror',e=>errors.push(e.message));
@@ -46,7 +46,7 @@ try {
   await page.waitForSelector('#chat-toggle',{state:'visible'});
 
   for(let i=0;i<4;i++){
-    const name=`ChatPeer${i}`;
+    const name=i===2?'ChatPeer0':`ChatPeer${i}`;
     const res=await fetch(`${base}/api/account/init`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({callsign:name})});
     assert.equal(res.status,200);const account=await res.json();
     const ws=new WebSocket(base.replace(/^http/,'ws')+'/ws'),messages=[];
@@ -57,14 +57,18 @@ try {
     if(i===3){const room=await request(ws,{type:'create_lobby',...credentials,playerName:name,config:{name:`Other chat QA ${Date.now()}`,humanOnly:true,visibility:'public',maxPlayers:4,mapId:'ci_island',teamMode:'solo',botCount:0,startCondition:'host_start'}},'lobby_created');roomCode=room.roomCode}
     await request(ws,{type:'join_room',...credentials,playerName:name,roomCode,roomMode:'human_only_public',purpose:'lobby',joinIntent:'join_existing',sessionToken:`sess_chatfix_${Date.now()}_${i}`},'room_joined');
   }
+  await page.waitForSelector('.duplicate-name-warning');
+  assert.match(await page.locator('.duplicate-name-warning').textContent(),/Names are not identity/);
+  assert.equal(await page.locator('.my-lobby-player-name').filter({hasText:'ChatPeer0'}).count(),2);
   await page.click('#btn-my-lobby-ready');
   for(const {ws} of peers.slice(0,3))await request(ws,{type:'set_ready',ready:true},'room_state');
   await page.waitForFunction(()=>!document.getElementById('btn-my-lobby-start').disabled);
   const starts=peers.slice(0,3).map(({ws})=>wait(ws,'match_started'));
+  console.log('Four authenticated peers ready; starting through real UI');
   await page.click('#btn-my-lobby-start');
   for(const state of await Promise.all(starts)){assert.equal(state.matchParticipantCount,4);assert.equal(state.botCount,0)}
   await page.waitForSelector('#hud-overlay:not(.hidden)',{timeout:60000});
-  await page.waitForFunction(()=>document.getElementById('countdown-overlay').classList.contains('hidden'),{},{timeout:60000});
+  await page.waitForFunction(()=>document.getElementById('countdown-overlay').classList.contains('hidden'),{},{timeout:120000});
   await page.setViewportSize({width:844,height:390});
   await page.waitForSelector('#chat-toggle',{state:'visible'});
   await page.waitForFunction(()=>{
@@ -87,6 +91,38 @@ try {
   for(const message of await Promise.all(delivered)){assert.equal(message.text,'Built game says hello');assert.equal(message.senderName,'ChatFixHost');assert.equal(message.roomCode,code)}
   await page.waitForFunction(()=>document.getElementById('chat-log').textContent.includes('ChatFixHost: Built game says hello'));
   await page.screenshot({path:path.join(output,'multiplayer-chat-open.png')});
+  const original=await page.locator('#text-chat').boundingBox();
+  const handle=await page.locator('#chat-drag').boundingBox();
+  // Native mouse pointer capture, including an attempted off-screen drop.
+  await page.mouse.move(handle.x+handle.width/2,handle.y+handle.height/2);
+  await page.mouse.down();await page.mouse.move(1200,900,{steps:5});await page.mouse.up();
+  const moved=await page.locator('#text-chat').boundingBox();
+  assert.ok(moved.x!==original.x&&moved.y!==original.y);
+  assert.ok(moved.x>=0&&moved.y>=0&&moved.x+moved.width<=844.5&&moved.y+moved.height<=390.5);
+  assert.ok(await page.evaluate(()=>localStorage.getItem('ci-craft-chat-position-v1')));
+  await page.setViewportSize({width:390,height:844});
+  await page.waitForFunction(()=>{const r=document.getElementById('text-chat').getBoundingClientRect();return r.x>=0&&r.y>=0&&r.right<=innerWidth+.5&&r.bottom<=innerHeight+.5});
+  const portrait=await page.locator('#text-chat').boundingBox();
+  assert.ok(portrait.x>=0&&portrait.y>=0&&portrait.x+portrait.width<=390.5&&portrait.y+portrait.height<=844.5);
+  await page.setViewportSize({width:844,height:390});
+  await page.tap('#chat-reset');
+  const reset=await page.locator('#text-chat').boundingBox();assert.ok(Math.abs(reset.x-original.x)<1&&Math.abs(reset.y-original.y)<1);
+  // Two real touch pointers: a held joystick must not be cancelled by a chat drag.
+  const cdp=await context.newCDPSession(page);
+  const joystick=await page.locator('#touch-joystick-zone').boundingBox();
+  const dragHandle=await page.locator('#chat-drag').boundingBox();
+  const j={id:1,x:joystick.x+joystick.width/2,y:joystick.y+joystick.height/2};
+  const h={id:2,x:dragHandle.x+dragHandle.width/2,y:dragHandle.y+dragHandle.height/2};
+  await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[j]});
+  await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{...j,x:j.x+15}]});
+  await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{...j,x:j.x+15},h]});
+  await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{...j,x:j.x+15},{...h,x:h.x+70}]});
+  assert.ok((await page.locator('#text-chat').boundingBox()).x>original.x+40);
+  assert.match(await page.locator('#touch-joystick-knob').getAttribute('style'),/15(?:\.0)?px/,'second touch must not cancel the held joystick');
+  await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+  assert.match(await page.locator('#touch-joystick-knob').getAttribute('style'),/\+ 0px/,'release clears movement');
+  await page.tap('#chat-reset');
+
   await request(peers[3].ws,{type:'chat_send',text:'Other lobby must stay private'},'chat_message');
   await delay(400);
   assert.ok(!chatPackets.some(m=>m.text==='Other lobby must stay private'));
@@ -97,4 +133,8 @@ try {
   await page.tap('#touch-build-close-btn');assert.equal(await page.locator('#touch-build-toggle-btn').getAttribute('aria-expanded'),'false');
   assert.equal(await page.locator('[data-touch-slot]').count(),5);assert.deepEqual(errors,[]);
   console.log(JSON.stringify({result:'PASS',mode:'compiled game, real server, mobile rendered host + 3 authenticated peers + separate lobby',sameOriginWebSocket:true,actualGameChat:true,lobbyIsolation:true,fourHumans:true,errors,output},null,2));
+}catch(error){
+  const page=browser.contexts()[0]?.pages()[0];
+  if(page){await page.screenshot({path:path.join(output,'failure.png')});console.error('Lobby feedback:',await page.locator('#lobby-browser-message').textContent());}
+  throw error;
 }finally{for(const {ws} of peers)ws.close();await browser.close()}

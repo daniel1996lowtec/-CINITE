@@ -16,10 +16,10 @@ import { fileURLToPath } from 'node:url';
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT_DIR, rel), 'utf8');
 
-test('main menu exposes Play Solo, Multiplayer, and the three lobby browser tabs', () => {
+test('main menu exposes Single Mode, Multiplayer, and the three lobby browser tabs', () => {
   const html = read('index.html');
 
-  assert.match(html, /id="btn-mode-solo"[^>]*>[\s\S]*PLAY SOLO/);
+  assert.match(html, /id="btn-mode-solo"[^>]*>[\s\S]*SINGLE MODE/);
   assert.match(html, /id="btn-mode-online"[^>]*>[\s\S]*MULTIPLAYER/);
   assert.match(html, />\s*BROWSE LOBBIES\s*</);
   assert.match(html, />\s*CREATE LOBBY\s*</);

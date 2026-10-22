@@ -450,3 +450,15 @@ test('mobile landscape contract and geometry at 800x360, 854x393, and 915x412', 
     );
   }
 });
+
+test('MobileLandscapeManager: portrait menus and focused chat are never blocked by rotation prompt', async () => {
+  const { MobileLandscapeManager } = await loadLandscapeModule();
+  const fixture = makeFixture(MobileLandscapeManager);
+  fixture.gameplayActive = false; fixture.manager.refresh();
+  assert.equal(fixture.manager.isPromptVisible(), false);
+  fixture.gameplayActive = true; fixture.manager.refresh();
+  assert.equal(fixture.manager.isPromptVisible(), true);
+  fixture.doc.activeElement = {tagName: 'INPUT', type: 'text', closest: () => ({})};
+  fixture.manager.refresh(); assert.equal(fixture.manager.isPromptVisible(), false);
+  fixture.manager.destroy();
+});

@@ -168,7 +168,7 @@ test('verifyAccountCredentials: strict verification never creates or replaces ac
     });
     await otherDb.init();
     const otherAccount = await otherDb.createOrVerifyAccount({
-      callsign: 'Other_Database_Human',
+      callsign: 'Other_DB_Human',
     });
     assert.equal(
       await db.verifyAccountCredentials({

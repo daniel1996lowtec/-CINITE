@@ -180,6 +180,8 @@ export class MobileLandscapeManager {
     if (!portrait) this.dismissedForCurrentPortrait = false;
 
     const visible =
+      this.isGameplayActive() &&
+      !isTextEntryElement(this.documentTarget?.activeElement ?? null) &&
       isMobilePortraitViewport(width, height, this.isCoarsePointer()) &&
       !this.dismissedForCurrentPortrait;
 

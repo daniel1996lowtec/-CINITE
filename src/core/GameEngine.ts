@@ -73,6 +73,8 @@ export class GameEngine {
   public perfMonitor: PerfMonitor;
 
   // 3D Main Menu / Locker Character Preview Stage
+  private hasPreviewViewport = false;
+  public readonly accountReady: Promise<boolean>;
   public lobbyPreviewGroup!: THREE.Group;
   public lobbyCharacterMesh!: CharacterMesh;
   public lobbyPreviewState!: PlayerState;
@@ -221,7 +223,7 @@ export class GameEngine {
       this.progression.credentials.accountId,
       this.progression.credentials.accountToken
     );
-    void this.progression.initializeServerAccount().then((ok) => {
+    this.accountReady = this.progression.initializeServerAccount().then((ok) => {
       if (ok) {
         this.network.setAccountCredentials(
           this.progression.credentials.accountId,
@@ -230,6 +232,7 @@ export class GameEngine {
         this.updateLobbyCharacterPreview(this.progression.cosmetics);
         this.onProgressionUpdated?.();
       }
+      return ok;
     });
 
     window.addEventListener('resize', () => this.onWindowResize());
@@ -1648,7 +1651,7 @@ export class GameEngine {
       this.tpCamera.camera.fov = 50;
       this.tpCamera.camera.updateProjectionMatrix();
       this.tpCamera.camera.position.set(sx - 1.35, sy + 1.48 + gentleBob, sz + 3.45);
-      this.tpCamera.camera.lookAt(sx - 0.88, sy + 1.12, sz);
+      this.tpCamera.camera.lookAt(sx, sy + 1.12, sz);
       this.lobbyPreviewState.yaw = this.lobbyPreviewYaw + Math.sin(now * 0.0007) * 0.14;
       this.lobbyPreviewState.facingYaw = this.lobbyPreviewState.yaw;
 
@@ -1668,7 +1671,27 @@ export class GameEngine {
     }
 
     this.perfMonitor.beginSubsystem();
-    this.renderer.render(this.scene, this.tpCamera.camera);
+    // Reuse the same scene/operator in a small Locker window, not another renderer.
+    // Always restore the full viewport before drawing actual gameplay.
+    const previewWindow = !this.isRunningMatch && !document.getElementById('locker-overlay')?.classList.contains('hidden')
+      ? document.getElementById('operator-preview-window') : null;
+    if (previewWindow) {
+      const r = previewWindow.getBoundingClientRect();
+      const { height } = this.getViewportSize();
+      if (r.width > 0 && r.height > 0) {
+        this.renderer.setViewport(r.left, height - r.bottom, r.width, r.height);
+        this.tpCamera.resize(r.width / r.height);
+        this.hasPreviewViewport = true;
+      }
+    } else if (this.hasPreviewViewport) {
+      const { width, height } = this.getViewportSize();
+      this.renderer.setViewport(0, 0, width, height);
+      this.tpCamera.resize(width / height);
+      this.hasPreviewViewport = false;
+    }
+    // The new opaque menu does not need a hidden full-island draw every frame.
+    // Keep rendering for gameplay (including pause) and the live Locker preview.
+    if (this.isRunningMatch || previewWindow) this.renderer.render(this.scene, this.tpCamera.camera);
     this.perfMonitor.endSubsystem('render');
 
     const snap = this.perfMonitor.endFrame(
