@@ -62,7 +62,8 @@ export class LootSystem {
    */
   public onServerAuthoritativeLootRequested?: (
     item: LootItemState,
-    predictedSwappedDrop?: LootItemState
+    predictedSwappedDrop?: LootItemState,
+    reservedSlot?: number
   ) => boolean;
   private pendingInventorySlots = new Map<string, { slot: number; swappedDrop?: LootItemState }>();
   private authoritativePendingIds: Map<string, number> = new Map();
@@ -714,7 +715,7 @@ export class LootSystem {
     swappedDrop?: LootItemState,
     spawnedDrops?: LootItemState[]
   ): void {
-    const reservedSlot = this.pendingInventorySlots.get(authoritativeItem.id)?.slot;
+
     this.pendingInventorySlots.delete(authoritativeItem.id);
     this.authoritativePendingIds.delete(authoritativeItem.id);
     if (this.collectedIds.has(authoritativeItem.id)) return;
@@ -724,17 +725,13 @@ export class LootSystem {
       this.onLocalLootFeedback?.('SUPPLY CACHE OPENED', 'rare');
       return;
     }
-    const item = authoritativeItem;
-    if (!state.lootItems.has(item.id)) state.lootItems.set(item.id, item);
-    const shouldSpawnSwappedDrop = Boolean(swappedDrop);
-    this.interactWithLoot(state, player, item, particles, sound, {
-      confirmed: true,
-      reservedSlot,
-      swappedDropAlreadySpawned: shouldSpawnSwappedDrop ? swappedDrop : undefined,
-    });
-    if (shouldSpawnSwappedDrop && swappedDrop) {
-      this.spawnFromItemState(state, swappedDrop, true);
-    }
+    // Private inventory_state precedes this receipt. Receipts only reconcile
+    // world presentation: replaying one cannot grant another magazine or stack.
+    this.applyRemoteLootCollected(state, authoritativeItem.id, authoritativeItem.itemType,
+      spawnedDrops, swappedDrop, particles, sound,
+      new THREE.Vector3(player.position.x, player.position.y, player.position.z));
+    sound.playPickup(false,['rare','epic','legendary'].includes(authoritativeItem.rarity));
+    this.onLocalLootFeedback?.(authoritativeItem.name, authoritativeItem.rarity, Boolean(swappedDrop));
   }
 
   public interactWithLoot(
@@ -759,7 +756,8 @@ export class LootSystem {
       if (inventoryItem && this.pendingInventorySlots.size > 0) return;
       const predictedSwappedDrop = this.predictSwappedDrop(player, item);
       if (
-        this.onServerAuthoritativeLootRequested?.(item, predictedSwappedDrop)
+        this.onServerAuthoritativeLootRequested?.(item, predictedSwappedDrop,
+          predictedSwappedDrop ? (player.activeSlot === 0 ? 1 : player.activeSlot) : undefined)
       ) {
         this.authoritativePendingIds.set(item.id, this.time);
         if (inventoryItem) this.pendingInventorySlots.set(item.id, {
@@ -1099,7 +1097,7 @@ export class LootSystem {
     }
     for (const [id, reservation] of this.pendingInventorySlots) {
       const pending = state.lootItems.get(id);
-      if (pending) this.onServerAuthoritativeLootRequested?.(pending, reservation.swappedDrop);
+      if (pending) this.onServerAuthoritativeLootRequested?.(pending, reservation.swappedDrop, reservation.slot >= 1 ? reservation.slot : undefined);
     }
   }
 

@@ -2847,6 +2847,21 @@ export class IslandWorld {
     };
   }
 
+  /** Sample only on a footstep event, not every frame; reuse existing surfaces. */
+  public getFootstepSurface(x: number, y: number, z: number): 'ground' | 'hard' | 'wood' | 'metal' {
+    let highest = -Infinity;
+    let material: 'ground' | 'hard' | 'wood' | 'metal' = 'ground';
+    for (const surface of this.walkableSurfaces) {
+      if (x < surface.minX || x > surface.maxX || z < surface.minZ || z > surface.maxZ) continue;
+      const height = surface.getHeight(x,z);
+      if (Math.abs(height-y) > .45 || height <= highest) continue;
+      highest = height;
+      const propMaterial = surface.id ? this.destructibles.get(surface.id)?.materialType : undefined;
+      material = propMaterial === 'wood' || propMaterial === 'metal' ? propMaterial : 'hard';
+    }
+    return material;
+  }
+
   public getGroundHeightAt(x: number, currentY: number, z: number): number {
     let highest = Math.max(-0.85, this.terrain.getTerrainHeight(x, z));
 

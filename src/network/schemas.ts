@@ -200,6 +200,8 @@ export interface PlayerState {
   reloadTimer: number;
   reloadDuration: number;
   isHealing: boolean;
+  consumeRemaining?: number;
+  consumeDuration?: number;
   landingImpactTimer: number;
   activeSlot: number;
   selectedMaterial: BuildMaterialType;

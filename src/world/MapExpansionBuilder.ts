@@ -1786,7 +1786,8 @@ export class MapExpansionBuilder {
               (side < 0 && placement.rearDoor && level === 0));
           if (isDoorBay) continue;
           const wx = fraction * hw;
-          box(wx, windowY, side * (hd + 0.06), 1.62, 2.18, 0.07, 0x7dd3fc, {
+          box(wx, windowY, side * (hd + 0.06), 1.62, 2.18, 0.07,
+            (level + Math.round(wx)) % 3 === 0 ? 0xfde68a : 0x7dd3fc, {
             shape: 'glass',
             tier: 'detail',
           });
@@ -1943,6 +1944,43 @@ export class MapExpansionBuilder {
         shape: 'glow',
         tier: 'detail',
       });
+    }
+
+    // 3.3 service architecture: reuse district instance/material buckets. All
+    // raised trim stays above walking headroom or inside existing solid HVAC.
+    // Warm/cool floor bands and a counted entrance code read without textures.
+    for (let band = 0; band < Math.min(6, placement.floors); band++) {
+      box(-1.35 + band * .5, floorTop(0) + 3.65, hd + .1, .3, .14, .08,
+        placement.id === 'aurora_exchange' ? 0xfbbf24 : placement.accentColor,
+        { shape: 'glass', tier: 'detail' });
+    }
+    for (const unit of [hvacA, hvacB]) {
+      for (const offset of [-.45, 0, .45]) {
+        box(unit.x + offset, roofTop + (unit === hvacA ? 1.02 : .86), unit.z, .12, .035, .9, darkTrim,
+          { tier: 'detail' });
+      }
+    }
+    for (const level of [1, 3]) {
+      // Exterior air conditioning above head height, away from ramp landings.
+      box(hw * .55, floorTop(level) + 3.5, -hd - .16, 1.05, .45, .25,
+        0x94a3b8, { tier: 'detail' });
+    }
+    if (placement.floors >= 6) {
+      for (const height of [2.25, 2.65]) {
+        box(-hw * .55, roofTop + height, -hd * .5, 1.25, .08, .08,
+          darkTrim, { tier: 'detail' });
+      }
+    }
+    if (placement.id === 'aurora_exchange') {
+      for (const x of [-1.2, -.4, .4, 1.2]) {
+        box(x, roofTop + 2.85, 3.8, .18, 1.3, .25, 0xfbbf24);
+        collider(`exchange_crown_fin_${x}`, x, roofTop + 2.85, 3.8, .18, 1.3, .25);
+      }
+    } else if (placement.id === 'aurora_observatory') {
+      box(hvacA.x, roofTop + 2.25, hvacA.z, .28, 2.5, .28, darkTrim);
+      collider('observatory_sensor_mast', hvacA.x, roofTop + 2.25, hvacA.z, .28, 2.5, .28);
+      box(hvacA.x, roofTop + 3.55, hvacA.z, 1.5, .12, .65, 0x67e8f9,
+        { shape: 'glass', tier: 'detail' });
     }
 
     // Ground, mid-tower and rooftop rewards. Points sit on the central slab

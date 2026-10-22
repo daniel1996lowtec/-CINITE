@@ -8,7 +8,9 @@
  * 4. Server-authoritative combat hit validation, shield/health deduction, loot deduplication & XP calculation
  * 5. WebSocket payload size limits, rate limiting, room garbage collection & graceful SIGTERM/SIGINT shutdown
  */
-import { createWorldLootMap, getChestRewards, resetLootOwnership, ownsLootDrop, transferLootOwnership, validateLootClaim } from './worldLoot.mjs';
+import { createWorldLootMap, getChestRewards, validateLootClaim } from './worldLoot.mjs';
+import { resetInventory, inventoryAction, advanceInventory, fireInventory, collectInventory, inventorySnapshot, cancelInventoryAction, weaponStats as catalogueStats } from './inventory.mjs';
+import { canReachLoot, hasLineOfSight, worldProps, buildTransform, isPlayerPositionClear, safeSpawnPosition } from './worldGeometry.mjs';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -124,54 +126,11 @@ const LOOT_WEAPON_CATEGORIES = new Set([
 ]);
 const LOOT_RARITIES = new Set(['common', 'uncommon', 'rare', 'epic', 'legendary']);
 
-// Server mirror of src/weapons/WeaponDefinitions.ts. Online combat recomputes
-// damage from this catalog, validates the category-specific range, and only
-// accepts pellet hits backed by a recent cadence-valid fire_weapon event.
-// The legacy client-submitted `damage` field is retained in packets for
-// compatibility but is never trusted for health/shield or progression.
-const SERVER_RARITY_DAMAGE_MULT = {
-  common: 1.0,
-  uncommon: 1.08,
-  rare: 1.16,
-  epic: 1.25,
-  legendary: 1.35,
-};
-const SERVER_WEAPON_CATALOG = {
-  harvester: { baseDamage: 35, headshotMultiplier: 1.2, fireRate: 1.9, pellets: 1, range: 4.6 },
-  pistol: { baseDamage: 22, headshotMultiplier: 1.75, fireRate: 6.2, pellets: 1, range: 125 },
-  heavy_pistol: { baseDamage: 40, headshotMultiplier: 2.0, fireRate: 2.2, pellets: 1, range: 145 },
-  assault_rifle: { baseDamage: 24, headshotMultiplier: 1.6, fireRate: 5.8, pellets: 1, range: 190 },
-  burst_rifle: {
-    baseDamage: 24,
-    headshotMultiplier: 1.65,
-    fireRate: 1.65,
-    pellets: 1,
-    range: 205,
-    burstCount: 3,
-    burstIntervalMs: 75,
-  },
-  dmr: { baseDamage: 42, headshotMultiplier: 1.85, fireRate: 2.4, pellets: 1, range: 275 },
-  shotgun: { baseDamage: 11, headshotMultiplier: 1.5, fireRate: 1.25, pellets: 8, range: 46 },
-  tactical_shotgun: {
-    baseDamage: 8,
-    headshotMultiplier: 1.45,
-    fireRate: 2.1,
-    pellets: 8,
-    range: 52,
-  },
-  smg: { baseDamage: 16, headshotMultiplier: 1.5, fireRate: 10.5, pellets: 1, range: 95 },
-  sniper: { baseDamage: 84, headshotMultiplier: 2.0, fireRate: 0.75, pellets: 1, range: 340 },
-};
-
+// SERVER_WEAPON_CATALOG is generated from the exact client definitions by loot:generate.
+// No independent damage/ammo/reload balance table can silently diverge.
 function getServerWeaponStats(category, rarity) {
-  const entry = SERVER_WEAPON_CATALOG[String(category || '')];
-  const safeRarity = String(rarity || '');
-  if (!entry || !LOOT_RARITIES.has(safeRarity)) return null;
-  const baseDamage =
-    category === 'harvester'
-      ? entry.baseDamage
-      : Math.round(entry.baseDamage * SERVER_RARITY_DAMAGE_MULT[safeRarity]);
-  return { ...entry, category: String(category), rarity: safeRarity, baseDamage };
+  const stats = catalogueStats(category,rarity);
+  return stats && stats.rarity === rarity && !stats.isConsumable ? stats : null;
 }
 
 function getServerWeaponDamage(stats, isHeadshot) {
@@ -194,50 +153,7 @@ function resetServerCombatState(player) {
 }
 
 function consumeServerShot(player, stats, now = Date.now()) {
-  if (!player || !stats) return false;
-  if (typeof player.serverShotTokens !== 'number') {
-    resetServerCombatState(player);
-    resetLootOwnership(player);
-  }
-
-  if (stats.burstCount && stats.burstCount > 1) {
-    const intervalMs = Number(stats.burstIntervalMs || 75);
-    const inBurst =
-      Number(player.serverBurstShotsRemaining || 0) > 0 &&
-      player.serverBurstCategory === stats.category &&
-      player.serverBurstRarity === stats.rarity;
-    if (now < Number(player.serverNextShotAt || 0)) return false;
-    if (inBurst) {
-      player.serverBurstShotsRemaining -= 1;
-      if (player.serverBurstShotsRemaining > 0) {
-        player.serverNextShotAt = now + intervalMs * 0.65;
-      } else {
-        const cycleMs = 1000 / Math.max(0.1, stats.fireRate);
-        const postBurstDelay = Math.max(
-          220,
-          (cycleMs - intervalMs * (stats.burstCount - 1)) * 0.72
-        );
-        player.serverNextShotAt = now + postBurstDelay;
-      }
-    } else {
-      player.serverBurstShotsRemaining = stats.burstCount - 1;
-      player.serverBurstCategory = stats.category;
-      player.serverBurstRarity = stats.rarity;
-      player.serverNextShotAt = now + intervalMs * 0.65;
-    }
-  } else {
-    const updatedAt = Number(player.serverShotTokenUpdatedAt || now);
-    const elapsedMs = Math.max(0, now - updatedAt);
-    const refillPerSecond = Math.max(0.1, stats.fireRate) * 1.3;
-    player.serverShotTokens = Math.min(
-      3,
-      Number(player.serverShotTokens || 0) + (elapsedMs / 1000) * refillPerSecond
-    );
-    player.serverShotTokenUpdatedAt = now;
-    if (player.serverShotTokens < 1) return false;
-    player.serverShotTokens -= 1;
-    player.serverBurstShotsRemaining = 0;
-  }
+  if (!fireInventory(player, stats?.category, stats?.rarity, now)) return false;
 
   const previous = player.serverShotCredit;
   const previousPellets =
@@ -372,58 +288,6 @@ function serverWeaponDisplayName(category, rarity) {
  * this collector previously received that category from the vault (or from
  * a registered, server-broadcast swap drop).
  */
-function sanitizeLootSwappedDrop(rawDrop, collector) {
-  if (!rawDrop || typeof rawDrop !== 'object') return undefined;
-  const id = String(rawDrop.id || '').slice(0, 64);
-  if (!/^swap_[A-Za-z0-9_-]+$/.test(id)) return undefined;
-  const category = String(rawDrop.weaponCategory || '');
-  const rarity = String(rawDrop.rarity || '');
-  if (!LOOT_WEAPON_CATEGORIES.has(category) || !LOOT_RARITIES.has(rarity)) {
-    return undefined;
-  }
-  if (
-    rarity === 'legendary' &&
-    LEGENDARY_TOWER_VAULT_WEAPON_CATEGORIES.has(category) &&
-    !getLegendaryTowerWeaponOwnership(collector).has(category)
-  ) {
-    return undefined;
-  }
-  const collectorPos = collector?.position || { x: 0, y: 0, z: 0 };
-  const rawPos = rawDrop.position && typeof rawDrop.position === 'object'
-    ? rawDrop.position
-    : {};
-  const candidate = {
-    x: Number(rawPos.x),
-    y: Number(rawPos.y),
-    z: Number(rawPos.z),
-  };
-  const position =
-    Number.isFinite(candidate.x) &&
-    Number.isFinite(candidate.y) &&
-    Number.isFinite(candidate.z) &&
-    Math.hypot(
-      candidate.x - Number(collectorPos.x || 0),
-      candidate.y - Number(collectorPos.y || 0),
-      candidate.z - Number(collectorPos.z || 0)
-    ) <= 7
-      ? candidate
-      : {
-          x: Number(collectorPos.x || 0) + 0.8,
-          y: Number(collectorPos.y || 0),
-          z: Number(collectorPos.z || 0) + 0.8,
-        };
-  return {
-    id,
-    itemType: category === 'medkit' || category === 'shield_potion' ? 'consumable' : 'weapon',
-    weaponCategory: category,
-    rarity,
-    name: serverWeaponDisplayName(category, rarity),
-    amount: 1,
-    position,
-    opened: false,
-  };
-}
-
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
   .split(',')
   .map((s) => s.trim())
@@ -1569,6 +1433,8 @@ async function startLobbyMatch(room) {
   room.matchTimer = 0;
   room.storm = createInitialStorm();
   room.buildables.clear();
+  room.propHealth = new Map();
+  room.destroyedProps = new Set();
   room.collectedLootIds.clear();
   room.lootReceipts.clear();
   room.spawnedLootItems.clear();
@@ -1597,7 +1463,7 @@ async function startLobbyMatch(room) {
     player.eliminations = 0;
     clearLegendaryTowerWeaponOwnership(player);
     resetServerCombatState(player);
-    resetLootOwnership(player);
+    resetInventory(player);
     if (isParticipant) {
       room.matchParticipantIds.add(player.id);
     }
@@ -1635,6 +1501,7 @@ async function startLobbyMatch(room) {
       selfPlayerId: player.id,
       players,
     });
+    sendInventoryState(player);
   }
   broadcastToRoom(room, {
     type: 'room_loot_sync',
@@ -1671,6 +1538,7 @@ function closeLobbyRoom(room, reason = 'closed_by_host') {
   for (const player of getRoomHumanPlayers(room)) {
     if (player.isConnected) sendToPlayer(player, payload);
     player.isConnected = false;
+    cancelInventoryAction(player);
     player.isReady = false;
   }
   room.players.clear();
@@ -2543,6 +2411,9 @@ server.on('upgrade', (req, socket) => {
       try {
         const msg = JSON.parse(decoded.text);
         if (!msg || typeof msg !== 'object') continue;
+        // A replaced/reconnected seat is controlled only by its current socket.
+        if (currentRoom && currentSessionToken && msg.type !== 'join_room' &&
+            currentRoom.players.get(currentSessionToken)?.socket !== socket) continue;
 
         if (msg.type === 'submit_progression' || msg.type === 'claim_xp') {
           // Never trust client-submitted wins, XP, damage, or eliminations
@@ -2873,7 +2744,7 @@ server.on('upgrade', (req, socket) => {
               teamIndex: -1,
               name: cleanCallsign,
               starterLoadout: ['balanced','close_quarters','sharpshooter','demolition'].includes(msg.starterLoadout) ? msg.starterLoadout : 'balanced',
-              position: sanitizePosition(msg.position, { x: 0, y: 10, z: 0 }),
+              position: safeSpawnPosition(room,sanitizePosition(msg.position, { x: 0, y: 80, z: 0 })),
               velocity: { x: 0, y: 0, z: 0 },
               yaw: 0,
               facingYaw: 0,
@@ -2907,10 +2778,11 @@ server.on('upgrade', (req, socket) => {
               backAccessory: roomCosmetics.backAccessory,
               socket,
             };
-            resetLootOwnership(player);
+            resetInventory(player);
             room.players.set(currentSessionToken, player);
           } else {
             if (player.socket && player.socket !== socket && !player.socket.destroyed) {
+              cancelInventoryAction(player);
               try {
                 player.socket.end();
               } catch {
@@ -2933,7 +2805,7 @@ server.on('upgrade', (req, socket) => {
             player.skinColor = roomCosmetics.skinColor;
             player.accentColor = roomCosmetics.accentColor;
             player.backAccessory = roomCosmetics.backAccessory;
-            if (msg.resetPlayer && !lobbyManagedRoom) {
+            if (msg.resetPlayer && !lobbyManagedRoom && !player.alive) {
               isFreshJoinOrReset = true;
               room.matchSeq += 1;
               player.health = 100;
@@ -2942,8 +2814,8 @@ server.on('upgrade', (req, socket) => {
               player.eliminations = 0;
               clearLegendaryTowerWeaponOwnership(player);
               resetServerCombatState(player);
-              resetLootOwnership(player);
-              player.position = sanitizePosition(msg.position, player.position);
+              resetInventory(player);
+              player.position = safeSpawnPosition(room,sanitizePosition(msg.position, player.position));
             } else if (msg.resetPlayer && lobbyManagedRoom && room.phase === 'lobby') {
               player.health = 100;
               player.shield = 50;
@@ -2951,13 +2823,14 @@ server.on('upgrade', (req, socket) => {
               player.eliminations = 0;
               clearLegendaryTowerWeaponOwnership(player);
               resetServerCombatState(player);
-              resetLootOwnership(player);
+              resetInventory(player);
               player.isParticipant = false;
-              player.position = sanitizePosition(msg.position, player.position);
+              player.position = safeSpawnPosition(room,sanitizePosition(msg.position, player.position));
             }
             // In an active human-only match, resetPlayer is intentionally
             // ignored: a client cannot revive/reset itself by reconnecting.
             player.socket = socket;
+            player.sentInventoryRevision = -1;
           }
 
           ensureRoomHost(room, { broadcast: true });
@@ -2992,6 +2865,10 @@ server.on('upgrade', (req, socket) => {
             })
           );
 
+          sendInventoryState(player);
+          sendToPlayer(player,{type:'position_corrected',position:player.position});
+
+
           // Send authoritative progression snapshot to the client
           socket.write(
             encodeWsFrame({
@@ -3004,6 +2881,10 @@ server.on('upgrade', (req, socket) => {
           for (const b of room.buildables.values()) {
             socket.write(encodeWsFrame({ type: 'build_placed', ...b }));
           }
+
+          sendToPlayer(player,{type:'environment_state',
+            health:[...(room.propHealth || new Map()), ...[...room.buildables.values()].map(b=>[b.buildId,b.health])],
+            destroyed:[...(room.destroyedProps || new Set())]});
 
           // Send authoritative room loot state (opened chests, collected items, dynamically spawned drops)
           if (room.collectedLootIds.size > 0 || room.spawnedLootItems.size > 0) {
@@ -3178,6 +3059,7 @@ server.on('upgrade', (req, socket) => {
           if (player) {
             player.isReady = false;
             player.isConnected = false;
+            cancelInventoryAction(player);
             player.disconnectedAt = Date.now();
 
             if (isHumanOnlyMode(room.mode) && room.phase === 'active') {
@@ -3222,7 +3104,9 @@ server.on('upgrade', (req, socket) => {
             continue;
           }
           if (p) {
-            p.position = sanitizePosition(msg.position, p.position);
+            const proposedPosition = sanitizePosition(msg.position, p.position);
+            if (isPlayerPositionClear(currentRoom,proposedPosition)) p.position = proposedPosition;
+            else sendToPlayer(p,{type:'position_corrected',position:p.position});
             p.velocity = sanitizeVelocity(msg.velocity, p.velocity);
             p.yaw = clampFinite(msg.yaw, -Math.PI * 4, Math.PI * 4, p.yaw);
             p.facingYaw = clampFinite(
@@ -3236,36 +3120,18 @@ server.on('upgrade', (req, socket) => {
             p.isSprinting = Boolean(msg.isSprinting);
             p.isGrounded = Boolean(msg.isGrounded ?? p.isGrounded);
             p.isGliding = Boolean(msg.isGliding);
-            p.isReloading = Boolean(msg.isReloading);
-            p.reloadTimer = clampFinite(msg.reloadTimer, 0, 10, 0);
-            p.reloadDuration = clampFinite(msg.reloadDuration, 0, 10, 0);
-            if (msg.equippedCategory) {
-              const category = String(msg.equippedCategory).slice(0, 24);
-              if (
-                category === 'harvester' ||
-                LOOT_WEAPON_CATEGORIES.has(category)
-              ) {
-                p.equippedCategory = category;
-              }
-            }
-            if (msg.equippedRarity) {
-              const rarity = String(msg.equippedRarity).slice(0, 16);
-              if (LOOT_RARITIES.has(rarity)) p.equippedRarity = rarity;
-            }
+            // Equipment, reload, ammo and healing are owner-state, never movement metadata.
           }
         } else if (msg.type === 'heal_sync' && currentRoom && currentSessionToken) {
+          // Legacy clients cannot author health/shield. Reconcile, never heal.
           const p = currentRoom.players.get(currentSessionToken);
-          if (
-            p &&
-            isLobbyManagedRoom(currentRoom) &&
-            (currentRoom.phase !== 'active' || !p.isParticipant)
-          ) {
-            continue;
-          }
-          if (p && p.alive) {
-            p.health = clampFinite(msg.health, 0, 100, p.health);
-            p.shield = clampFinite(msg.shield, 0, 100, p.shield);
-          }
+          if (p) sendInventoryState(p);
+        } else if (msg.type === 'inventory_action' && currentRoom && currentSessionToken) {
+          const p = currentRoom.players.get(currentSessionToken);
+          if (!p || !p.alive || (isLobbyManagedRoom(currentRoom) &&
+              (currentRoom.phase !== 'active' || !p.isParticipant))) continue;
+          const accepted = inventoryAction(p,msg.action,msg.slot,msg.seq);
+          sendInventoryState(p, {action:msg.action, accepted});
         } else if (msg.type === 'fire_weapon' && currentRoom && currentSessionToken) {
           const shooter = currentRoom.players.get(currentSessionToken);
           if (!shooter || !shooter.alive) continue;
@@ -3282,10 +3148,24 @@ server.on('upgrade', (req, socket) => {
             msg.rarity || shooter.equippedRarity || 'common'
           ).slice(0, 16);
           const weaponStats = getServerWeaponStats(category, rarity);
-          if (!weaponStats) continue;
-          shooter.equippedCategory = category;
-          shooter.equippedRarity = rarity;
-          if (!consumeServerShot(shooter, weaponStats)) continue;
+          if (!Number.isSafeInteger(msg.shotSeq) || msg.shotSeq <= (shooter.lastInventoryShotSeq || 0)) {
+            sendInventoryState(shooter); continue;
+          }
+          shooter.lastInventoryShotSeq = msg.shotSeq;
+          if (!weaponStats) { sendInventoryState(shooter); continue; }
+          if (!consumeServerShot(shooter, weaponStats)) { sendInventoryState(shooter); continue; }
+          sendInventoryState(shooter);
+          const origin = {...shooter.position,y:shooter.position.y+1.2};
+          let muzzle = sanitizePosition(msg.muzzlePos,origin);
+          if (Math.hypot(muzzle.x-origin.x,muzzle.y-origin.y,muzzle.z-origin.z)>3) muzzle=origin;
+          const endpoint = sanitizePosition(msg.hitPoint,{x:origin.x,y:origin.y,z:origin.z-weaponStats.range});
+          const rayLength = Math.hypot(endpoint.x-muzzle.x,endpoint.y-muzzle.y,endpoint.z-muzzle.z);
+          if (rayLength > weaponStats.range) {
+            const fraction=weaponStats.range/rayLength;
+            endpoint.x=muzzle.x+(endpoint.x-muzzle.x)*fraction;
+            endpoint.y=muzzle.y+(endpoint.y-muzzle.y)*fraction;
+            endpoint.z=muzzle.z+(endpoint.z-muzzle.z)*fraction;
+          }
 
           currentRoom.lastActivityAt = Date.now();
           broadcastToRoom(
@@ -3295,8 +3175,8 @@ server.on('upgrade', (req, socket) => {
               shooterId: shooter.id,
               category,
               rarity,
-              muzzlePos: sanitizePosition(msg.muzzlePos, { x: 0, y: 1, z: 0 }),
-              hitPoint: sanitizePosition(msg.hitPoint, { x: 0, y: 1, z: -10 }),
+              muzzlePos: muzzle,
+              hitPoint: endpoint,
             },
             currentSessionToken
           );
@@ -3365,8 +3245,10 @@ server.on('upgrade', (req, socket) => {
             (victim.position?.y || 0) - (attacker.position?.y || 0),
             (victim.position?.z || 0) - (attacker.position?.z || 0)
           );
-          if (dist > weaponStats.range + 12) continue;
+          const rangeAllowance = weaponStats.category === 'harvester' ? 1 : 12;
+          if (dist > weaponStats.range + rangeAllowance) continue;
 
+          if (!msg.hitPoint || ![msg.hitPoint.x,msg.hitPoint.y,msg.hitPoint.z].every(Number.isFinite)) continue;
           const validatedHitPoint = sanitizePosition(msg.hitPoint, victim.position);
           if (msg.hitPoint && typeof msg.hitPoint === 'object') {
             const hitPointDistance = Math.hypot(
@@ -3374,8 +3256,12 @@ server.on('upgrade', (req, socket) => {
               validatedHitPoint.y - Number(victim.position?.y || 0),
               validatedHitPoint.z - Number(victim.position?.z || 0)
             );
-            if (hitPointDistance > 5) continue;
+            const height = validatedHitPoint.y-Number(victim.position?.y || 0);
+            const horizontal = Math.hypot(validatedHitPoint.x-victim.position.x,validatedHitPoint.z-victim.position.z);
+            if (hitPointDistance > 2.4 || horizontal > 1.1 || height < -.15 || height > 2.1) continue;
           }
+
+          if (!hasLineOfSight(currentRoom,{...attacker.position,y:attacker.position.y+1.2},validatedHitPoint)) continue;
 
           // Derive the headshot from the validated hit height rather than
           // trusting a client flag. The client raycast uses 1.48 m; 1.38 m
@@ -3543,6 +3429,7 @@ server.on('upgrade', (req, socket) => {
           if (previousReceipt?.collectorId === collector.id) {
             // Replay only to its original authenticated seat: no second transfer
             // and no duplicate room broadcast after a transient lost connection.
+            sendInventoryState(collector);
             socket.write(encodeWsFrame(previousReceipt));
             continue;
           }
@@ -3593,24 +3480,27 @@ server.on('upgrade', (req, socket) => {
           const authoritativeItem = { ...claim.item, position: { ...claim.item.position }, serverAuthoritative: true };
           const itemType = authoritativeItem.itemType;
           const spawnedDrops = itemType === 'chest' ? getChestRewards(lootId) : undefined;
-          let swappedDrop = itemType === 'weapon' || itemType === 'consumable'
-            ? sanitizeLootSwappedDrop(msg.swappedDrop, collector) : undefined;
-          if (swappedDrop && (!ownsLootDrop(collector, swappedDrop) || swappedDrop.itemType !== 'weapon' ||
-              currentRoom.spawnedLootItems.has(swappedDrop.id) || currentRoom.collectedLootIds.has(swappedDrop.id))) {
-            swappedDrop = undefined;
+          if (!canReachLoot(currentRoom,collector,authoritativeItem)) {
+            socket.write(encodeWsFrame({type:'loot_collect_rejected',lootId,reason:'Interaction blocked by geometry.'}));
+            continue;
           }
-          if (swappedDrop) {
-            // Use the registered interaction point, never a client-authored offset
-            // that could put the drop in a wall or on another floor.
-            swappedDrop.position = { ...authoritativeItem.position };
-            swappedDrop.serverAuthoritative = true;
+          authoritativeItem.towerProvenance = Boolean(towerTemplate || collectedTowerSwapCategory || claim.item.towerProvenance);
+          const proposedId = String(msg.swappedDrop?.id || '');
+          const dropId = /^swap_[A-Za-z0-9_-]{1,58}$/.test(proposedId) &&
+            !currentRoom.spawnedLootItems.has(proposedId) && !currentRoom.collectedLootIds.has(proposedId)
+              ? proposedId : `swap_${crypto.randomBytes(12).toString('hex')}`;
+          const transfer = collectInventory(collector,authoritativeItem,msg.slot,dropId);
+          if (transfer.reason) {
+            socket.write(encodeWsFrame({type:'loot_collect_rejected',lootId,reason:transfer.reason}));
+            sendInventoryState(collector); continue;
           }
+          const swappedDrop = transfer.dropped;
           // All mutation is synchronous before broadcasting: simultaneous claims
           // can award this registered object to exactly one human.
           currentRoom.collectedLootIds.add(lootId);
           currentRoom.spawnedLootItems.delete(lootId);
           getLegendaryTowerSwapDrops(currentRoom).delete(lootId);
-          transferLootOwnership(collector, authoritativeItem, swappedDrop);
+          sendInventoryState(collector);
 
           // Transfer the unique-weapon ledger exactly once for this
           // accepted collection: dropping a proven tower weapon consumes
@@ -3619,7 +3509,7 @@ server.on('upgrade', (req, socket) => {
           // this point, and a consumed entry cannot authorize a second
           // broadcast of the same category.
           const towerWeaponOwnership = getLegendaryTowerWeaponOwnership(collector);
-          if (isLegendaryTowerWeaponItem(swappedDrop)) {
+          if (swappedDrop?.towerProvenance && isLegendaryTowerWeaponItem(swappedDrop)) {
             towerWeaponOwnership.delete(swappedDrop.weaponCategory);
           }
           if (isLegendaryTowerWeaponItem(towerTemplate)) {
@@ -3641,7 +3531,7 @@ server.on('upgrade', (req, socket) => {
             !currentRoom.collectedLootIds.has(String(swappedDrop.id))
           ) {
             currentRoom.spawnedLootItems.set(String(swappedDrop.id), swappedDrop);
-            if (isLegendaryTowerWeaponItem(swappedDrop)) {
+            if (swappedDrop?.towerProvenance && isLegendaryTowerWeaponItem(swappedDrop)) {
               getLegendaryTowerSwapDrops(currentRoom).set(
                 String(swappedDrop.id),
                 swappedDrop.weaponCategory
@@ -3671,6 +3561,22 @@ server.on('upgrade', (req, socket) => {
             continue;
           }
           currentRoom.lastActivityAt = Date.now();
+          const buildId = String(msg.buildId || '');
+          const pieceType = String(msg.pieceType || '');
+          const material = String(msg.material || '');
+          if (!/^build_[A-Za-z0-9_-]{1,58}$/.test(buildId) || currentRoom.buildables.has(buildId) || currentRoom.destroyedProps?.has(buildId) ||
+              currentRoom.buildables.size >= 600 || !['wall','ramp','floor','roof'].includes(pieceType) ||
+              !['wood','stone','metal'].includes(material) || builder.materials[material] < 10 ||
+              ![msg.x,msg.y,msg.z,msg.yaw].every(Number.isFinite) ||
+              Math.hypot(msg.x-builder.position.x,msg.y-builder.position.y,msg.z-builder.position.z)>6) {
+            sendInventoryState(builder); continue;
+          }
+          const transform = buildTransform(msg);
+          if (!transform || transform.y < -.5 || [...currentRoom.buildables.values()].some(b=>buildTransform(b)?.cell===transform.cell)) {
+            sendInventoryState(builder); continue;
+          }
+          builder.materials[material] -= 10;
+          builder.inventoryRevision++; sendInventoryState(builder);
           const mat = String(msg.material || 'wood');
           const safeMat = mat === 'stone' || mat === 'metal' ? mat : 'wood';
           const maxHp = safeMat === 'wood' ? 150 : safeMat === 'stone' ? 220 : 300;
@@ -3689,7 +3595,7 @@ server.on('upgrade', (req, socket) => {
           if (currentRoom.buildables.size < 600) {
             currentRoom.buildables.set(buildPacket.buildId, buildPacket);
           }
-          broadcastToRoom(currentRoom, buildPacket, currentSessionToken);
+          broadcastToRoom(currentRoom, buildPacket);
         } else if (msg.type === 'damage_build' && currentRoom && currentSessionToken) {
           const damager = currentRoom.players.get(currentSessionToken);
           if (!damager || !damager.alive) continue;
@@ -3701,22 +3607,33 @@ server.on('upgrade', (req, socket) => {
           }
           currentRoom.lastActivityAt = Date.now();
           const buildId = String(msg.destructibleId || '').slice(0, 64);
-          const dmg = clampFinite(msg.damage, 1, 250, 25);
+          const stats = getServerWeaponStats(damager.equippedCategory,damager.equippedRarity);
           const existingBuild = currentRoom.buildables.get(buildId);
-          if (existingBuild) {
-            existingBuild.health -= dmg;
-            if (existingBuild.health <= 0) {
-              currentRoom.buildables.delete(buildId);
-            }
-          }
+          const prop = worldProps.get(buildId);
+          const placed = existingBuild ? buildTransform(existingBuild) : null;
+          const target = placed ? {x:placed.x,y:placed.y+1,z:placed.z} : prop?.position;
+          if (!stats || !target || currentRoom.destroyedProps?.has(buildId) ||
+              Math.hypot(target.x-damager.position.x,target.y-damager.position.y,target.z-damager.position.z)>stats.range+3 ||
+              !hasLineOfSight(currentRoom,{...damager.position,y:damager.position.y+1.2},target,buildId) ||
+              !consumeServerHitCredit(damager,stats)) continue;
+          const dmg = Math.round(stats.baseDamage*(stats.category === 'harvester'?1.5:.7));
+          currentRoom.propHealth ??= new Map(); currentRoom.destroyedProps ??= new Set();
+          const remaining = (existingBuild?.health ?? currentRoom.propHealth.get(buildId) ?? prop.health)-dmg;
+          if (existingBuild) existingBuild.health = remaining;
+          else currentRoom.propHealth.set(buildId,remaining);
+          if (remaining <= 0) { currentRoom.buildables.delete(buildId); currentRoom.destroyedProps.add(buildId); }
+          // Player-built pieces cost 10: awarding 12 per swing would mint materials.
+          const gain = existingBuild ? 0 : stats.category === 'harvester'?12:remaining<=0?8:0;
+          const material = existingBuild?.material || prop.material;
+          damager.materials[material] = Math.min(999,damager.materials[material]+gain);
+          damager.inventoryRevision++; sendInventoryState(damager);
           broadcastToRoom(
             currentRoom,
             {
               type: 'build_damaged',
               destructibleId: buildId,
               damage: dmg,
-            },
-            currentSessionToken
+            }
           );
         }
       } catch {
@@ -3733,6 +3650,7 @@ server.on('upgrade', (req, socket) => {
       let removedLobbyPlayer = null;
       if (p && p.socket === socket) {
         p.isConnected = false;
+        cancelInventoryAction(p);
         p.disconnectedAt = Date.now();
         if (
           isLobbyManagedRoom(room) &&
@@ -3855,7 +3773,19 @@ function buildRoomPlayersSnapshot(room) {
   });
 }
 
+function sendInventoryState(player, result) {
+  if (!player.inventory) return;
+  sendToPlayer(player, {type:'inventory_state', ...inventorySnapshot(player), result});
+  player.sentInventoryRevision = player.inventoryRevision;
+}
+
 function broadcastRoomState(room) {
+  for (const p of room.players.values()) {
+    if (!p.inventory) resetInventory(p);
+    if (p.inventoryTask && room.phase !== 'active' && isLobbyManagedRoom(room)) cancelInventoryAction(p);
+    else advanceInventory(p);
+    if (p.isConnected && p.sentInventoryRevision !== p.inventoryRevision) sendInventoryState(p);
+  }
   const playersSnapshot = buildRoomPlayersSnapshot(room);
 
   const s = room.storm;

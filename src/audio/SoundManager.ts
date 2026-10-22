@@ -155,7 +155,8 @@ export class SoundManager {
 
   public playFootstep(
     isSprinting: boolean = false,
-    distanceFactor: number = 1.0
+    distanceFactor: number = 1.0,
+    surface: 'ground' | 'hard' | 'wood' | 'metal' = 'ground'
   ): void {
     if (distanceFactor <= 0.03) return;
     if (!this.canPlay('footstep', isSprinting ? 95 : 140)) return;
@@ -169,14 +170,16 @@ export class SoundManager {
 
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
-    osc.type = 'triangle';
-    osc.frequency.setValueAtTime(isSprinting ? 116 : 92, now);
+    const pitch = surface === 'metal' ? 210 : surface === 'hard' ? 155 : surface === 'wood' ? 115 : 92;
+    osc.type = surface === 'hard' ? 'sine' : 'triangle';
+    osc.frequency.setValueAtTime(pitch * (isSprinting ? 1.25 : 1), now);
     osc.frequency.exponentialRampToValueAtTime(36, now + 0.058);
     gain.gain.setValueAtTime(vol, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.062);
     osc.connect(gain);
     gain.connect(ctx.destination);
     osc.start(now);
+    osc.onended = () => { osc.disconnect(); gain.disconnect(); };
     osc.stop(now + 0.068);
     this.trackVoice(0.07);
   }

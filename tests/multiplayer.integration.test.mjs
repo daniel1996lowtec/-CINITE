@@ -1,3 +1,4 @@
+import { equipRegistered, delay } from './gameplayHelpers.mjs';
 /**
  * CI Craft — Multiplayer server integration tests.
  *
@@ -156,7 +157,7 @@ test('production server: HTTP APIs + authoritative two-client multiplayer over i
         accountId: restored.accountId,
         accountToken: restored.accountToken,
         playerName: 'Alpha_One',
-        position: { x: 0, y: 10, z: 0 },
+        position: { x: 0, y: 80, z: 0 },
       })
     );
     const progA = await progressionA;
@@ -172,7 +173,7 @@ test('production server: HTTP APIs + authoritative two-client multiplayer over i
         roomCode: room.roomCode,
         sessionToken: 'sess_bravo',
         playerName: 'Bravo_Two',
-        position: { x: 5, y: 10, z: 5 },
+        position: { x: 5, y: 80, z: 5 },
         outfitId: 'crimson_striker',
         skinColor: 0xbe123c,
         accentColor: 0xfb7185,
@@ -227,14 +228,17 @@ test('production server: HTTP APIs + authoritative two-client multiplayer over i
     // Authoritative combat: the client claims 999 damage, but an Epic
     // Triad Burst Rifle is catalogued at 30 body damage. The fire event
     // creates exactly one server pellet credit for this shot.
+    let shotSeq = 0;
+    await equipRegistered(wsA,'burst_rifle','epic');
     const hitEvent = waitForMessage(wsB, (m) => m.type === 'server_hit');
     wsA.send(
       JSON.stringify({
         type: 'fire_weapon',
+        shotSeq: ++shotSeq,
         category: 'burst_rifle',
         rarity: 'epic',
-        muzzlePos: { x: 0, y: 11, z: 0 },
-        hitPoint: { x: 5, y: 11, z: 5 },
+        muzzlePos: { x: 0, y: 81, z: 0 },
+        hitPoint: { x: 5, y: 81, z: 5 },
       })
     );
     wsA.send(
@@ -246,7 +250,7 @@ test('production server: HTTP APIs + authoritative two-client multiplayer over i
         weaponName: 'Forged Weapon',
         weaponCategory: 'burst_rifle',
         weaponRarity: 'epic',
-        hitPoint: { x: 5, y: 11, z: 5 },
+        hitPoint: { x: 5, y: 81, z: 5 },
       })
     );
     const hit = await hitEvent;
@@ -272,7 +276,7 @@ test('production server: HTTP APIs + authoritative two-client multiplayer over i
         weaponName: 'Epic Triad Burst Rifle',
         weaponCategory: 'burst_rifle',
         weaponRarity: 'epic',
-        hitPoint: { x: 5, y: 11, z: 5 },
+        hitPoint: { x: 5, y: 81, z: 5 },
       })
     );
     await dupWatcher;
@@ -295,21 +299,23 @@ test('production server: HTTP APIs + authoritative two-client multiplayer over i
         weaponName: 'Forged Weapon',
         weaponCategory: 'sniper',
         weaponRarity: 'legendary',
-        hitPoint: { x: 5, y: 11, z: 5 },
+        hitPoint: { x: 5, y: 81, z: 5 },
       })
     );
     await forgedWatcher;
     assert.equal(forgedSeen, false);
 
+    await equipRegistered(wsA,'tactical_shotgun','epic');
     // One tactical-shotgun fire event authorizes exactly eight pellet
     // credits; each Epic pellet is recomputed as 10 damage server-side.
     wsA.send(
       JSON.stringify({
         type: 'fire_weapon',
+        shotSeq: ++shotSeq,
         category: 'tactical_shotgun',
         rarity: 'epic',
-        muzzlePos: { x: 0, y: 11, z: 0 },
-        hitPoint: { x: 5, y: 11, z: 5 },
+        muzzlePos: { x: 0, y: 81, z: 0 },
+        hitPoint: { x: 5, y: 81, z: 5 },
       })
     );
     let lastPelletHit = null;
@@ -327,7 +333,7 @@ test('production server: HTTP APIs + authoritative two-client multiplayer over i
           weaponName: 'Forged Shotgun',
           weaponCategory: 'tactical_shotgun',
           weaponRarity: 'epic',
-          hitPoint: { x: 5, y: 11, z: 5 },
+          hitPoint: { x: 5, y: 81, z: 5 },
         })
       );
       lastPelletHit = await pelletEvent;
@@ -351,7 +357,7 @@ test('production server: HTTP APIs + authoritative two-client multiplayer over i
         weaponName: 'Forged Shotgun',
         weaponCategory: 'tactical_shotgun',
         weaponRarity: 'epic',
-        hitPoint: { x: 5, y: 11, z: 5 },
+        hitPoint: { x: 5, y: 81, z: 5 },
       })
     );
     await ninthPelletWatcher;
@@ -359,14 +365,16 @@ test('production server: HTTP APIs + authoritative two-client multiplayer over i
 
     // Burst cadence is server-gated as three shots at burst spacing,
     // followed by a post-burst delay.
+    await equipRegistered(wsA,'burst_rifle','common');
     const sendBurstFire = () =>
       wsA.send(
         JSON.stringify({
           type: 'fire_weapon',
+        shotSeq: ++shotSeq,
           category: 'burst_rifle',
           rarity: 'common',
-          muzzlePos: { x: 0, y: 11, z: 0 },
-          hitPoint: { x: 5, y: 11, z: 5 },
+          muzzlePos: { x: 0, y: 81, z: 0 },
+          hitPoint: { x: 5, y: 81, z: 5 },
         })
       );
     for (let shot = 0; shot < 3; shot++) {
@@ -404,7 +412,7 @@ test('production server: HTTP APIs + authoritative two-client multiplayer over i
         type: 'collect_loot',
         lootId: 'loot_init_0',
         itemType: 'weapon',
-        position: { x: 1, y: 10, z: 1 },
+        position: { x: 1, y: 80, z: 1 },
       })
     );
     const loot = await lootBroadcast;
@@ -419,11 +427,12 @@ test('production server: HTTP APIs + authoritative two-client multiplayer over i
         type: 'collect_loot',
         lootId: 'loot_init_0',
         itemType: 'weapon',
-        position: { x: 5, y: 10, z: 5 },
+        position: { x: 5, y: 80, z: 5 },
       })
     );
     await lootRejected;
 
+    wsA.send(JSON.stringify({type:'player_sync',position:{x:0,y:80,z:0}}));
     // Building: A's placement is broadcast to B.
     const buildBroadcast = waitForMessage(
       wsB,
@@ -436,7 +445,7 @@ test('production server: HTTP APIs + authoritative two-client multiplayer over i
         pieceType: 'wall',
         material: 'stone',
         x: 2,
-        y: 10,
+        y: 80,
         z: 2,
         yaw: 0,
       })

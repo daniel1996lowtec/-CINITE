@@ -50,6 +50,11 @@ export class PlayerController {
 
   public onLocalReloadCompleted?: () => void;
 
+  public resetPresentation(): void {
+    this.fireCooldown.clear(); this.burstQueues.clear(); this.prevFireHeld.clear();
+    this.lastFireTimeMs.clear(); this.footstepTimer = 0;
+  }
+
   public updateLocalPlayer(
     player: PlayerState,
     input: PlayerInputPacket,
@@ -76,6 +81,7 @@ export class PlayerController {
     if (input.selectSlot >= 0 && input.selectSlot < 5) {
       if (player.activeSlot !== input.selectSlot) {
         player.activeSlot = input.selectSlot;
+        if (this.serverOwned(player)) this.onInventoryAction?.('switch', player.activeSlot);
         this.burstQueues.delete(player.id);
         player.isReloading = false;
         player.reloadTimer = 0;
@@ -89,6 +95,7 @@ export class PlayerController {
     } else if (input.selectSlot === -2 || input.selectSlot === -3) {
       const step = input.selectSlot === -2 ? 1 : -1;
       player.activeSlot = (player.activeSlot + step + 5) % 5;
+      if (this.serverOwned(player)) this.onInventoryAction?.('switch', player.activeSlot);
       this.burstQueues.delete(player.id);
       player.isReloading = false;
       player.reloadTimer = 0;
@@ -179,7 +186,7 @@ export class PlayerController {
       this.footstepTimer -= dt;
       if (this.footstepTimer <= 0) {
         this.footstepTimer = player.isSprinting ? 0.27 : 0.4;
-        sound.playFootstep(player.isSprinting);
+        sound.playFootstep(player.isSprinting, 1, world.getFootstepSurface(player.position.x,player.position.y,player.position.z));
         if (player.isSprinting) {
           particles.spawnImpactBurst(
             new THREE.Vector3(player.position.x, player.position.y + 0.08, player.position.z),
@@ -301,6 +308,12 @@ export class PlayerController {
     );
   }
 
+  public usesServerInventory?: () => boolean;
+  public onInventoryAction?: (action: 'switch' | 'reload' | 'use', slot?: number) => void;
+  private serverOwned(player: PlayerState): boolean {
+    return !player.isBot && Boolean(this.usesServerInventory?.());
+  }
+
   public onLocalWeaponFired?: (
     category: string,
     muzzlePos: THREE.Vector3,
@@ -358,26 +371,31 @@ export class PlayerController {
 
     const pref = player.selectedMaterial;
     if (pref === 'wood' && player.materials.wood >= cost) {
-      player.materials.wood -= cost;
+      if (!this.serverOwned(player)) player.materials.wood -= cost;
       matUsed = 'wood';
     } else if (pref === 'stone' && player.materials.stone >= cost) {
-      player.materials.stone -= cost;
+      if (!this.serverOwned(player)) player.materials.stone -= cost;
       matUsed = 'stone';
     } else if (pref === 'metal' && player.materials.metal >= cost) {
-      player.materials.metal -= cost;
+      if (!this.serverOwned(player)) player.materials.metal -= cost;
       matUsed = 'metal';
     } else if (player.materials.wood >= cost) {
-      player.materials.wood -= cost;
+      if (!this.serverOwned(player)) player.materials.wood -= cost;
       matUsed = 'wood';
     } else if (player.materials.stone >= cost) {
-      player.materials.stone -= cost;
+      if (!this.serverOwned(player)) player.materials.stone -= cost;
       matUsed = 'stone';
     } else if (player.materials.metal >= cost) {
-      player.materials.metal -= cost;
+      if (!this.serverOwned(player)) player.materials.metal -= cost;
       matUsed = 'metal';
     }
 
     if (!matUsed) return null;
+    if (this.serverOwned(player)) {
+      this.onLocalBuildPlaced?.(`build_${Date.now()}_${Math.random().toString(36).slice(2,8)}`,
+        buildType, player.position.x, player.position.y, player.position.z, player.yaw, matUsed);
+      return null; // Real collision/geometry appears only on server acceptance.
+    }
 
     const piece = world.placeBuildPiece(
       player.id,
@@ -450,7 +468,8 @@ export class PlayerController {
 
     if (player.isReloading) {
       this.burstQueues.delete(player.id);
-      player.reloadTimer -= dt;
+      player.reloadTimer = Math.max(0, player.reloadTimer - dt);
+      if (this.serverOwned(player)) { this.prevFireHeld.set(player.id, wantsFire); return; }
       if (player.reloadTimer <= 0) {
         player.isReloading = false;
         player.reloadTimer = 0;
@@ -475,11 +494,20 @@ export class PlayerController {
       player.isReloading = true;
       player.reloadDuration = stats.reloadTime;
       player.reloadTimer = stats.reloadTime;
+      if (this.serverOwned(player)) this.onInventoryAction?.('reload');
       if (!player.isBot) sound.playReload(stats.category);
       this.prevFireHeld.set(player.id, wantsFire);
       return;
     }
 
+    if (stats.isConsumable && this.serverOwned(player)) {
+      if (wantsFire && currentCd <= 0 && !player.isHealing) {
+        this.onInventoryAction?.('use');
+        this.fireCooldown.set(player.id, .3);
+      }
+      this.prevFireHeld.set(player.id, wantsFire);
+      return;
+    }
     if (stats.isConsumable) {
       if (wantsFire && currentCd <= 0) {
         const canHeal =
@@ -579,6 +607,7 @@ export class PlayerController {
         player.isReloading = true;
         player.reloadDuration = stats.reloadTime;
         player.reloadTimer = stats.reloadTime;
+        if (this.serverOwned(player)) this.onInventoryAction?.('reload');
         if (!player.isBot) sound.playReload(stats.category);
       }
       return;
@@ -742,6 +771,10 @@ export class PlayerController {
       } else if (hitResult.destructibleId) {
         const harvestMult = stats.category === 'harvester' ? 1.5 : 0.7;
         const propDmg = Math.round(stats.baseDamage * harvestMult);
+        if (this.serverOwned(player)) {
+          this.onLocalDestructibleDamaged?.(hitResult.destructibleId, propDmg);
+          continue;
+        }
         const res = world.damageDestructible(hitResult.destructibleId, propDmg);
         if (res) {
           if (!player.isBot) {
@@ -793,7 +826,7 @@ export class PlayerController {
 
     if (registeredAnyHit) {
       player.shotsHit++;
-      if (!player.isBot && onCrosshairHitmarker) {
+      if (!player.isBot && !this.serverOwned(player) && onCrosshairHitmarker) {
         onCrosshairHitmarker(registeredHeadshot, registeredShield);
       }
     }
@@ -888,6 +921,7 @@ export class PlayerController {
     player.isReloading = true;
     player.reloadDuration = stats.reloadTime;
     player.reloadTimer = stats.reloadTime;
+    if (this.serverOwned(player)) this.onInventoryAction?.('reload');
     if (!player.isBot) sound.playReload(stats.category);
   }
 

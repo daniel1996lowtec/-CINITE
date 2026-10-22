@@ -366,6 +366,16 @@ export class NetworkManager {
   private lastSentYaw: number = NaN;
   private lastSentPitch: number = NaN;
   private lastSentStateSignature: string = '';
+  private inventoryActionSeq = 0;
+  private inventoryShotSeq = 0;
+  private pendingInventoryShots = new Map<number, {slot: number; weaponId: string}>();
+  public onInventoryCompletion?: (kind: 'reload' | 'use') => void;
+
+  public sendInventoryAction(action: 'switch' | 'reload' | 'use', slot?: number): void {
+    if (!this.isOnlineRoom || !this.roomConnected) return;
+    this.sendPacket({type:'inventory_action', action, slot, seq:++this.inventoryActionSeq});
+  }
+
   private hitCounter: number = 0;
 
   private remoteTargets: Map<string, RemoteInterpolationTarget> = new Map();
@@ -386,6 +396,7 @@ export class NetworkManager {
     yaw: number,
     material: BuildMaterialType
   ) => void;
+  public onEnvironmentState?: (health: [string, number][], destroyed: string[]) => void;
   public onRemoteBuildDamaged?: (destructibleId: string, damage: number) => void;
   public onRemoteWeaponFired?: (
     shooterId: string,
@@ -1080,6 +1091,8 @@ export class NetworkManager {
     this.roomSnapshot = null;
     this.serverPlayerId = '';
     this.activeLocalPlayer = null;
+    this.inventoryActionSeq = 0;
+    this.inventoryShotSeq = 0; this.pendingInventoryShots.clear();
     this.pendingCreateLobby = null;
     this.onRoomSnapshot?.(null);
     this.onConnectionStatusChange?.('🚪 LEFT ROOM', false, 'idle', 0);
@@ -1549,6 +1562,12 @@ export class NetworkManager {
       }
 
       case 'room_joined': {
+        // Unacknowledged commands on the old socket are never retransmitted.
+        // A fresh owner snapshot follows; discard predictions rather than
+        // subtracting lost shots or holding a reload forever after reconnect.
+        this.pendingInventoryShots.clear();
+        this.inventoryActionSeq = 0;
+        this.inventoryShotSeq = 0;
         const snapshot = normalizeRoomSnapshot(
           msg,
           this.roomCode,
@@ -1600,6 +1619,8 @@ export class NetworkManager {
       }
 
       case 'match_started': {
+        this.pendingInventoryShots.clear();
+        this.inventoryActionSeq = 0;
         const snapshot = normalizeRoomSnapshot(
           msg,
           this.roomCode,
@@ -1699,6 +1720,12 @@ export class NetworkManager {
         break;
       }
 
+      case 'environment_state': {
+        if (Array.isArray(msg.health) && Array.isArray(msg.destroyed)) {
+          this.onEnvironmentState?.(msg.health as [string,number][],msg.destroyed as string[]);
+        }
+        break;
+      }
       case 'build_damaged': {
         this.onRemoteBuildDamaged?.(
           String(msg.destructibleId),
@@ -1709,6 +1736,53 @@ export class NetworkManager {
 
       case 'server_hit': {
         this.onServerHitEvent?.(msg as unknown as ServerHitEvent);
+        break;
+      }
+
+      case 'position_corrected': {
+        const player = this.state.players.get(this.localPlayerId) || this.activeLocalPlayer;
+        const position = msg.position as PlayerState['position'];
+        if (player && position && [position.x,position.y,position.z].every(Number.isFinite)) {
+          Object.assign(player.position,position);
+          player.velocity = {x:0,y:0,z:0};
+        }
+        break;
+      }
+      case 'inventory_state': {
+        const player = this.state.players.get(this.localPlayerId) || this.activeLocalPlayer;
+        if (!player || !Array.isArray(msg.inventory) || msg.inventory.length !== 5) break;
+        const inventory = msg.inventory as (InventorySlot | null)[];
+        const completedReload = player.isReloading && !msg.isReloading &&
+          inventory[player.activeSlot]?.weaponId === player.inventory[player.activeSlot]?.weaponId &&
+          (inventory[player.activeSlot]?.clipAmmo || 0) > (player.inventory[player.activeSlot]?.clipAmmo || 0);
+        const completedUse = player.isHealing && !msg.isHealing &&
+          (Number(msg.health) > player.health || Number(msg.shield) > player.shield);
+        const processedShotSeq = Number(msg.processedShotSeq) || 0;
+        this.inventoryShotSeq = Math.max(this.inventoryShotSeq, processedShotSeq);
+        for (const seq of this.pendingInventoryShots.keys()) {
+          if (seq <= processedShotSeq) this.pendingInventoryShots.delete(seq);
+        }
+        for (const pending of this.pendingInventoryShots.values()) {
+          const pendingSlot = inventory[pending.slot];
+          if (pendingSlot?.weaponId === pending.weaponId && pendingSlot.ammoType !== 'none') pendingSlot.clipAmmo = Math.max(0,pendingSlot.clipAmmo-1);
+        }
+        player.inventory = inventory;
+        player.ammo = msg.ammo as PlayerState['ammo'];
+        player.materials = msg.materials as PlayerState['materials'];
+        player.health = Number(msg.health); player.shield = Number(msg.shield);
+        // A queued local switch/reload remains presentation-only until its ACK.
+        if (Number(msg.lastActionSeq) >= this.inventoryActionSeq) {
+          player.activeSlot = Number(msg.activeSlot);
+          player.isReloading = Boolean(msg.isReloading);
+          player.reloadTimer = Number(msg.reloadTimer);
+          player.reloadDuration = Number(msg.reloadDuration);
+          player.isHealing = Boolean(msg.isHealing);
+          player.consumeRemaining = Number(msg.consumeRemaining) || 0;
+          player.consumeDuration = Number(msg.consumeDuration) || 0;
+        }
+        this.inventoryActionSeq = Math.max(this.inventoryActionSeq, Number(msg.lastActionSeq) || 0);
+        if (completedReload) this.onInventoryCompletion?.('reload');
+        if (completedUse) this.onInventoryCompletion?.('use');
         break;
       }
 
@@ -1913,8 +1987,11 @@ export class NetworkManager {
     rarity?: WeaponRarity
   ): void {
     if (!this.isOnlineRoom || !this.roomConnected) return;
+    const shotSeq = ++this.inventoryShotSeq;
+    if (this.pendingInventoryShots.size < 64) this.pendingInventoryShots.set(shotSeq, {slot:this.activeLocalPlayer?.activeSlot || 0, weaponId:`${category}_${rarity}`});
     this.sendPacket({
       type: 'fire_weapon',
+      shotSeq,
       sessionToken: this.sessionToken,
       category,
       rarity,
@@ -1982,23 +2059,14 @@ export class NetworkManager {
     });
   }
 
-  public sendHealSync(health: number, shield: number): void {
-    if (!this.isOnlineRoom || !this.roomConnected) return;
-    this.sendPacket({
-      type: 'heal_sync',
-      sessionToken: this.sessionToken,
-      health,
-      shield,
-    });
-  }
-
   /**
    * Requests (rather than optimistically performs) a server-registered
    * pickup. Returns false when no live room socket can carry the request.
    */
   public sendAuthoritativeLootCollectRequest(
     item: LootItemState,
-    predictedSwappedDrop?: LootItemState
+    predictedSwappedDrop?: LootItemState,
+    reservedSlot?: number
   ): boolean {
     if (
       !this.isOnlineRoom ||
@@ -2016,6 +2084,7 @@ export class NetworkManager {
       itemType: item.itemType,
       position: this.activeLocalPlayer?.position,
       swappedDrop: predictedSwappedDrop,
+      slot: reservedSlot ?? (this.activeLocalPlayer?.activeSlot === 0 ? 1 : this.activeLocalPlayer?.activeSlot),
     });
     return true;
   }
@@ -2036,6 +2105,7 @@ export class NetworkManager {
       position,
       spawnedDrops,
       swappedDrop,
+      slot: this.activeLocalPlayer?.activeSlot === 0 ? 1 : this.activeLocalPlayer?.activeSlot,
     });
   }
 

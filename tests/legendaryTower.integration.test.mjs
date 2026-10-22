@@ -1,3 +1,5 @@
+import { claim } from './gameplayHelpers.mjs';
+import manifest from '../server/worldLootManifest.json' with {type:'json'};
 /**
  * CI Craft — Legendary Tower authoritative-loot integration tests.
  *
@@ -244,7 +246,7 @@ test('legendary tower vault: server seeding, one-time claims, forged-drop reject
       room.roomCode,
       'sess_tower_roof',
       'Tower_Roof',
-      { x: 0, y: 51, z: 3.4 }
+      { x: 0, y: 51.73, z: 3.4 }
     );
     assertVaultSync(roof.sync);
 
@@ -291,7 +293,7 @@ test('legendary tower vault: server seeding, one-time claims, forged-drop reject
       type: 'collect_loot',
       lootId: 'legendary_tower_fake_weapon',
       itemType: 'weapon',
-      position: { x: 0, y: 51, z: 3.4 },
+      position: { x: 0, y: 51.73, z: 3.4 },
     });
     assert.match((await fakeRejected).reason, /not server-registered/);
 
@@ -333,7 +335,7 @@ test('legendary tower vault: server seeding, one-time claims, forged-drop reject
         rarity: 'legendary',
         name: 'Forged Scatter Pump',
         amount: 1,
-        position: { x: 0, y: 51, z: 3.4 },
+        position: { x: 0, y: 51.73, z: 3.4 },
       },
     });
     const [collectorBroadcast, remoteBroadcast] = await Promise.all([
@@ -369,8 +371,10 @@ test('legendary tower vault: server seeding, one-time claims, forged-drop reject
     });
     assert.match((await duplicateRejected).reason, /already collected/);
 
+    // Fill the genuinely empty fourth slot before requesting a replacement.
+    await claim(wsRoof,manifest.items.find(i=>i.itemType==='weapon'));
     // A legitimate non-legendary swap is rebuilt/sanitized by the server.
-    await syncPosition(wsRoof, { x: -3, y: 51, z: 2.8 });
+    await syncPosition(wsRoof, { x: -3, y: 51.73, z: 2.8 });
     const assaultCollected = waitForMessage(
       wsFar,
       (msg) =>
@@ -383,8 +387,9 @@ test('legendary tower vault: server seeding, one-time claims, forged-drop reject
       type: 'collect_loot',
       authoritative: true,
       lootId: 'legendary_tower_assault_rifle',
+      slot: 2,
       itemType: 'weapon',
-      position: { x: -3, y: 51, z: 2.8 },
+      position: { x: -3, y: 51.73, z: 2.8 },
       swappedDrop: {
         id: 'swap_tower_test_1',
         itemType: 'weapon',
@@ -464,7 +469,7 @@ test('legendary tower vault: server seeding, one-time claims, forged-drop reject
     // Sniper above. Its server-side ownership entry therefore authorizes
     // exactly one broadcast swap when that same player claims the shotgun
     // with a full inventory; client-controlled name/amount are rebuilt.
-    await syncPosition(wsRoof, { x: 3, y: 51, z: 2.8 });
+    await syncPosition(wsRoof, { x: 3, y: 51.73, z: 2.8 });
     const shotgunCollected = waitForMessage(
       wsLate,
       (msg) =>
@@ -477,8 +482,9 @@ test('legendary tower vault: server seeding, one-time claims, forged-drop reject
       type: 'collect_loot',
       authoritative: true,
       lootId: 'legendary_tower_shotgun',
+      slot: 3,
       itemType: 'weapon',
-      position: { x: 3, y: 51, z: 2.8 },
+      position: { x: 3, y: 51.73, z: 2.8 },
       swappedDrop: {
         id: 'swap_tower_sniper_owned',
         itemType: 'weapon',
@@ -486,7 +492,7 @@ test('legendary tower vault: server seeding, one-time claims, forged-drop reject
         rarity: 'legendary',
         name: 'Client Controlled Sniper',
         amount: 999,
-        position: { x: 3, y: 51, z: 2.8 },
+        position: { x: 3, y: 51.73, z: 2.8 },
       },
     });
     const shotgunBroadcast = await shotgunCollected;
@@ -498,7 +504,7 @@ test('legendary tower vault: server seeding, one-time claims, forged-drop reject
     // Picking up that registered swap transfers the one-time ownership
     // entry to the second player. They may broadcast it once as a later
     // swap, but the consumed entry cannot authorize a second copy.
-    await syncPosition(wsFar, { x: 3, y: 51, z: 2.8 });
+    await syncPosition(wsFar, { x: 3, y: 51.73, z: 2.8 });
 
     // A lookalike generic chest drop is not tower provenance: even after
     // collecting the registered generic item, this player may not use it
@@ -515,7 +521,7 @@ test('legendary tower vault: server seeding, one-time claims, forged-drop reject
       type: 'collect_loot',
       lootId: 'generic_provenance_chest',
       itemType: 'chest',
-      position: { x: 3, y: 51, z: 2.8 },
+      position: { x: 3, y: 51.73, z: 2.8 },
       spawnedDrops: [
         {
           id: 'generic_forged_sniper',
@@ -524,7 +530,7 @@ test('legendary tower vault: server seeding, one-time claims, forged-drop reject
           rarity: 'legendary',
           name: 'Legendary Rail Sniper',
           amount: 1,
-          position: { x: 3, y: 51, z: 2.8 },
+          position: { x: 3, y: 51.73, z: 2.8 },
         },
       ],
     });
@@ -541,7 +547,7 @@ test('legendary tower vault: server seeding, one-time claims, forged-drop reject
       type: 'collect_loot',
       lootId: 'generic_forged_sniper',
       itemType: 'weapon',
-      position: { x: 3, y: 51, z: 2.8 },
+      position: { x: 3, y: 51.73, z: 2.8 },
       swappedDrop: {
         id: 'swap_generic_forged_sniper',
         itemType: 'weapon',
@@ -549,7 +555,7 @@ test('legendary tower vault: server seeding, one-time claims, forged-drop reject
         rarity: 'legendary',
         name: 'Legendary Rail Sniper',
         amount: 1,
-        position: { x: 3, y: 51, z: 2.8 },
+        position: { x: 3, y: 51.73, z: 2.8 },
       },
     });
     assert.equal((await genericSniperBroadcastPromise).swappedDrop, undefined);
@@ -566,10 +572,12 @@ test('legendary tower vault: server seeding, one-time claims, forged-drop reject
       type: 'collect_loot',
       lootId: 'swap_tower_sniper_owned',
       itemType: 'weapon',
-      position: { x: 3, y: 51, z: 2.8 },
+      position: { x: 3, y: 51.73, z: 2.8 },
     });
     await registeredSwapCollected;
 
+    await claim(wsFar,manifest.items.find(i=>i.itemType==='weapon'&&i.id!=='loot_init_0'));
+    await syncPosition(wsFar,{x:1.9,y:51.73,z:.8});
     const transferredSwapBroadcastPromise = waitForMessage(
       wsRoof,
       (msg) =>
@@ -581,8 +589,9 @@ test('legendary tower vault: server seeding, one-time claims, forged-drop reject
     sendJson(wsFar, {
       type: 'collect_loot',
       lootId: 'legendary_tower_medkit_1',
+      slot:3,
       itemType: 'material',
-      position: { x: 3, y: 51, z: 2.8 },
+      position: { x: 3, y: 51.73, z: 2.8 },
       swappedDrop: {
         id: 'swap_tower_sniper_transferred',
         itemType: 'weapon',
@@ -590,7 +599,7 @@ test('legendary tower vault: server seeding, one-time claims, forged-drop reject
         rarity: 'legendary',
         name: 'Client Controlled Sniper',
         amount: 999,
-        position: { x: 3, y: 51, z: 2.8 },
+        position: { x: 3, y: 51.73, z: 2.8 },
       },
     });
     const transferredSwapBroadcast = await transferredSwapBroadcastPromise;
@@ -615,7 +624,7 @@ test('legendary tower vault: server seeding, one-time claims, forged-drop reject
       type: 'collect_loot',
       lootId: 'legendary_tower_medkit_2',
       itemType: 'material',
-      position: { x: 3, y: 51, z: 2.8 },
+      position: { x: 3, y: 51.73, z: 2.8 },
       swappedDrop: {
         id: 'swap_tower_sniper_consumed',
         itemType: 'weapon',
@@ -623,7 +632,7 @@ test('legendary tower vault: server seeding, one-time claims, forged-drop reject
         rarity: 'legendary',
         name: 'Second Forged Sniper',
         amount: 1,
-        position: { x: 3, y: 51, z: 2.8 },
+        position: { x: 3, y: 51.73, z: 2.8 },
       },
     });
     assert.equal((await consumedSwapBroadcastPromise).swappedDrop, undefined);
@@ -708,7 +717,7 @@ test('legendary tower vault: managed lobby blocks pre-start claims and sends res
         accountId: account.accountId,
         accountToken: account.accountToken,
         playerName,
-        position: { x: 0, y: 51, z: 2.8 },
+        position: { x: 0, y: 51.73, z: 2.8 },
       });
       const result = await joined;
       assert.equal(result.type, 'room_joined');
@@ -730,8 +739,9 @@ test('legendary tower vault: managed lobby blocks pre-start claims and sends res
       type: 'collect_loot',
       authoritative: true,
       lootId: 'legendary_tower_shotgun',
+      slot: 3,
       itemType: 'weapon',
-      position: { x: 0, y: 51, z: 2.8 },
+      position: { x: 0, y: 51.73, z: 2.8 },
     });
     assert.match((await preStartRejected).reason, /has not started/);
 
@@ -774,7 +784,7 @@ test('legendary tower vault: managed lobby blocks pre-start claims and sends res
     assertVaultSync(hostSync);
     assertVaultSync(guestSync);
 
-    await syncPosition(wsHost, { x: 3, y: 51, z: 2.8 });
+    await syncPosition(wsHost, { x: 3, y: 51.73, z: 2.8 });
     const shotgunCollected = waitForMessage(
       wsGuest,
       (msg) =>
@@ -787,8 +797,9 @@ test('legendary tower vault: managed lobby blocks pre-start claims and sends res
       type: 'collect_loot',
       authoritative: true,
       lootId: 'legendary_tower_shotgun',
+      slot: 3,
       itemType: 'weapon',
-      position: { x: 3, y: 51, z: 2.8 },
+      position: { x: 3, y: 51.73, z: 2.8 },
     });
     const shotgun = await shotgunCollected;
     assert.equal(shotgun.authoritativeItem.name, 'Legendary Scatter Pump');

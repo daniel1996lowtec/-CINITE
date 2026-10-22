@@ -1,3 +1,4 @@
+import { equipRegistered, delay, send as sendGameplay, action, claim, receive, resumeActions, resumeShots } from './gameplayHelpers.mjs';
 /**
  * CI Craft — Human-only multiplayer integration tests.
  *
@@ -73,7 +74,7 @@ async function connectClient(port) {
 }
 
 function sendJson(ws, payload) {
-  ws.send(JSON.stringify(payload));
+  sendGameplay(ws,payload);
 }
 
 async function postJson(base, route, payload = {}) {
@@ -171,7 +172,7 @@ function joinPayload({ roomCode, roomMode, sessionToken, account, playerName, po
     accountId: account?.accountId,
     accountToken: account?.accountToken,
     playerName,
-    position: position || { x: 0, y: 10, z: 0 },
+    position: position || { x: 0, y: 80, z: 0 },
   };
 }
 
@@ -259,7 +260,7 @@ test('human-only rooms: authenticated lobby, ready gate, reconnect dedupe, zero 
       isAuthenticated: true,
       connectedHumans: 20,
       readyHumans: 20,
-      position: { x: 0, y: 10, z: 0 },
+      position: { x: 0, y: 80, z: 0 },
     });
     assert.equal((await rejected).code, 'authentication_required');
 
@@ -278,7 +279,7 @@ test('human-only rooms: authenticated lobby, ready gate, reconnect dedupe, zero 
       accountToken: `${accountA.accountId}.forgednonce.forgedsig`,
       playerName: 'Forged_Human',
       isAuthenticated: true,
-      position: { x: 0, y: 10, z: 0 },
+      position: { x: 0, y: 80, z: 0 },
     });
     assert.equal((await rejected).code, 'authentication_required');
 
@@ -312,7 +313,7 @@ test('human-only rooms: authenticated lobby, ready gate, reconnect dedupe, zero 
         sessionToken: 'sess_human_alpha',
         account: accountA,
         playerName: 'Human_Alpha',
-        position: { x: 0, y: 10, z: 0 },
+        position: { x: 0, y: 80, z: 0 },
       }),
       botCount: 19,
       aiFillEnabled: true,
@@ -420,7 +421,7 @@ test('human-only rooms: authenticated lobby, ready gate, reconnect dedupe, zero 
         sessionToken: 'sess_human_bravo',
         account: accountB,
         playerName: 'Human_Bravo',
-        position: { x: 5, y: 10, z: 5 },
+        position: { x: 5, y: 80, z: 5 },
       })
     );
     assert.equal(joinedB.connectedHumans, 2);
@@ -490,7 +491,7 @@ test('human-only rooms: authenticated lobby, ready gate, reconnect dedupe, zero 
         sessionToken: 'sess_human_bravo_reconnected',
         account: accountB,
         playerName: 'Human_Bravo',
-        position: { x: 5, y: 10, z: 5 },
+        position: { x: 5, y: 80, z: 5 },
       })
     );
     assert.equal(rejoinedB.connectedHumans, 2);
@@ -518,7 +519,7 @@ test('human-only rooms: authenticated lobby, ready gate, reconnect dedupe, zero 
         sessionToken: 'sess_human_bravo_replacement',
         account: accountB,
         playerName: 'Human_Bravo',
-        position: { x: 5, y: 10, z: 5 },
+        position: { x: 5, y: 80, z: 5 },
       })
     );
     assert.equal(transferredB.selfPlayerId, reconnectedBravoId);
@@ -542,7 +543,7 @@ test('human-only rooms: authenticated lobby, ready gate, reconnect dedupe, zero 
         sessionToken: 'sess_human_charlie',
         account: accountC,
         playerName: 'Human_Charlie',
-        position: { x: 10, y: 10, z: 10 },
+        position: { x: 10, y: 80, z: 10 },
       })
     );
     await waitForRoomState(
@@ -664,6 +665,7 @@ test('human-only rooms: authenticated lobby, ready gate, reconnect dedupe, zero 
     // Human-only combat/victory considers only the two human participants.
     // A catalogued Legendary Rail Sniper headshot is 226 server-derived
     // damage, regardless of the client's forged damage/name fields.
+    await equipRegistered(wsA,'sniper','legendary');
     const serverHitB = waitForMessage(
       wsB,
       (msg) => msg.type === 'server_hit' && msg.victimId === bravoPublicId,
@@ -680,8 +682,8 @@ test('human-only rooms: authenticated lobby, ready gate, reconnect dedupe, zero 
       type: 'fire_weapon',
       category: 'sniper',
       rarity: 'legendary',
-      muzzlePos: { x: 0, y: 11, z: 0 },
-      hitPoint: { x: 5, y: 11.7, z: 5 },
+      muzzlePos: { x: 0, y: 81, z: 0 },
+      hitPoint: { x: 5, y: 81.7, z: 5 },
     });
     sendJson(wsA, {
       type: 'combat_hit',
@@ -692,7 +694,7 @@ test('human-only rooms: authenticated lobby, ready gate, reconnect dedupe, zero 
       weaponName: 'Forged Weapon',
       weaponCategory: 'sniper',
       weaponRarity: 'legendary',
-      hitPoint: { x: 5, y: 11.7, z: 5 },
+      hitPoint: { x: 5, y: 81.7, z: 5 },
       // Spoofed claims must not alter authoritative elimination/victory logic.
       victimIsBot: true,
       aliveHumans: 20,
@@ -755,7 +757,7 @@ test('human-only rooms: authenticated lobby, ready gate, reconnect dedupe, zero 
         sessionToken: 'sess_human_charlie_public',
         account: accountC,
         playerName: 'Human_Charlie',
-        position: { x: 0, y: 10, z: 0 },
+        position: { x: 0, y: 80, z: 0 },
       })
     );
 
@@ -775,7 +777,7 @@ test('human-only rooms: authenticated lobby, ready gate, reconnect dedupe, zero 
         sessionToken: 'sess_human_delta_public',
         account: accountD,
         playerName: 'Human_Delta',
-        position: { x: 5, y: 10, z: 5 },
+        position: { x: 5, y: 80, z: 5 },
       })
     );
 
@@ -823,7 +825,7 @@ test('human-only rooms: authenticated lobby, ready gate, reconnect dedupe, zero 
         sessionToken: 'sess_human_alpha_storm',
         account: accountA,
         playerName: 'Human_Alpha',
-        position: { x: 0, y: 10, z: 0 },
+        position: { x: 0, y: 80, z: 0 },
       })
     );
     await joinHumanRoom(
@@ -834,7 +836,7 @@ test('human-only rooms: authenticated lobby, ready gate, reconnect dedupe, zero 
         sessionToken: 'sess_human_bravo_storm',
         account: accountB,
         playerName: 'Human_Bravo',
-        position: { x: 5, y: 10, z: 5 },
+        position: { x: 5, y: 80, z: 5 },
       })
     );
     const stormStarted = waitForMessage(
@@ -851,6 +853,7 @@ test('human-only rooms: authenticated lobby, ready gate, reconnect dedupe, zero 
     ).id;
 
     const sendCatalogHit = async (hitId, category, rarity) => {
+      await equipRegistered(wsStormA,category,rarity);
       const hitEvent = waitForMessage(
         wsStormB,
         (msg) =>
@@ -865,8 +868,8 @@ test('human-only rooms: authenticated lobby, ready gate, reconnect dedupe, zero 
         type: 'fire_weapon',
         category,
         rarity,
-        muzzlePos: { x: 0, y: 11, z: 0 },
-        hitPoint: { x: 5, y: 11, z: 5 },
+        muzzlePos: { x: 0, y: 81, z: 0 },
+        hitPoint: { x: 5, y: 81, z: 5 },
       });
       sendJson(wsStormA, {
         type: 'combat_hit',
@@ -876,7 +879,7 @@ test('human-only rooms: authenticated lobby, ready gate, reconnect dedupe, zero 
         weaponName: 'Forged Weapon',
         weaponCategory: category,
         weaponRarity: rarity,
-        hitPoint: { x: 5, y: 11, z: 5 },
+        hitPoint: { x: 5, y: 81, z: 5 },
       });
       return hitEvent;
     };
@@ -919,7 +922,7 @@ test('human-only rooms: authenticated lobby, ready gate, reconnect dedupe, zero 
     );
     sendJson(wsStormB, {
       type: 'player_sync',
-      position: { x: 400, y: 10, z: 0 },
+      position: { x: 400, y: 80, z: 0 },
       velocity: { x: 0, y: 0, z: 0 },
       yaw: 0,
       facingYaw: 0,
@@ -1070,7 +1073,7 @@ test('reserved human room codes preserve human-only mode across a server restart
       participantType: 'human',
       isBot: false,
       isAuthenticated: true,
-      position: { x: 0, y: 10, z: 0 },
+      position: { x: 0, y: 80, z: 0 },
     });
     assert.equal((await rejected).code, 'authentication_required');
     unauthenticatedWs.close();
@@ -1084,7 +1087,7 @@ test('reserved human room codes preserve human-only mode across a server restart
       accountId: account.accountId,
       accountToken: account.accountToken,
       playerName: 'Restart_Human',
-      position: { x: 0, y: 10, z: 0 },
+      position: { x: 0, y: 80, z: 0 },
     });
     assert.equal(joined.mode, 'human_only_private');
     assert.equal(joined.phase, 'lobby');
@@ -1105,7 +1108,7 @@ test('reserved human room codes preserve human-only mode across a server restart
   }
 });
 
-test('3.2 four humans: contested registered chest, forged loot rejection, synchronized winner and eliminations', async () => {
+test('3.3 four authenticated humans: contested loot, authoritative inventory/reload/use/swap, reconnect and final standings', async () => {
   const port = await getFreePort();
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cicraft-four-human-'));
   const server = await startServer({port, sqlitePath:path.join(tmpDir,'game.sqlite')});
@@ -1117,7 +1120,7 @@ test('3.2 four humans: contested registered chest, forged loot rejection, synchr
       const account = await createAccount(server.base,`Four_${i}`); accounts.push(account);
       const ws = await connectClient(port); sockets.push(ws);
       joins.push(await joinHumanRoom(ws,joinPayload({roomCode:room.roomCode,roomMode:'human_only_private',
-        sessionToken:`session_four_${i}`,account,playerName:`Four_${i}`,position:{x:i*2,y:10,z:0}})));
+        sessionToken:`session_four_${i}`,account,playerName:`Four_${i}`,position:{x:i*2,y:80,z:0}})));
     }
     const starts = sockets.map(ws=>waitForMessage(ws,m=>m.type==='match_started'));
     const registries = sockets.map(ws=>waitForMessage(ws,m=>m.type==='room_loot_sync'));
@@ -1155,19 +1158,138 @@ test('3.2 four humans: contested registered chest, forged loot rejection, synchr
     sendJson(sockets[0],{type:'collect_loot',lootId:farItem.id,position:chest.position});
     assert.match((await range).reason,/range/);
 
+    // Real authenticated owner-state protocol; no test-only server hooks.
+    const blocked = waitForMessage(sockets[0],m=>m.type==='loot_collect_rejected'&&m.lootId==='loot_init_4');
+    sendJson(sockets[0],{type:'player_sync',position:{x:-12.25,y:4.9,z:12.5}});
+    sendJson(sockets[0],{type:'collect_loot',lootId:'loot_init_4',position:{x:-16.25,y:4.9,z:16.5}});
+    assert.match((await blocked).reason,/geometry/,'nearby loot behind a wall is not reachable');
+    const correction=receive(sockets[0],m=>m.type==='position_corrected','embedded player correction');
+    sendJson(sockets[0],{type:'player_sync',position:{x:-21.35,y:4.7,z:-21}});
+    assert.deepEqual((await correction).position,{x:-12.25,y:4.9,z:12.5});
+
+    const potion=syncs[0].spawnedItems.find(i=>i.weaponCategory==='shield_potion');
+    const potionClaim=await claim(sockets[0],potion);
+    const potionSlot=potionClaim.state.activeSlot;
+    assert.equal(potionClaim.state.inventory[potionSlot].count,1);
+    const forgedHeal=receive(sockets[0],m=>m.type==='inventory_state','forged healing');
+    sendJson(sockets[0],{type:'heal_sync',health:999,shield:999});
+    assert.equal((await forgedHeal).shield,50);
+    const used=await action(sockets[0],'use');
+    assert.equal(used.result.accepted,true);assert.equal(used.shield,50);assert.equal(used.isHealing,true);
+    assert.equal((await action(sockets[0],'use')).result.accepted,false,'duplicate consume does not restart the timer');
+    const healed=await receive(sockets[0],m=>m.type==='inventory_state'&&!m.isHealing&&m.shield===100,'consumable completion');
+    assert.equal(healed.inventory[potionSlot],null);
+
+    await action(sockets[0],'switch',1);await delay(160);
+    const privateLeak=receive(sockets[1],m=>m.type==='inventory_state','private inventory leak',450).then(()=>true,()=>false);
+    const fired=receive(sockets[0],m=>m.type==='inventory_state'&&m.processedShotSeq===1,'magazine debit');
+    sendJson(sockets[0],{type:'fire_weapon',category:'assault_rifle',rarity:'uncommon',shotSeq:1});
+    assert.equal((await fired).inventory[1].clipAmmo,29);
+    await delay(190);
+    const replayShot=receive(sockets[0],m=>m.type==='inventory_state','shot replay');
+    sendJson(sockets[0],{type:'fire_weapon',category:'assault_rifle',rarity:'uncommon',shotSeq:1});
+    assert.equal((await replayShot).inventory[1].clipAmmo,29,'same shot ID never consumes/grants a second shot');
+    const forgedGun=receive(sockets[0],m=>m.type==='inventory_state'&&m.processedShotSeq===2,'unowned gun');
+    sendJson(sockets[0],{type:'fire_weapon',category:'sniper',rarity:'legendary',shotSeq:2});
+    assert.equal((await forgedGun).inventory[1].clipAmmo,29);
+    const loading=await action(sockets[0],'reload');assert.equal(loading.isReloading,true);
+    const forgedState=receive(sockets[0],m=>m.type==='inventory_state','forged reload/ammo metadata');
+    sendJson(sockets[0],{type:'player_sync',isReloading:false,reloadTimer:0,equippedCategory:'sniper',equippedRarity:'legendary',
+      ammo:{medium:99999},inventory:[{clipAmmo:99999}],health:999,shield:999});
+    sendJson(sockets[0],{type:'heal_sync',health:999,shield:999});
+    const unchanged=await forgedState;
+    assert.equal(unchanged.isReloading,true);assert.equal(unchanged.inventory[1].clipAmmo,29);assert.equal(unchanged.ammo.medium,90);
+    const blockedShot=receive(sockets[0],m=>m.type==='inventory_state'&&m.processedShotSeq===3,'shot during reload');
+    sendJson(sockets[0],{type:'fire_weapon',category:'assault_rifle',rarity:'uncommon',shotSeq:3});
+    assert.equal((await blockedShot).inventory[1].clipAmmo,29);
+    const cancel=await action(sockets[0],'switch',2);assert.equal(cancel.isReloading,false);
+    assert.equal(cancel.inventory[1].clipAmmo,29);assert.equal(cancel.ammo.medium,90);
+    assert.equal(await privateLeak,false,'owner inventory is not broadcast to opponents');
+    await action(sockets[0],'switch',1);
+    const restart=await action(sockets[0],'reload');assert.equal(restart.result.accepted,true);
+    const completed=await receive(sockets[0],m=>m.type==='inventory_state'&&!m.isReloading&&m.inventory[1]?.clipAmmo===30,'reload completion');
+    assert.equal(completed.ammo.medium,89);
+    const repeat=receive(sockets[0],m=>m.type==='inventory_state'&&m.result?.accepted===false,'repeated reload action');
+    sendJson(sockets[0],{type:'inventory_action',action:'reload',seq:restart.lastActionSeq});
+    assert.equal((await repeat).ammo.medium,89);
+
+    // Disconnect in a reload: reconnect/resetPlayer cannot mint ammo or heal.
+    const secondFire=receive(sockets[0],m=>m.type==='inventory_state'&&m.processedShotSeq===4,'second debit');
+    sendJson(sockets[0],{type:'fire_weapon',category:'assault_rifle',rarity:'uncommon',shotSeq:4});
+    assert.equal((await secondFire).inventory[1].clipAmmo,29);
+    await action(sockets[0],'reload');
+    const disconnected=waitForMessage(sockets[3],m=>m.type==='room_state'&&m.players.some(p=>p.id===joins[0].selfPlayerId&&!p.isConnected));
+    sockets[0].close();await disconnected;
+    sockets[0]=await connectClient(port);
+    const restoredState=receive(sockets[0],m=>m.type==='inventory_state','restored owner state');
+    const restoredJoin=await joinHumanRoom(sockets[0],{...joinPayload({roomCode:room.roomCode,roomMode:'human_only_private',
+      sessionToken:'session_four_0_reconnect',account:accounts[0],playerName:'Four_0',position:{x:0,y:80,z:0}}),resetPlayer:true});
+    assert.equal(restoredJoin.selfPlayerId,joins[0].selfPlayerId);
+    const restored=await restoredState;
+    resumeActions(sockets[0],restored.lastActionSeq);resumeShots(sockets[0],restored.processedShotSeq);
+    assert.equal(restored.isReloading,false);assert.equal(restored.inventory[1].clipAmmo,29);
+    assert.equal(restored.ammo.medium,89);assert.equal(restored.shield,100);
+
+    // Building/harvesting also spend owned state: no forged placement, damage,
+    // duplicate cell, or profitable self-built-material farming.
+    sendJson(sockets[0],{type:'player_sync',position:{x:200,y:80,z:0}});
+    const invalidBuild=receive(sockets[0],m=>m.type==='inventory_state','invalid build rejected');
+    sendJson(sockets[0],{type:'place_build',buildId:'build_four_invalid',pieceType:'invented',material:'wood',x:200,y:80,z:0,yaw:0});
+    assert.equal((await invalidBuild).materials.wood,100);
+    const built=receive(sockets[3],m=>m.type==='build_placed'&&m.buildId==='build_four_wall','validated build');
+    const spent=receive(sockets[0],m=>m.type==='inventory_state'&&m.materials.wood===90,'build material debit');
+    sendJson(sockets[0],{type:'place_build',buildId:'build_four_wall',pieceType:'wall',material:'wood',x:200,y:80,z:0,yaw:0});
+    await built;await spent;
+    const repeatedBuild=receive(sockets[0],m=>m.type==='inventory_state','duplicate build cell');
+    sendJson(sockets[0],{type:'place_build',buildId:'build_four_duplicate',pieceType:'wall',material:'wood',x:200,y:80,z:0,yaw:0});
+    assert.equal((await repeatedBuild).materials.wood,90);
+    const forgedEnvironment=receive(sockets[3],m=>m.type==='build_damaged','uncredited environment damage',250).then(()=>true,()=>false);
+    sendJson(sockets[0],{type:'damage_build',destructibleId:'build_four_wall',damage:999});
+    assert.equal(await forgedEnvironment,false);
+    await action(sockets[0],'switch',0);await delay(160);
+    for(let swing=0;swing<3;swing++) {
+      const damaged=receive(sockets[3],m=>m.type==='build_damaged'&&m.destructibleId==='build_four_wall','catalogued harvester damage');
+      sendJson(sockets[0],{type:'fire_weapon',category:'harvester',rarity:'rare'});
+      sendJson(sockets[0],{type:'damage_build',destructibleId:'build_four_wall',damage:999});
+      assert.equal((await damaged).damage,53);
+      if(swing<2)await delay(550);
+    }
+    const afterHarvest=receive(sockets[0],m=>m.type==='inventory_state','no self-build material minting');
+    sendJson(sockets[0],{type:'heal_sync',health:999,shield:999});
+    assert.equal((await afterHarvest).materials.wood,90);
+
+    // A full five-slot inventory drops its actual partial magazine, not the
+    // client-proposed legendary weapon/999 rounds; receiving it grants no bonus.
+    await claim(sockets[0],syncs[0].spawnedItems.find(i=>i.weaponCategory==='dmr'));
+    await claim(sockets[0],syncs[0].spawnedItems.find(i=>i.weaponCategory==='heavy_pistol'));
+    const replacement=syncs[0].spawnedItems.find(i=>i.weaponCategory==='smg');
+    const swapped=await claim(sockets[0],replacement,1,{id:'swap_four_partial',weaponCategory:'sniper',rarity:'legendary',amount:999,clipAmmo:999});
+    assert.equal(swapped.receipt.swappedDrop.weaponCategory,'assault_rifle');
+    assert.equal(swapped.receipt.swappedDrop.clipAmmo,29);
+    const transferred=await claim(sockets[1],swapped.receipt.swappedDrop);
+    assert.equal(transferred.state.inventory[3].clipAmmo,29);assert.equal(transferred.state.ammo.medium,90);
+    const receiptReplay=receive(sockets[0],m=>m.type==='loot_collected'&&m.lootId===replacement.id,'swap receipt replay');
+    sendJson(sockets[0],{type:'collect_loot',lootId:replacement.id});
+    assert.equal((await receiptReplay).swappedDrop.id,'swap_four_partial');
+    const noClone=receive(sockets[2],m=>m.type==='loot_collect_rejected'&&m.lootId==='swap_four_partial','consumed swap stays consumed');
+    sendJson(sockets[2],{type:'collect_loot',lootId:'swap_four_partial'});
+    assert.match((await noClone).reason,/already collected/);
+
+    await equipRegistered(sockets[0],'sniper','legendary');
+
     // End the real four-human match using the unchanged server weapon catalogue.
-    sockets.forEach((ws,i)=>sendJson(ws,{type:'player_sync',position:{x:i*2,y:10,z:0},isGrounded:true}));
+    sockets.forEach((ws,i)=>sendJson(ws,{type:'player_sync',position:{x:i*2,y:80,z:0},isGrounded:true}));
     await new Promise(r=>setTimeout(r,100));
     const endings = sockets.map(ws=>waitForMessage(ws,m=>m.type==='match_ended',7000));
     for(let i=1;i<4;i++) {
       const hitPromise=waitForMessage(sockets[0],m=>m.type==='server_hit'&&m.victimId===joins[i].selfPlayerId);
-      const hitPoint={x:i*2,y:11.7,z:0};
-      sendJson(sockets[0],{type:'fire_weapon',category:'sniper',rarity:'legendary',muzzlePos:{x:0,y:11,z:0},hitPoint});
+      const hitPoint={x:i*2,y:81.7,z:0};
+      sendJson(sockets[0],{type:'fire_weapon',category:'sniper',rarity:'legendary',muzzlePos:{x:0,y:81,z:0},hitPoint});
       sendJson(sockets[0],{type:'combat_hit',hitId:`four_final_${i}`,targetId:joins[i].selfPlayerId,
         weaponCategory:'sniper',weaponRarity:'legendary',hitPoint,damage:999999});
       const hit=await hitPromise;
       assert.equal(hit.damage,226); assert.equal(hit.attackerEliminations,i);
-      if(i<3) await new Promise(r=>setTimeout(r,1100));
+      if(i<3) await new Promise(r=>setTimeout(r,1400));
     }
     const results=await Promise.all(endings);
     for(const result of results) {

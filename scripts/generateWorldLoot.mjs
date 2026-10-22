@@ -52,7 +52,22 @@ export async function generateWorldLoot() {
       weapon(`${id}_server_h`,i % 2 ? 'medkit' : 'shield_potion',i % 2 ? 'uncommon':'rare',p)];
   });
   for (const item of world.legendaryTowerFloorLootItems) items.push({...item, serverAuthoritative:true});
-  return { version:1, items, chestDrops, starterLoadouts: schemas.STARTER_LOADOUT_ITEMS };
+  const catalogue = {};
+  for (const category of ['harvester', ...weapons.FIREARM_CATEGORIES, 'medkit', 'shield_potion']) {
+    for (const rarity of ['common', 'uncommon', 'rare', 'epic', 'legendary']) {
+      catalogue[`${category}:${rarity}`] = weapons.createWeaponStats(category, rarity);
+    }
+  }
+  // Build cells are snapped to 2m: a compact quantized height table lets the
+  // server reproduce the existing placement transform without rendering terrain.
+  const ground = [];
+  for (let z=-236;z<=236;z+=2) for (let x=-236;x<=236;x+=2) {
+    ground.push(Math.round(world.terrain.getTerrainHeight(x,z)*2)/2);
+  }
+  const geometry = { ground, boxes: world.boxColliders, cylinders: world.cylinderColliders,
+    props: [...world.destructibles.values()].map(p => ({ id:p.id, health:p.health,
+      material:p.materialType, position:position(p.position) })) };
+  return { version:1, items, chestDrops, starterLoadouts: schemas.STARTER_LOADOUT_ITEMS, catalogue, geometry };
 }
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const data = await generateWorldLoot();
@@ -62,6 +77,13 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     '\n  ],\n  "chestDrops": {\n' + Object.entries(data.chestDrops)
       .map(([id, drops]) => '    ' + JSON.stringify(id) + ': ' + JSON.stringify(drops)).join(',\n') +
     '\n  },\n  "starterLoadouts": ' + JSON.stringify(data.starterLoadouts) + '\n}\n';
+  for (const [name, value] of [['weaponCatalog', data.catalogue], ['worldCollisionManifest', data.geometry]]) {
+    const output = JSON.stringify(value) + '\n';
+    const file = path.join(root, `server/${name}.json`);
+    if (process.argv.includes('--check')) {
+      if (fs.readFileSync(file, 'utf8') !== output) throw new Error(`${name} drift: run npm run loot:generate`);
+    } else fs.writeFileSync(file, output);
+  }
   const dest = path.join(root, 'server/worldLootManifest.json');
   if (process.argv.includes('--check')) {
     if (fs.readFileSync(dest,'utf8') !== text) throw new Error('World loot registry drift: run npm run loot:generate');

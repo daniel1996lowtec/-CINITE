@@ -8,11 +8,12 @@ import * as THREE from 'three';
 import manifest from '../server/worldLootManifest.json' with {type:'json'};
 import { generateWorldLoot } from '../scripts/generateWorldLoot.mjs';
 import { loadWorldModules } from '../scripts/headlessWorld.mjs';
-import { createWorldLootMap, getChestRewards, validateLootClaim, resetLootOwnership, ownsLootDrop, transferLootOwnership } from '../server/worldLoot.mjs';
+import { createWorldLootMap, getChestRewards, validateLootClaim } from '../server/worldLoot.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 
 test('3.2 registry exactly matches actual map/catalogue; every registered reward is on safe geometry', async () => {
-  assert.deepEqual(JSON.parse(JSON.stringify(await generateWorldLoot())),manifest,'regenerate the registry when world/catalogue changes');
+  const {catalogue,geometry,...loot} = await generateWorldLoot();
+  assert.deepEqual(JSON.parse(JSON.stringify(loot)),manifest,'regenerate the registry when world/catalogue changes');
   const {IslandWorld}=await loadWorldModules(); const scene=new THREE.Scene();
   const world=new IslandWorld(scene); world.generate();
   const items=[...manifest.items,...Object.values(manifest.chestDrops).flat()];
@@ -35,20 +36,15 @@ test('3.2 registry exactly matches actual map/catalogue; every registered reward
   console.log(`3.2 world: ${meshes} mesh objects, ${triangles} triangles, ${world.boxColliders.length+world.cylinderColliders.length} colliders; ${manifest.items.length} registry entries`);
 });
 
-test('3.2 registry ownership/range: no unknown IDs, no forged coordinates, no duplicate swaps',()=>{
+test('3.2 registry identities/range: no unknown IDs, no forged coordinates, no duplicate claims',()=>{
   const room={spawnedLootItems:createWorldLootMap(),collectedLootIds:new Set()};
   const item=manifest.items.find(i=>i.itemType==='weapon');
-  const player={starterLoadout:'balanced',position:{...item.position}};resetLootOwnership(player);
+  const player={starterLoadout:'balanced',position:{...item.position}};
   assert.equal(validateLootClaim(room,player,item.id).item.id,item.id);
   player.position.y+=7;assert.match(validateLootClaim(room,player,item.id).reason,/range/);
   assert.match(validateLootClaim(room,player,'invented').reason,/registered/);
   player.position={...item.position};room.collectedLootIds.add(item.id);
   assert.match(validateLootClaim(room,player,item.id).reason,/already collected/);
-  const owned={weaponCategory:'pistol',rarity:'common'};
-  assert.equal(ownsLootDrop(player,owned),true);
-  assert.equal(ownsLootDrop(player,{weaponCategory:'sniper',rarity:'legendary'}),false);
-  transferLootOwnership(player,{itemType:'ammo'},owned);
-  assert.equal(ownsLootDrop(player,owned),false);
   const first=getChestRewards('chest_0');first[0].amount=999;
   assert.equal(getChestRewards('chest_0')[0].amount,1,'rewards are per-room copies');
 });

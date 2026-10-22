@@ -474,8 +474,11 @@ export class GameEngine {
       this.hud.spawnFloatingLabel(hitPoint, label, colorHex);
     };
 
-    this.playerController.onLocalPlayerHealed = (health, shield) => {
-      this.network.sendHealSync(health, shield);
+    this.playerController.usesServerInventory = () => this.network.isOnlineRoom;
+    this.playerController.onInventoryAction = (action, slot) => this.network.sendInventoryAction(action, slot);
+    this.network.onInventoryCompletion = kind => {
+      if (kind === 'reload') { this.sound.playReloadComplete(); this.hud.triggerReloadCompleteFlash(); }
+      else this.sound.playHeal();
     };
 
     this.playerController.onLocalReloadCompleted = () => {
@@ -505,8 +508,9 @@ export class GameEngine {
 
     this.lootSystem.onServerAuthoritativeLootRequested = (
       item,
-      predictedSwappedDrop
-    ) => this.network.sendAuthoritativeLootCollectRequest(item, predictedSwappedDrop);
+      predictedSwappedDrop,
+      reservedSlot
+    ) => this.network.sendAuthoritativeLootCollectRequest(item, predictedSwappedDrop, reservedSlot);
 
     this.network.onAuthoritativeLootCollected = (item, swappedDrop, spawnedDrops) => {
       const lp = this.network.state.players.get(this.network.localPlayerId);
@@ -588,9 +592,27 @@ export class GameEngine {
       this.network.state.buildables.set(piece.id, piece);
     };
 
+    this.network.onEnvironmentState = (health, destroyed) => {
+      for (const [id, remaining] of health) {
+        const prop = this.world.destructibles.get(id);
+        if (prop && prop.health > remaining) this.world.damageDestructible(id,prop.health-Math.max(0,remaining));
+      }
+      for (const id of destroyed) {
+        const prop = this.world.destructibles.get(id);
+        if (prop) this.world.damageDestructible(id,prop.maxHealth);
+        this.network.state.buildables.delete(id);
+      }
+    };
+
     this.network.onRemoteBuildDamaged = (destructibleId, damage) => {
       const res = this.world.damageDestructible(destructibleId, damage);
       if (res) {
+        if (res.destroyed) this.network.state.buildables.delete(destructibleId);
+        const local = this.network.state.players.get(this.network.localPlayerId);
+        if (local) {
+          const distance = Math.hypot(res.position.x-local.position.x,res.position.z-local.position.z);
+          if (distance < 100) this.sound.playSurfaceImpact(res.materialType,Math.max(0,1-distance/100));
+        }
         this.particles.spawnImpactBurst(
           res.position,
           res.materialType === 'wood' ? 0xb45309 : 0x94a3b8,
@@ -691,6 +713,8 @@ export class GameEngine {
       }
 
       if (isLocalVictim) {
+        const source = state.players.get(ev.attackerId);
+        if (source && localPlayer) this.hud.showDamageDirection(localPlayer,source.position,ev.isShieldHit);
         if (ev.attackerId === 'storm') this.hud.showCombatCue(`STORM DAMAGE −${Math.round(ev.damage)} HP`, '#c084fc');
         else if (isShieldBreak) this.hud.showCombatCue('SHIELD BROKEN — FIND COVER', '#67e8f9');
         this.sound.playDamageTaken();
@@ -1326,6 +1350,7 @@ export class GameEngine {
     }
     this.characterMeshes.clear();
     this.particles.clear();
+    this.playerController.resetPresentation();
     this.stormSystem.resetPresentation();
     this.world.resetDynamicStructures();
 
@@ -1483,6 +1508,7 @@ export class GameEngine {
     }
     this.characterMeshes.clear();
     this.particles.clear();
+    this.playerController.resetPresentation();
     this.stormSystem.resetPresentation();
     this.world.resetDynamicStructures();
 

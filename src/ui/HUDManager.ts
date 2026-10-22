@@ -1,3 +1,4 @@
+import { relativeThreatAngle } from './combatFeedback';
 import type { RoomSnapshot } from '../network/schemas';
 import * as THREE from 'three';
 import {
@@ -28,6 +29,8 @@ export class HUDManager {
   private combatCueTimer = 0;
   private previousWeaponKey = '';
   private weaponSwitchFlash = 0;
+  private threatTimer = 0;
+  private threatIndicator = document.getElementById('hud-threat-direction');
   private healthFill: HTMLElement;
   private healthText: HTMLElement;
   private shieldFill: HTMLElement;
@@ -151,6 +154,7 @@ export class HUDManager {
   }
 
   public resetHUD(): void {
+    this.threatTimer = 0; this.threatIndicator?.classList.add('hidden');
     this.combatCueTimer = 0;
     this.previousWeaponKey = '';
     this.weaponSwitchFlash = 0;
@@ -358,6 +362,14 @@ export class HUDManager {
       spark.style.animationDuration = `${(2.1 + Math.random() * 1.4).toFixed(2)}s`;
       confettiLayer.appendChild(spark);
     }
+  }
+
+  public showDamageDirection(player: PlayerState, source: {x:number; z:number}, shield: boolean): void {
+    const angle = relativeThreatAngle(player.position, source, player.yaw);
+    this.threatTimer = .85;
+    this.threatIndicator?.classList.remove('hidden');
+    this.threatIndicator?.style.setProperty('--threat-angle', `${angle}rad`);
+    this.threatIndicator?.style.setProperty('--threat-color', shield ? '#67e8f9' : '#fb7185');
   }
 
   public triggerDamageTakenFlash(): void {
@@ -597,6 +609,12 @@ export class HUDManager {
       this.projectDamageItem(d, camera);
     }
 
+    if (this.threatTimer > 0) {
+      this.threatTimer = Math.max(0,this.threatTimer-dt);
+      if (!this.threatTimer) this.threatIndicator?.classList.add('hidden');
+    }
+    if (player.isHealing) player.consumeRemaining = Math.max(0,(player.consumeRemaining || 0)-dt);
+
     // Vitals
     const hpPct = Math.max(0, (player.health / player.maxHealth) * 100);
     const shPct = Math.max(0, (player.shield / player.maxShield) * 100);
@@ -660,9 +678,11 @@ export class HUDManager {
     }
     this.weaponSwitchFlash = Math.max(0, this.weaponSwitchFlash - dt);
     this.activeAmmoCardEl?.classList.toggle('weapon-switch-feedback', this.weaponSwitchFlash > 0);
-    this.activeAmmoCardEl?.classList.toggle('is-reloading', player.isReloading);
-    const reloadProgress = player.isReloading && player.reloadDuration > 0
-      ? Math.max(0, Math.min(1, 1-player.reloadTimer/player.reloadDuration)) : 0;
+    this.activeAmmoCardEl?.classList.toggle('is-reloading', player.isReloading || player.isHealing);
+    const reloadProgress = player.isHealing && player.consumeDuration
+      ? Math.max(0,Math.min(1,1-(player.consumeRemaining || 0)/player.consumeDuration))
+      : player.isReloading && player.reloadDuration > 0
+        ? Math.max(0, Math.min(1, 1-player.reloadTimer/player.reloadDuration)) : 0;
     this.activeAmmoCardEl?.style.setProperty('--reload-progress', `${Math.round(reloadProgress * 100)}%`);
     if (activeItem) {
       this.activeWeaponName.textContent = activeItem.name;
@@ -672,7 +692,7 @@ export class HUDManager {
         this.activeAmmoRes.textContent = '';
       } else if (activeItem.isConsumable) {
         this.activeAmmoClip.textContent = `x${activeItem.count}`;
-        this.activeAmmoRes.textContent = 'USE';
+        this.activeAmmoRes.textContent = player.isHealing ? `USING ${(player.consumeRemaining || 0).toFixed(1)}s` : 'USE';
       } else {
         const res = this.getReserveAmmo(player, activeItem.ammoType);
         this.activeAmmoClip.textContent = `${activeItem.clipAmmo}`;

@@ -228,7 +228,8 @@ test('Upgrade 2.0 synchronization: server mirrors weapons/storm and burst firing
   assert.match(server, /getServerWeaponDamage\(weaponStats, isHeadshot\)/);
   assert.match(server, /consumeServerShot\(shooter, weaponStats\)/);
   assert.match(server, /consumeServerHitCredit\(attacker, weaponStats\)/);
-  assert.match(server, /weaponStats\.range \+ 12/);
+  assert.match(server, /weaponStats\.range \+ rangeAllowance/);
+  assert.match(server, /category === 'harvester' \? 1 : 12/);
   assert.doesNotMatch(server, /Math\.min\(240, Math\.round\(Number\(msg\.damage/);
   assert.doesNotMatch(server, /const isHeadshot = Boolean\(msg\.isHeadshot\)/);
   assert.match(server, /validatedHitPoint\.y - Number\(victim\.position\?\.y/);
