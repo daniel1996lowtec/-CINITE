@@ -139,20 +139,23 @@ export class PlayerController {
     }
 
     if (player.isGliding) {
+      if (input.buildType) this.onBuildRejected?.('Land before building.', input.buildType);
+      const previousY = player.position.y;
       const glideSpeed = input.sprint ? 22.0 : 15.0;
       const descendRate = input.sprint ? -17.0 : -7.8;
       player.velocity.x = normX * glideSpeed;
       player.velocity.z = normZ * glideSpeed;
       player.velocity.y = descendRate;
 
-      player.position.x += player.velocity.x * dt;
-      player.position.z += player.velocity.z * dt;
+      this.moveHorizontally(player, world, player.velocity.x * dt, player.velocity.z * dt);
       player.position.y += player.velocity.y * dt;
 
       const groundY = world.getGroundHeightAt(
         player.position.x,
-        player.position.y,
-        player.position.z
+        previousY,
+        player.position.z,
+        0,
+        .38
       );
       if (player.position.y <= groundY + 0.1) {
         player.position.y = groundY;
@@ -213,22 +216,21 @@ export class PlayerController {
     // Gravity
     player.velocity.y -= 24.5 * dt;
 
-    // Apply horizontal displacement + collision resolution
-    const nextX = player.position.x + player.velocity.x * dt;
-    const nextZ = player.position.z + player.velocity.z * dt;
-    const resolved = world.resolveHorizontalCollision(nextX, player.position.y, nextZ, 0.48);
-    player.position.x = resolved.x;
-    player.position.z = resolved.z;
+    // Bounded steps prevent fast glide/sprint movement skipping thin walls.
+    this.moveHorizontally(player, world, player.velocity.x * dt, player.velocity.z * dt);
 
     // Apply vertical displacement + floor/ramp snap
+    const previousY = player.position.y;
     player.position.y += player.velocity.y * dt;
     const groundY = world.getGroundHeightAt(
       player.position.x,
-      player.position.y,
-      player.position.z
+      previousY,
+      player.position.z,
+      wasGrounded ? .6 : 0,
+      .38
     );
 
-    if (player.position.y <= groundY) {
+    if (player.velocity.y <= 0 && player.position.y <= groundY) {
       player.position.y = groundY;
       player.velocity.y = 0;
       player.isGrounded = true;
@@ -308,6 +310,17 @@ export class PlayerController {
     );
   }
 
+  private moveHorizontally(player: PlayerState, world: IslandWorld, dx: number, dz: number): void {
+    const steps = Math.max(1, Math.ceil(Math.hypot(dx, dz) / .25));
+    for (let i = 0; i < steps; i++) {
+      const resolved = world.resolveHorizontalCollision(
+        player.position.x + dx / steps, player.position.y, player.position.z + dz / steps, .48);
+      player.position.x = resolved.x;
+      player.position.z = resolved.z;
+    }
+  }
+
+  public onBuildRejected?: (reason: string, piece: BuildPieceType) => void;
   public usesServerInventory?: () => boolean;
   public onInventoryAction?: (action: 'switch' | 'reload' | 'use', slot?: number) => void;
   private serverOwned(player: PlayerState): boolean {
@@ -363,6 +376,7 @@ export class PlayerController {
         player.yaw
       )
     ) {
+      this.onBuildRejected?.('Invalid placement: blocked, occupied or outside the island.', buildType);
       return null;
     }
 
@@ -390,7 +404,7 @@ export class PlayerController {
       matUsed = 'metal';
     }
 
-    if (!matUsed) return null;
+    if (!matUsed) { this.onBuildRejected?.('Not enough materials (10 required).', buildType); return null; }
     if (this.serverOwned(player)) {
       this.onLocalBuildPlaced?.(`build_${Date.now()}_${Math.random().toString(36).slice(2,8)}`,
         buildType, player.position.x, player.position.y, player.position.z, player.yaw, matUsed);

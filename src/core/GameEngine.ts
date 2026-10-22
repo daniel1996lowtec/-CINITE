@@ -479,6 +479,15 @@ export class GameEngine {
       this.hud.spawnFloatingLabel(hitPoint, label, colorHex);
     };
 
+    this.playerController.onBuildRejected = (reason, piece) => {
+      this.hud.showLootToast(reason, '#f87171', false);
+      this.activeBuildPreview = this.activeBuildPreview || piece;
+      this.hud.updateBuildModeIndicator(this.activeBuildPreview);
+    };
+    this.network.onBuildRejected = (reason, piece) => {
+      if (piece) this.playerController.onBuildRejected?.(reason, piece);
+      else this.hud.showLootToast(reason, '#f87171', false);
+    };
     this.playerController.usesServerInventory = () => this.network.isOnlineRoom;
     this.playerController.onInventoryAction = (action, slot) => this.network.sendInventoryAction(action, slot);
     this.network.onInventoryCompletion = kind => {
@@ -595,6 +604,7 @@ export class GameEngine {
         buildId
       );
       this.network.state.buildables.set(piece.id, piece);
+      if (ownerId === this.network.serverPlayerId) this.sound.playBuild();
     };
 
     this.network.onEnvironmentState = (health, destroyed) => {

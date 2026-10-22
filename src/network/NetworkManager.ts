@@ -61,6 +61,7 @@ export type NetworkConnectionState =
 export interface RemoteInterpolationTarget {
   targetX: number;
   targetY: number;
+  grounded?: boolean;
   targetZ: number;
   velX: number;
   velY: number;
@@ -371,6 +372,7 @@ export class NetworkManager {
   private inventoryActionSeq = 0;
   private inventoryShotSeq = 0;
   private pendingInventoryShots = new Map<number, {slot: number; weaponId: string}>();
+  public onBuildRejected?: (reason: string, piece?: BuildPieceType) => void;
   public onInventoryCompletion?: (kind: 'reload' | 'use') => void;
 
   public sendInventoryAction(action: 'switch' | 'reload' | 'use', slot?: number): void {
@@ -1379,7 +1381,7 @@ export class NetworkManager {
               alive: Boolean(rp.alive ?? true),
               position: {
                 x: Number(incomingPos.x) || 0,
-                y: Number(incomingPos.y) || 6,
+                y: Number(incomingPos.y ?? 6),
                 z: Number(incomingPos.z) || 0,
               },
               velocity: {
@@ -1449,6 +1451,7 @@ export class NetworkManager {
             this.remoteTargets.set(id, {
               targetX: existing.position.x,
               targetY: existing.position.y,
+              grounded: existing.isGrounded,
               targetZ: existing.position.z,
               velX: existing.velocity.x,
               velY: existing.velocity.y,
@@ -1494,6 +1497,7 @@ export class NetworkManager {
               target = {
                 targetX: nextX,
                 targetY: nextY,
+                grounded: Boolean(rp.isGrounded ?? true),
                 targetZ: nextZ,
                 velX: nextVelX,
                 velY: nextVelY,
@@ -1507,6 +1511,7 @@ export class NetworkManager {
             } else {
               target.targetX = nextX;
               target.targetY = nextY;
+              target.grounded = Boolean(rp.isGrounded ?? true);
               target.targetZ = nextZ;
               target.velX = nextVelX;
               target.velY = nextVelY;
@@ -1545,7 +1550,8 @@ export class NetworkManager {
             existing.isAiming = Boolean(rp.isAiming);
             existing.isSprinting = Boolean(rp.isSprinting);
             const wasGrounded = existing.isGrounded;
-            existing.isGrounded = Boolean(rp.isGrounded ?? true);
+            existing.isGrounded = Boolean(rp.isGrounded ?? true) &&
+              (!this.hasRenderLoopDrivenInterpolation || Math.abs(existing.position.y-nextY)<.04);
             if (!wasGrounded && existing.isGrounded) {
               existing.landingImpactTimer = 0.18;
             }
@@ -1734,8 +1740,15 @@ export class NetworkManager {
         break;
       }
 
+      case 'build_rejected': {
+        const piece = String(msg.pieceType || '');
+        this.onBuildRejected?.(String(msg.reason || 'Placement rejected.'),
+          ['wall','floor','ramp','roof'].includes(piece) ? piece as BuildPieceType : undefined);
+        break;
+      }
       case 'build_placed': {
-        if (String(msg.ownerId || '') === this.serverPlayerId) break;
+        // Geometry is server-authoritative for the owner too. World insertion
+        // deduplicates by buildId (including replay/reconnect acknowledgments).
         this.onRemoteBuildPlaced?.(
           String(msg.buildId || `build_${Date.now()}`),
           String(msg.ownerId),
@@ -1899,7 +1912,7 @@ export class NetworkManager {
       // Bounded velocity extrapolation (up to 60ms after last authoritative snapshot)
       const ageSec = Math.min(0.06, Math.max(0, (nowMs - target.lastPacketPerfMs) * 0.001));
       const goalX = target.targetX + target.velX * ageSec;
-      const goalY = target.targetY + target.velY * ageSec;
+      const goalY = target.targetY + (target.grounded ? 0 : target.velY * ageSec);
       const goalZ = target.targetZ + target.velZ * ageSec;
 
       const dx = goalX - player.position.x;
@@ -1917,6 +1930,11 @@ export class NetworkManager {
         player.position.z += dz * posBlend;
       }
 
+      if (target.grounded !== undefined) {
+        const grounded = target.grounded && Math.abs(player.position.y-target.targetY)<.04;
+        if (!player.isGrounded && grounded) player.landingImpactTimer = .18;
+        player.isGrounded = grounded;
+      }
       player.yaw = lerpShortestAngle(player.yaw, target.targetYaw, rotBlend);
       player.facingYaw = lerpShortestAngle(
         player.facingYaw,
@@ -2064,7 +2082,11 @@ export class NetworkManager {
     yaw: number,
     material: BuildMaterialType
   ): void {
-    if (!this.isOnlineRoom || !this.roomConnected) return;
+    if (!this.isOnlineRoom) return; // Solo already inserted its geometry locally.
+    if (!this.roomConnected || this.ws?.readyState !== WebSocket.OPEN) {
+      this.onBuildRejected?.('Not connected to the match server.', pieceType);
+      return;
+    }
     this.sendPacket({
       type: 'place_build',
       sessionToken: this.sessionToken,

@@ -10,7 +10,7 @@
  */
 import { createWorldLootMap, getChestRewards, validateLootClaim } from './worldLoot.mjs';
 import { resetInventory, inventoryAction, advanceInventory, fireInventory, collectInventory, inventorySnapshot, cancelInventoryAction, weaponStats as catalogueStats } from './inventory.mjs';
-import { canReachLoot, hasLineOfSight, worldProps, buildTransform, isPlayerPositionClear, safeSpawnPosition } from './worldGeometry.mjs';
+import { canReachLoot, hasLineOfSight, worldProps, buildTransform, isBuildPlacementClear, isPlayerPositionClear, safeSpawnPosition } from './worldGeometry.mjs';
 import { validateChatText, createChatRateLimiter } from './textChat.mjs';
 const allowChatAttempt = createChatRateLimiter();
 import http from 'node:http';
@@ -3582,7 +3582,11 @@ server.on('upgrade', (req, socket) => {
           broadcastToRoom(currentRoom, receipt);
         } else if (msg.type === 'place_build' && currentRoom && currentSessionToken) {
           const builder = currentRoom.players.get(currentSessionToken);
-          if (!builder || !builder.alive) continue;
+          if (!builder || !builder.alive || builder.socket !== socket) continue;
+          const rejectBuild = reason => {
+            socket.write(encodeWsFrame({type:'build_rejected',buildId:msg.buildId,pieceType:msg.pieceType,reason}));
+            sendInventoryState(builder);
+          };
           if (
             isLobbyManagedRoom(currentRoom) &&
             (currentRoom.phase !== 'active' || !builder.isParticipant)
@@ -3597,12 +3601,13 @@ server.on('upgrade', (req, socket) => {
               currentRoom.buildables.size >= 600 || !['wall','ramp','floor','roof'].includes(pieceType) ||
               !['wood','stone','metal'].includes(material) || builder.materials[material] < 10 ||
               ![msg.x,msg.y,msg.z,msg.yaw].every(Number.isFinite) ||
+              Math.abs(msg.x)>450 || Math.abs(msg.z)>450 || msg.y < -20 || msg.y > 250 ||
               Math.hypot(msg.x-builder.position.x,msg.y-builder.position.y,msg.z-builder.position.z)>6) {
-            sendInventoryState(builder); continue;
+            rejectBuild(['wood','stone','metal'].includes(material) && builder.materials[material]<10 ? 'Not enough materials (10 required).' : 'Invalid or duplicate build request.'); continue;
           }
           const transform = buildTransform(msg);
-          if (!transform || transform.y < -.5 || [...currentRoom.buildables.values()].some(b=>buildTransform(b)?.cell===transform.cell)) {
-            sendInventoryState(builder); continue;
+          if (!transform || transform.y < -.5 || !isBuildPlacementClear(currentRoom,msg) || [...currentRoom.buildables.values()].some(b=>buildTransform(b)?.cell===transform.cell)) {
+            rejectBuild('Placement blocked or cell already occupied.'); continue;
           }
           builder.materials[material] -= 10;
           builder.inventoryRevision++; sendInventoryState(builder);
@@ -3617,7 +3622,7 @@ server.on('upgrade', (req, socket) => {
             x: clampFinite(msg.x, -450, 450, 0),
             y: clampFinite(msg.y, -20, 250, 0),
             z: clampFinite(msg.z, -450, 450, 0),
-            yaw: clampFinite(msg.yaw, -Math.PI * 4, Math.PI * 4, 0),
+            yaw: Math.atan2(Math.sin(msg.yaw), Math.cos(msg.yaw)),
             material: safeMat,
             health: maxHp,
           };

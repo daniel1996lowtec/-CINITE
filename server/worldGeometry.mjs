@@ -1,3 +1,4 @@
+import { overlapsBuildGeometry, normalizeBuildYaw } from '../shared/buildPlacement.mjs';
 import geometry from './worldCollisionManifest.json' with { type:'json' };
 // Immutable generated collision data; no Three.js scene or render assets on server.
 export const worldProps = new Map(geometry.props.map(p => [p.id,p]));
@@ -28,6 +29,7 @@ function segmentCylinder(a,b,c) {
   return lo<=hi && hi>0.001 && lo<0.999;
 }
 export function buildTransform(b) {
+  b = {...b, yaw: normalizeBuildYaw(b.yaw)};
   const x=Math.round((b.x-Math.sin(b.yaw)*3.5)/2)*2;
   const z=Math.round((b.z-Math.cos(b.yaw)*3.5)/2)*2;
   if (Math.hypot(x,z)>236) return null;
@@ -105,4 +107,10 @@ export function hasLineOfSight(room,a,b,ignoreId) {
 export function canReachLoot(room,player,item) {
   return hasLineOfSight(room,{...player.position,y:player.position.y+1.2},
     {...item.position,y:item.position.y+.35});
+}
+
+export function isBuildPlacementClear(room, build) {
+  const t=buildTransform(build);
+  if(!t)return false;
+  return !overlapsBuildGeometry(build.pieceType,t,geometry.boxes.filter(b=>!room.destroyedProps?.has(b.destructibleId)),geometry.cylinders.filter(c=>!room.destroyedProps?.has(c.destructibleId)));
 }

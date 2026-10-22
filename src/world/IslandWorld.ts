@@ -1,3 +1,4 @@
+import { overlapsBuildGeometry, normalizeBuildYaw } from '../../shared/buildPlacement.mjs';
 import * as THREE from 'three';
 import { TerrainGenerator, ISLAND_POIS } from './TerrainGenerator';
 import { MapExpansionBuilder } from './MapExpansionBuilder';
@@ -2446,6 +2447,7 @@ export class IslandWorld {
     pz: number,
     yaw: number
   ): { bx: number; by: number; bz: number; snappedYaw: number; gridKey: string } {
+    yaw = normalizeBuildYaw(yaw);
     const dist = 3.5;
     const forwardX = -Math.sin(yaw);
     const forwardZ = -Math.cos(yaw);
@@ -2466,12 +2468,16 @@ export class IslandWorld {
     pz: number,
     yaw: number
   ): boolean {
-    const { bx, by, bz, gridKey } = this.computeBuildTransform(px, py, pz, yaw);
+    if (![px,py,pz,yaw].every(Number.isFinite)) return false;
+    const { bx, by, bz, snappedYaw, gridKey } = this.computeBuildTransform(px, py, pz, yaw);
     if (Math.hypot(bx, bz) > this.terrain.islandRadius + 6) return false;
     if (by < -0.5) return false;
     const cellKey = `${pieceType}_${gridKey}`;
     if (this.occupiedBuildCells.has(cellKey)) return false;
-    return true;
+    // Static geometry only: neighboring build pieces may intentionally connect.
+    const boxes = this.boxColliders.filter(b => !b.destructibleId?.startsWith('build_'));
+    const cylinders = this.cylinderColliders.filter(b => !b.destructibleId?.startsWith('build_'));
+    return !overlapsBuildGeometry(pieceType, {x:bx,y:by,z:bz,yaw:snappedYaw}, boxes, cylinders);
   }
 
   public updateBuildPreview(
@@ -2616,6 +2622,7 @@ export class IslandWorld {
         spawnScaleTimer: 0.16,
         gridKey: cellKey,
       });
+      this.walkableSurfaces.push({id, minX:bx-w/2,maxX:bx+w/2,minZ:bz-d/2,maxZ:bz+d/2,getHeight:()=>by+h});
     } else if (pieceType === 'floor') {
       const fw = 3.6;
       const fd = 3.6;
@@ -2662,6 +2669,7 @@ export class IslandWorld {
       });
     } else if (pieceType === 'roof') {
       const roofH = 1.9;
+      const roofRadius = 2.6 / Math.SQRT2;
       const group = new THREE.Group();
       group.position.set(bx, by + roofH / 2, bz);
 
@@ -2681,13 +2689,14 @@ export class IslandWorld {
 
       this.walkableSurfaces.push({
         id,
-        minX: bx - 1.8,
-        maxX: bx + 1.8,
-        minZ: bz - 1.8,
-        maxZ: bz + 1.8,
+        minX: bx - roofRadius,
+        maxX: bx + roofRadius,
+        minZ: bz - roofRadius,
+        maxZ: bz + roofRadius,
         getHeight: (qx: number, qz: number) => {
           const d = Math.max(Math.abs(qx - bx), Math.abs(qz - bz));
-          const t = Math.max(0, 1 - d / 1.8);
+          if (d <= .3) return by + roofH * .95 + .125; // visible ridge cap
+          const t = Math.max(0, 1 - d / roofRadius);
           return by + t * roofH;
         },
       });
@@ -2731,22 +2740,26 @@ export class IslandWorld {
       this.worldGroup.add(group);
       this.raycastMeshes.push(group);
 
-      const halfExtent = 1.75;
+      const halfX = isEastWest ? rampLen/2 : rampW/2;
+      const halfZ = isEastWest ? rampW/2 : rampLen/2;
+      // The slab's upper face shifts downhill when its thickness is rotated.
       const dirX = -Math.sin(snappedYaw);
       const dirZ = -Math.cos(snappedYaw);
+      const topShift = .125 * Math.sin(Math.atan2(rampH, rampLen));
+      const surfaceX = bx - dirX * topShift;
+      const surfaceZ = bz - dirZ * topShift;
 
       this.walkableSurfaces.push({
         id,
-        minX: bx - halfExtent,
-        maxX: bx + halfExtent,
-        minZ: bz - halfExtent,
-        maxZ: bz + halfExtent,
+        minX: surfaceX - halfX,
+        maxX: surfaceX + halfX,
+        minZ: surfaceZ - halfZ,
+        maxZ: surfaceZ + halfZ,
         getHeight: (qx: number, qz: number) => {
           const relX = qx - bx;
           const relZ = qz - bz;
           const proj = relX * dirX + relZ * dirZ;
-          const t = Math.max(0, Math.min(1, (proj + halfExtent) / (halfExtent * 2)));
-          return by + t * rampH;
+          return by + rampH/2 + proj * rampH/rampLen + .125 / Math.cos(Math.atan2(rampH,rampLen));
         },
       });
 
@@ -2871,18 +2884,30 @@ export class IslandWorld {
     return material;
   }
 
-  public getGroundHeightAt(x: number, currentY: number, z: number): number {
+  public getGroundHeightAt(x: number, currentY: number, z: number, maxRise = 1.35, supportRadius = 0): number {
     let highest = Math.max(-0.85, this.terrain.getTerrainHeight(x, z));
 
     for (const surf of this.walkableSurfaces) {
       if (x >= surf.minX && x <= surf.maxX && z >= surf.minZ && z <= surf.maxZ) {
         const sh = surf.getHeight(x, z);
-        if (sh <= currentY + 1.35 && sh > highest) {
+        if (sh <= currentY + maxRise + 1e-6 && sh > highest) {
           highest = sh;
         }
       }
     }
 
+    // Solid collider tops are support planes too (parapets, crates, silos).
+    // Otherwise a glider enters their volume and the server repeatedly rewinds
+    // it before it can ever reach the lower named walkable surface.
+    const ceiling = currentY + maxRise + 1e-6;
+    for (const box of this.boxColliders) {
+      if (box.maxY > highest && box.maxY <= ceiling &&
+          x >= box.minX-supportRadius && x <= box.maxX+supportRadius && z >= box.minZ-supportRadius && z <= box.maxZ+supportRadius) highest = box.maxY;
+    }
+    for (const cylinder of this.cylinderColliders) {
+      if (cylinder.maxY > highest && cylinder.maxY <= ceiling &&
+          (x-cylinder.x)**2 + (z-cylinder.z)**2 <= (cylinder.radius+supportRadius)**2) highest = cylinder.maxY;
+    }
     return highest;
   }
 

@@ -1322,6 +1322,7 @@ window.addEventListener('DOMContentLoaded', () => {
       syncMuteUI(muted);
     }
     else if (e.code === 'KeyN') engine.cycleSpectatorTarget();
+    else if (e.repeat && ['KeyQ','KeyE','KeyC','KeyV'].includes(e.code)) return;
     else if (e.code === 'KeyQ') toggleBuildPiece('wall');
     else if (e.code === 'KeyE') toggleBuildPiece('ramp');
     else if (e.code === 'KeyC') toggleBuildPiece('floor');

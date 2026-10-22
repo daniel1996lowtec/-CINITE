@@ -11,7 +11,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 0.0.0.0 --port 4173",
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/database.test.mjs tests/botMode.test.mjs tests/lobbyBrowserUtils.test.mjs tests/lobbyBrowserUi.test.mjs tests/touchInput.test.mjs tests/mobileLandscape.test.mjs tests/visualAtmosphere.test.mjs tests/upgrade2.test.mjs tests/characterUpgrade3.test.mjs tests/multiplayer.integration.test.mjs tests/humanOnly.integration.test.mjs tests/lobbyBrowser.integration.test.mjs tests/legendaryTower.integration.test.mjs tests/legendaryTowerLoot.test.mjs tests/worldExpansion.test.mjs tests/evolution32.test.mjs tests/gameplay33.test.mjs tests/mobileHud.test.mjs tests/polish35.test.mjs tests/worldBranding.test.mjs tests/textChat.test.mjs tests/textChat.integration.test.mjs tests/displayName.test.mjs",
+    "test": "node --test tests/database.test.mjs tests/botMode.test.mjs tests/lobbyBrowserUtils.test.mjs tests/lobbyBrowserUi.test.mjs tests/touchInput.test.mjs tests/mobileLandscape.test.mjs tests/visualAtmosphere.test.mjs tests/upgrade2.test.mjs tests/characterUpgrade3.test.mjs tests/multiplayer.integration.test.mjs tests/humanOnly.integration.test.mjs tests/lobbyBrowser.integration.test.mjs tests/legendaryTower.integration.test.mjs tests/legendaryTowerLoot.test.mjs tests/worldExpansion.test.mjs tests/evolution32.test.mjs tests/gameplay33.test.mjs tests/mobileHud.test.mjs tests/polish35.test.mjs tests/worldBranding.test.mjs tests/textChat.test.mjs tests/textChat.integration.test.mjs tests/displayName.test.mjs tests/gameplay41.test.mjs",
     "test:db": "node --test tests/database.test.mjs",
     "test:multiplayer": "node --test tests/botMode.test.mjs tests/touchInput.test.mjs tests/multiplayer.integration.test.mjs tests/humanOnly.integration.test.mjs",
     "loot:generate": "node scripts/generateWorldLoot.mjs",
@@ -25,7 +25,9 @@
     "test:chat": "node --test tests/textChat.test.mjs tests/textChat.integration.test.mjs",
     "test:chat:browser": "node scripts/textChat.browser.mjs",
     "test:chat:game": "node scripts/textChat.game.browser.mjs",
-    "test:ui4:browser": "node scripts/menu4.browser.mjs"
+    "test:ui4:browser": "node scripts/menu4.browser.mjs",
+    "test:gameplay41": "node --test tests/gameplay41.test.mjs",
+    "test:gameplay41:browser": "node scripts/gameplay41.browser.mjs"
   },
   "engines": {
     "node": "22.14.0"

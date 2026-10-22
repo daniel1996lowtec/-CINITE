@@ -1236,7 +1236,7 @@ test('3.3 four authenticated humans: contested loot, authoritative inventory/rel
     const invalidBuild=receive(sockets[0],m=>m.type==='inventory_state','invalid build rejected');
     sendJson(sockets[0],{type:'place_build',buildId:'build_four_invalid',pieceType:'invented',material:'wood',x:200,y:80,z:0,yaw:0});
     assert.equal((await invalidBuild).materials.wood,100);
-    const built=receive(sockets[3],m=>m.type==='build_placed'&&m.buildId==='build_four_wall','validated build');
+    const built=Promise.all(sockets.map(ws=>receive(ws,m=>m.type==='build_placed'&&m.buildId==='build_four_wall','validated build for every player including owner')));
     const spent=receive(sockets[0],m=>m.type==='inventory_state'&&m.materials.wood===90,'build material debit');
     sendJson(sockets[0],{type:'place_build',buildId:'build_four_wall',pieceType:'wall',material:'wood',x:200,y:80,z:0,yaw:0});
     await built;await spent;
@@ -1257,6 +1257,47 @@ test('3.3 four authenticated humans: contested loot, authoritative inventory/rel
     const afterHarvest=receive(sockets[0],m=>m.type==='inventory_state','no self-build material minting');
     sendJson(sockets[0],{type:'heal_sync',health:999,shield:999});
     assert.equal((await afterHarvest).materials.wood,90);
+
+    // 4.1: every piece is accepted for all four players; replayed requests and
+    // empty material pools receive explicit rejection without duplicate debit.
+    let wood=90;
+    for (const [index,pieceType] of ['floor','ramp','roof'].entries()) {
+      const x=180-index*8,buildId=`build_four_${pieceType}`;
+      sendJson(sockets[0],{type:'player_sync',position:{x,y:80,z:0}});
+      const all=Promise.all(sockets.map(ws=>receive(ws,m=>m.type==='build_placed'&&m.buildId===buildId,'four-player piece receipt')));
+      const debit=receive(sockets[0],m=>m.type==='inventory_state'&&m.materials.wood===wood-10,'single debit');
+      const packet={type:'place_build',buildId,pieceType,material:'wood',x,y:80,z:0,yaw:Math.PI/2};
+      sendJson(sockets[0],packet);const receipts=await all;await debit;wood-=10;
+      assert.ok(receipts.every(r=>r.ownerId===joins[0].selfPlayerId&&r.pieceType===pieceType));
+      const rejection=receive(sockets[0],m=>m.type==='build_rejected'&&m.buildId===buildId,'replayed request rejection');
+      const unchanged=receive(sockets[0],m=>m.type==='inventory_state','replay did not spend');
+      sendJson(sockets[0],packet);await rejection;assert.equal((await unchanged).materials.wood,wood);
+    }
+    for(let index=0;index<6;index++) {
+      const x=120-index*8;sendJson(sockets[0],{type:'player_sync',position:{x,y:80,z:0}});
+      const debit=receive(sockets[0],m=>m.type==='inventory_state'&&m.materials.wood===wood-10,'spend remaining wood');
+      sendJson(sockets[0],{type:'place_build',buildId:`build_empty_${index}`,pieceType:'floor',material:'wood',x,y:80,z:0,yaw:0});
+      await debit;wood-=10;
+    }
+    const insufficient=receive(sockets[0],m=>m.type==='build_rejected'&&m.buildId==='build_no_wood','empty resources');
+    const noDebit=receive(sockets[0],m=>m.type==='inventory_state','empty inventory unchanged');
+    sendJson(sockets[0],{type:'place_build',buildId:'build_no_wood',pieceType:'floor',material:'wood',x:80,y:80,z:0,yaw:0});
+    assert.match((await insufficient).reason,/Not enough materials/);assert.equal((await noDebit).materials.wood,0);
+    const observerLeft=receive(sockets[3],m=>m.type==='room_state'&&m.players.some(p=>p.id===joins[2].selfPlayerId&&!p.isConnected),'observer disconnect');
+    sockets[2].close();await observerLeft;sockets[2]=await connectClient(port);
+    const replayed=[];const collectReplay=e=>{const m=JSON.parse(String(e.data));if(m.type==='build_placed')replayed.push(m)};
+    sockets[2].addEventListener('message',collectReplay);
+    const environment=receive(sockets[2],m=>m.type==='environment_state','persisted build replay complete');
+    const observerInventory=receive(sockets[2],m=>m.type==='inventory_state','observer restored inventory');
+    await joinHumanRoom(sockets[2],joinPayload({roomCode:room.roomCode,roomMode:'human_only_private',sessionToken:'session_four_2_reconnected',account:accounts[2],playerName:'Four_2',position:{x:0,y:80,z:0}}));
+    await environment;const restoredObserver=await observerInventory;
+    resumeActions(sockets[2],restoredObserver.lastActionSeq);resumeShots(sockets[2],restoredObserver.processedShotSeq);
+    assert.equal(replayed.length,9);assert.equal(new Set(replayed.map(b=>b.buildId)).size,9);
+    assert.ok(['floor','ramp','roof'].every(type=>replayed.some(b=>b.pieceType===type)));
+    assert.ok(!replayed.some(b=>b.buildId==='build_four_wall'),'destroyed walls are not resurrected');
+    sockets[2].removeEventListener('message',collectReplay);
+
+
 
     // A full five-slot inventory drops its actual partial magazine, not the
     // client-proposed legendary weapon/999 rounds; receiving it grants no bonus.
