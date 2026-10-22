@@ -506,16 +506,16 @@ export function createWeaponStats(
 const weaponTemplateCache = new Map<string, THREE.Group>();
 const SHARED_WEAPON_DARK_MAT = new THREE.MeshStandardMaterial({
   color: 0x1e293b,
-  roughness: 0.72,
-  metalness: 0.12,
-  flatShading: true,
+  roughness: 0.62,
+  metalness: 0.24,
+  flatShading: false,
 });
 const SHARED_WEAPON_GUNMETAL_MAT = new THREE.MeshStandardMaterial({
   color: 0x475569,
-  roughness: 0.32,
-  metalness: 0.82,
+  roughness: 0.28,
+  metalness: 0.84,
   envMapIntensity: 1.15,
-  flatShading: true,
+  flatShading: false,
 });
 
 function makeRarityAccentMaterial(rarity: WeaponRarity): THREE.MeshStandardMaterial {
@@ -523,11 +523,11 @@ function makeRarityAccentMaterial(rarity: WeaponRarity): THREE.MeshStandardMater
   return new THREE.MeshStandardMaterial({
     color,
     emissive: color,
-    emissiveIntensity: rarity === 'legendary' ? 0.26 : rarity === 'epic' ? 0.2 : 0.12,
-    roughness: rarity === 'legendary' ? 0.16 : 0.22,
-    metalness: rarity === 'legendary' ? 0.46 : 0.28,
+    emissiveIntensity: rarity === 'legendary' ? 0.22 : rarity === 'epic' ? 0.16 : 0.08,
+    roughness: rarity === 'legendary' ? 0.18 : 0.26,
+    metalness: rarity === 'legendary' ? 0.52 : 0.36,
     envMapIntensity: rarity === 'legendary' ? 1.15 : 0.85,
-    flatShading: true,
+    flatShading: false,
   });
 }
 
@@ -600,26 +600,67 @@ export function createWeaponMesh(
   const accentMat = SHARED_RARITY_ACCENT_MATS[rarity];
 
   if (category === 'harvester') {
-    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.042, 0.98, 6), darkMat);
-    shaft.position.set(0, 0.36, 0);
-    group.add(shaft);
+    const shaft = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.022, 0.026, 0.68, 12),
+      darkMat
+    );
+    shaft.position.set(0, 0.26, 0);
+    const lowerGrip = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.028, 0.028, 0.16, 12),
+      gunmetalMat
+    );
+    lowerGrip.position.set(0, 0.04, 0);
+    const upperCollar = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.032, 0.026, 0.1, 12),
+      gunmetalMat
+    );
+    upperCollar.position.set(0, 0.56, 0);
 
-    const headMat = new THREE.MeshStandardMaterial({
+    const headHousing = new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.032, 0.1, 6, 12),
+      gunmetalMat
+    );
+    headHousing.rotation.x = Math.PI / 2;
+    headHousing.position.set(0, 0.6, 0);
+
+    const tipMat = new THREE.MeshStandardMaterial({
       color: 0x38bdf8,
       emissive: 0x0284c7,
-      emissiveIntensity: 0.5,
-      roughness: 0.2,
-      flatShading: true,
+      emissiveIntensity: 0.28,
+      roughness: 0.24,
+      metalness: 0.62,
+      flatShading: false,
     });
-    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.13, 0.08), headMat);
-    blade.position.set(0, 0.84, 0.05);
-    blade.rotation.y = Math.PI / 2;
+    const frontPick = new THREE.Mesh(
+      new THREE.ConeGeometry(0.026, 0.2, 12),
+      gunmetalMat
+    );
+    frontPick.rotation.x = -Math.PI / 2 - 0.18;
+    frontPick.position.set(0, 0.58, -0.15);
 
-    const spike = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.26, 4), headMat);
-    spike.rotation.x = Math.PI / 2;
-    spike.position.set(0, 0.84, 0.38);
+    const rearPick = new THREE.Mesh(
+      new THREE.ConeGeometry(0.022, 0.15, 12),
+      tipMat
+    );
+    rearPick.rotation.x = Math.PI / 2 + 0.14;
+    rearPick.position.set(0, 0.59, 0.13);
 
-    group.add(blade, spike);
+    const collarRing = new THREE.Mesh(
+      new THREE.TorusGeometry(0.034, 0.006, 8, 16),
+      tipMat
+    );
+    collarRing.rotation.x = Math.PI / 2;
+    collarRing.position.set(0, 0.56, 0);
+
+    group.add(
+      shaft,
+      lowerGrip,
+      upperCollar,
+      headHousing,
+      frontPick,
+      rearPick,
+      collarRing
+    );
     weaponTemplateCache.set(cacheKey, group);
     return group.clone(true);
   }

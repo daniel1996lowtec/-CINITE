@@ -35,10 +35,13 @@ async function loadCharacterModules() {
     const cosmetics = await import(
       pathToFileURL(path.join(tmpDir, 'CharacterCosmetics.mjs')).href
     );
+    const weapons = await import(
+      pathToFileURL(path.join(tmpDir, 'WeaponDefinitions.mjs')).href
+    );
     const character = await import(
       pathToFileURL(path.join(tmpDir, 'CharacterMesh.mjs')).href
     );
-    return { THREE, cosmetics, character };
+    return { THREE, cosmetics, weapons, character };
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
@@ -136,9 +139,22 @@ function makePlayerState(overrides = {}) {
 }
 
 test('CI CRAFT 5.1 character model fix: no protruding blue BoxGeometry placeholders on back or arms across outfits, postures, weapon switches, and respawns', async () => {
-  const { THREE, cosmetics, character } = await loadCharacterModules();
+  const { THREE, cosmetics, weapons, character } = await loadCharacterModules();
   const { CharacterMesh } = character;
   await preloadBundledRig(CharacterMesh);
+
+  // Verify the starter harvester has no glowing blue BoxGeometry blade
+  const harvesterMesh = weapons.createWeaponMesh('harvester', 'rare');
+  harvesterMesh.traverse((child) => {
+    if (child.isMesh) {
+      assert.notEqual(
+        child.geometry.type,
+        'BoxGeometry',
+        'Harvester must not use a BoxGeometry blade'
+      );
+      assert.equal(child.material.flatShading, false);
+    }
+  });
 
   const camera = new THREE.Vector3(0, 1.6, 3.2);
   for (const outfitId of cosmetics.OUTFIT_PRESET_IDS) {
@@ -303,12 +319,32 @@ test('CI CRAFT 5.1 parachute redesign: curved multi-cell canopy, connected suspe
       assert.ok(mesh.gliderGroup.getObjectByName(`suspension_line_rear_${i}`));
     }
 
-    // Verify clean stowage upon landing
+    // Verify weaponSocket is stowed during gliding and both hands grip the steering toggles via IK
+    assert.equal(mesh.weaponSocket.visible, false, 'Weapon must be stowed while gliding');
+    const leftHandPos = mesh.gltfBones.leftHand.getWorldPosition(new THREE.Vector3());
+    const rightHandPos = mesh.gltfBones.rightHand.getWorldPosition(new THREE.Vector3());
+    const leftTogglePos = mesh.gliderGroup
+      .getObjectByName('steering_toggle_left')
+      .getWorldPosition(new THREE.Vector3());
+    const rightTogglePos = mesh.gliderGroup
+      .getObjectByName('steering_toggle_right')
+      .getWorldPosition(new THREE.Vector3());
+    assert.ok(
+      leftHandPos.distanceTo(leftTogglePos) < 0.025,
+      `Left hand must grip left steering toggle (dist=${leftHandPos.distanceTo(leftTogglePos)})`
+    );
+    assert.ok(
+      rightHandPos.distanceTo(rightTogglePos) < 0.025,
+      `Right hand must grip right steering toggle (dist=${rightHandPos.distanceTo(rightTogglePos)})`
+    );
+
+    // Verify clean stowage upon landing and weapon re-equip
     state.isGliding = false;
     state.isGrounded = true;
     state.velocity = { x: 0, y: 0, z: 0 };
     mesh.update(state, 1 / 60, camera);
     assert.equal(mesh.gliderGroup.visible, false, 'Parachute must stow cleanly on landing');
+    assert.equal(mesh.weaponSocket.visible, true, 'Weapon must reappear on landing');
   } finally {
     mesh.dispose();
   }

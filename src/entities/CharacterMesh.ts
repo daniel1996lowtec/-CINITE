@@ -922,9 +922,10 @@ export class CharacterMesh {
     beltBand.scale.set(1.16, 1, 0.8);
     beltBand.position.y = 0.06;
     const beltBuckle = new THREE.Mesh(
-      new THREE.BoxGeometry(0.14, 0.1, 0.06),
+      new THREE.CapsuleGeometry(0.034, 0.06, 6, 10),
       accentMat
     );
+    beltBuckle.rotation.z = Math.PI / 2;
     beltBuckle.position.set(0, 0.06, -0.21);
     this.pelvisGroup.add(pelvisMesh, beltBand, beltBuckle);
     this.proceduralFallbackGroup.add(this.pelvisGroup);
@@ -1645,23 +1646,30 @@ export class CharacterMesh {
       object.matrixAutoUpdate = false;
       this.attachmentBindings.push({ object, bone, inverseBind });
     }
+    this.updateOutfitAttachments();
   }
 
   private updateOutfitAttachments(): void {
-    if (!this.outfitAttachmentGroup?.visible) return;
+    if (!this.attachmentRest.size) return;
     this.root.updateMatrixWorld(true);
     this.attachmentBodyInverse.copy(this.bodyGroup.matrixWorld).invert();
-    for (const { object, bone, inverseBind } of this.attachmentBindings) {
-      object.matrix.multiplyMatrices(this.attachmentBodyInverse, bone.matrixWorld).multiply(inverseBind);
-      object.matrixWorldNeedsUpdate = true;
+    if (this.outfitAttachmentGroup?.visible) {
+      for (const { object, bone, inverseBind } of this.attachmentBindings) {
+        object.matrix
+          .multiplyMatrices(this.attachmentBodyInverse, bone.matrixWorld)
+          .multiply(inverseBind);
+        object.matrixWorldNeedsUpdate = true;
+      }
     }
     if (this.jumpPackGroup && this.gltfBones.spine2) {
       const rest = this.attachmentRest.get(this.gltfBones.spine2);
       if (rest) {
         this.attachmentMatrix.copy(rest).invert();
         this.jumpPackGroup.matrixAutoUpdate = false;
-        this.jumpPackGroup.matrix.multiplyMatrices(this.attachmentBodyInverse, this.gltfBones.spine2.matrixWorld)
-          .multiply(this.attachmentMatrix).multiply(this.packOffset);
+        this.jumpPackGroup.matrix
+          .multiplyMatrices(this.attachmentBodyInverse, this.gltfBones.spine2.matrixWorld)
+          .multiply(this.attachmentMatrix)
+          .multiply(this.packOffset);
         this.jumpPackGroup.matrixWorldNeedsUpdate = true;
       }
     }
@@ -1789,6 +1797,7 @@ export class CharacterMesh {
         this.jumpPackGroup.add(pod, nozzle);
       }
     }
+    this.updateOutfitAttachments();
   }
 
   /**
@@ -2289,6 +2298,10 @@ export class CharacterMesh {
     }
 
     this.updateParachuteRig(state, dt, horizontalSpeedForLean, facingDelta);
+    this.weaponSocket.visible = !state.isGliding;
+    if (state.isGliding) {
+      this.muzzleFlashMesh.visible = false;
+    }
 
     if (this.muzzleFlashTimer > 0) {
       this.muzzleFlashTimer = Math.max(0, this.muzzleFlashTimer - dt);
@@ -2660,15 +2673,11 @@ export class CharacterMesh {
     let reloadBoltPull = 0;
 
     if (state.isGliding) {
-      const sway = Math.sin(this.animTime * 2.4) * 0.04;
-      if (b.rightArm) b.rightArm.rotation.set(-0.42, 0.68, 2.05 + sway);
-      if (b.rightForeArm) b.rightForeArm.rotation.set(0.55, 0.18, 0.28);
-      if (b.leftArm) b.leftArm.rotation.set(-0.42, -0.68, -2.05 + sway);
-      if (b.leftForeArm) b.leftForeArm.rotation.set(0.55, -0.18, -0.28);
       if (b.rightUpLeg) b.rightUpLeg.rotation.x -= 0.22;
       if (b.leftUpLeg) b.leftUpLeg.rotation.x -= 0.18;
       if (b.rightLeg) b.rightLeg.rotation.x += 0.36;
       if (b.leftLeg) b.leftLeg.rotation.x += 0.32;
+      this.alignGliderHands();
     } else if (state.isReloading || this.reloadPoseBlend > 0.05) {
       this.reloadAnimClock += stepDt;
       const magMesh = this.weaponMagazine;
@@ -2709,12 +2718,12 @@ export class CharacterMesh {
         : 0;
     const adsCenterOffsetX = -this.aimPoseBlend * 0.035;
     const adsLiftOffsetY = this.aimPoseBlend * 0.03;
+    const harvesterSwingPitch =
+      activeCat === 'harvester' && this.attackSwingTimer > 0
+        ? -Math.sin((this.attackSwingTimer / 0.22) * Math.PI) * 0.85
+        : 0;
 
-    if (state.isGliding) {
-      // Sling weapon cleanly at hip/back harness while both hands grip parachute toggles
-      this.weaponSocket.position.set(0.16, 1.06, 0.14);
-      this.weaponSocket.rotation.set(-1.18, 0.16, 0.42);
-    } else if (b.rightHand && this.gltfModelGroup && distToCamera < 72) {
+    if (!state.isGliding && b.rightHand && this.gltfModelGroup && distToCamera < 72) {
       this.root.updateMatrixWorld(true);
       b.rightHand.getWorldPosition(this.tempHandWorldPos);
       this.bodyGroup.worldToLocal(this.tempHandWorldPos);
@@ -2724,18 +2733,18 @@ export class CharacterMesh {
         this.tempHandWorldPos.z - 0.1 + recoilKick * 0.14
       );
       this.weaponSocket.rotation.set(
-        state.pitch * 0.65 - recoilKick * 0.45 + drawTilt + this.swayPitchOffset,
+        state.pitch * 0.65 - recoilKick * 0.45 + drawTilt + this.swayPitchOffset + harvesterSwingPitch,
         this.swayYawOffset,
         -this.swayYawOffset * 0.5 + this.weaponSwitchRoll
       );
-    } else {
+    } else if (!state.isGliding) {
       this.weaponSocket.position.set(
         0.18 + adsCenterOffsetX,
         1.22 + adsLiftOffsetY + moveBobY + this.weaponSwitchDipY,
         -0.28 + recoilKick * 0.14
       );
       this.weaponSocket.rotation.set(
-        state.pitch * 0.65 - recoilKick * 0.45 + drawTilt + this.swayPitchOffset,
+        state.pitch * 0.65 - recoilKick * 0.45 + drawTilt + this.swayPitchOffset + harvesterSwingPitch,
         this.swayYawOffset,
         -this.swayYawOffset * 0.5 + this.weaponSwitchRoll
       );
@@ -2764,30 +2773,56 @@ export class CharacterMesh {
     action.time = this.locomotionPhase * action.getClip().duration;
   }
 
-  /** Two-bone support-hand IK. Cosmetic only; the gameplay ray never reads it. */
-  private alignSupportHand(category: WeaponCategory): void {
-    const upper = this.gltfBones.leftArm, lower = this.gltfBones.leftForeArm, hand = this.gltfBones.leftHand;
+  private alignArmIK(
+    upper: THREE.Object3D | undefined,
+    lower: THREE.Object3D | undefined,
+    hand: THREE.Object3D | undefined,
+    targetWorld: THREE.Vector3,
+    preferredPoleWorld?: THREE.Vector3
+  ): void {
     if (!upper || !lower || !hand) return;
     const [a, b, c, target, axis, pole, elbow, direction] = this.ikPoints;
     this.root.updateMatrixWorld(true);
-    upper.getWorldPosition(a); lower.getWorldPosition(b); hand.getWorldPosition(c);
-    const grip = getSupportGrip(category);
-    target.set(grip[0],grip[1],grip[2]);
-    this.weaponSocket.localToWorld(target);
-    const l1 = a.distanceTo(b), l2 = b.distanceTo(c);
+    upper.getWorldPosition(a);
+    lower.getWorldPosition(b);
+    hand.getWorldPosition(c);
+    target.copy(targetWorld);
+    const l1 = a.distanceTo(b);
+    const l2 = b.distanceTo(c);
     if (l1 < 0.001 || l2 < 0.001) return;
     axis.subVectors(target, a);
-    const distance = THREE.MathUtils.clamp(axis.length(), Math.abs(l1 - l2) + 0.001, l1 + l2 - 0.001);
+    const distance = THREE.MathUtils.clamp(
+      axis.length(),
+      Math.abs(l1 - l2) + 0.001,
+      l1 + l2 - 0.001
+    );
     axis.normalize();
     target.copy(a).addScaledVector(axis, distance);
-    pole.subVectors(b, a).addScaledVector(axis, -direction.subVectors(b, a).dot(axis));
+    if (preferredPoleWorld) {
+      pole
+        .copy(preferredPoleWorld)
+        .addScaledVector(axis, -preferredPoleWorld.dot(axis));
+    } else {
+      pole
+        .subVectors(b, a)
+        .addScaledVector(axis, -direction.subVectors(b, a).dot(axis));
+    }
     if (pole.lengthSq() < 0.00001) pole.set(0, -1, 0).addScaledVector(axis, axis.y);
     pole.normalize();
     const along = (l1 * l1 - l2 * l2 + distance * distance) / (2 * distance);
-    elbow.copy(a).addScaledVector(axis, along).addScaledVector(pole, Math.sqrt(Math.max(0, l1 * l1 - along * along)));
+    elbow
+      .copy(a)
+      .addScaledVector(axis, along)
+      .addScaledVector(pole, Math.sqrt(Math.max(0, l1 * l1 - along * along)));
     const [rotation, world, parent, delta] = this.ikRotations;
-    const rotateTo = (bone: THREE.Object3D, from: THREE.Vector3, to: THREE.Vector3, origin: THREE.Vector3) => {
-      axis.subVectors(from, origin).normalize(); direction.subVectors(to, origin).normalize();
+    const rotateTo = (
+      bone: THREE.Object3D,
+      from: THREE.Vector3,
+      to: THREE.Vector3,
+      origin: THREE.Vector3
+    ) => {
+      axis.subVectors(from, origin).normalize();
+      direction.subVectors(to, origin).normalize();
       delta.setFromUnitVectors(axis, direction);
       bone.getWorldQuaternion(world);
       bone.parent!.getWorldQuaternion(parent).invert();
@@ -2796,8 +2831,53 @@ export class CharacterMesh {
       bone.updateWorldMatrix(false, true);
     };
     rotateTo(upper, b, elbow, a);
-    lower.getWorldPosition(b); hand.getWorldPosition(c);
+    lower.getWorldPosition(b);
+    hand.getWorldPosition(c);
     rotateTo(lower, c, target, b);
+  }
+
+  /** Aligns both hands symmetrically to the overhead parachute steering toggles. */
+  private alignGliderHands(): void {
+    const b = this.gltfBones;
+    this.root.updateMatrixWorld(true);
+    const leftToggle = this.parachuteCanopyPivot?.getObjectByName('steering_toggle_left');
+    const rightToggle = this.parachuteCanopyPivot?.getObjectByName('steering_toggle_right');
+
+    const leftTarget = new THREE.Vector3(-0.27, 1.76, -0.09);
+    const rightTarget = new THREE.Vector3(0.27, 1.76, -0.09);
+    if (leftToggle) {
+      leftToggle.getWorldPosition(leftTarget);
+    } else {
+      this.bodyGroup.localToWorld(leftTarget);
+    }
+    if (rightToggle) {
+      rightToggle.getWorldPosition(rightTarget);
+    } else {
+      this.bodyGroup.localToWorld(rightTarget);
+    }
+
+    const leftPole = new THREE.Vector3(-0.65, -0.35, -0.45)
+      .applyQuaternion(this.root.quaternion)
+      .normalize();
+    const rightPole = new THREE.Vector3(0.65, -0.35, -0.45)
+      .applyQuaternion(this.root.quaternion)
+      .normalize();
+
+    this.alignArmIK(b.leftArm, b.leftForeArm, b.leftHand, leftTarget, leftPole);
+    this.alignArmIK(b.rightArm, b.rightForeArm, b.rightHand, rightTarget, rightPole);
+  }
+
+  /** Two-bone support-hand IK. Cosmetic only; the gameplay ray never reads it. */
+  private alignSupportHand(category: WeaponCategory): void {
+    const upper = this.gltfBones.leftArm,
+      lower = this.gltfBones.leftForeArm,
+      hand = this.gltfBones.leftHand;
+    if (!upper || !lower || !hand) return;
+    this.root.updateMatrixWorld(true);
+    const grip = getSupportGrip(category);
+    const target = new THREE.Vector3(grip[0], grip[1], grip[2]);
+    this.weaponSocket.localToWorld(target);
+    this.alignArmIK(upper, lower, hand, target);
   }
 
   /**
