@@ -61,6 +61,9 @@ export interface DestructibleProp {
 }
 
 export class IslandWorld {
+  private landmarkDetail = true;
+  private vaultLight: THREE.PointLight | null = null;
+  public setLandmarkDetail(enabled: boolean): void { this.landmarkDetail = enabled; }
   public scene: THREE.Scene;
   public terrain: TerrainGenerator;
   public boxColliders: BoxCollider[] = [];
@@ -549,6 +552,7 @@ export class IslandWorld {
 
     const vaultLight = new THREE.PointLight(0xfacc15, 85, 34, 2);
     vaultLight.name = 'LegendaryTowerVaultLight';
+    this.vaultLight = vaultLight;
     vaultLight.position.y = 4.2;
     group.add(vaultLight);
 
@@ -3227,7 +3231,14 @@ export class IslandWorld {
       const pulse = 1 + Math.sin(this.animTime * 2.6) * 0.035;
       this.legendaryTowerBeaconGroup.scale.set(pulse, 1, pulse);
     }
+    const towerDistanceSq = cameraPos
+      ? (cameraPos.x-LEGENDARY_TOWER.x)**2+(cameraPos.y-this.legendaryTowerRoofY)**2+(cameraPos.z-LEGENDARY_TOWER.z)**2 : 0;
+    if (this.vaultLight) {
+      this.vaultLight.visible = this.landmarkDetail && towerDistanceSq < 10000;
+      this.vaultLight.intensity = 78 + Math.sin(this.animTime * .9) * 7;
+    }
     if (this.legendaryTowerParticles) {
+      this.legendaryTowerParticles.visible = this.landmarkDetail && towerDistanceSq < 8100;
       this.legendaryTowerParticles.rotation.y -= dt * 0.55;
       this.legendaryTowerParticles.position.y = Math.sin(this.animTime * 1.4) * 0.18;
     }

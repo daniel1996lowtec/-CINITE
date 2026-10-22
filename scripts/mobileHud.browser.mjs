@@ -113,12 +113,61 @@ try {
   // Crosshair does not move when simultaneous status/pickup messages appear.
   await page.evaluate(()=>['hud-reload-banner','hud-pickup-prompt','hud-loot-toast'].forEach(id=>document.getElementById(id).classList.remove('hidden')));
   const cross=await page.locator('#hud-crosshair').boundingBox();assert.equal(cross.x+cross.width/2,422);assert.equal(cross.y+cross.height/2,195);
+  const presentation=await page.evaluate(async()=>{
+    const {HUDManager}=await import('/src/ui/HUDManager.ts');
+    const THREE=await import('/node_modules/three/build/three.module.js');
+    const ui=new HUDManager();
+    const byId=id=>document.getElementById(id);
+    ui.showHitmarker(true,true,false,true);
+    const breakClass=byId('hud-hitmarker').className;
+    ui.showHitmarker(false,false);const healthClass=byId('hud-hitmarker').className;
+    ui.showEliminationBanner('<img src=x onerror=alert(1)>','<b>rifle</b>',false,2);
+    ui.pushKillFeed('<img src=x>','<script>bad</script>','<b>rifle</b>');
+    const truthfulTotal=byId('hud-elim-banner').textContent.includes('2 ELIMS')&&!byId('hud-elim-banner').textContent.includes('DOUBLE');
+    const safeNames=!byId('hud-elim-banner').querySelector('img')&&!byId('hud-killfeed').querySelector('img,script,b');
+    for(let i=0;i<100;i++)ui.spawnDamageNumber(new THREE.Vector3(),12,false,false);
+    const damageCap=byId('damage-numbers-layer').children.length;
+    ui.reducedMotion=true;ui.spawnDamageNumber(new THREE.Vector3(),12,false,false);
+    const reducedCap=byId('damage-numbers-layer').children.length;
+    ui.triggerVictoryPresentation(true);const reducedConfetti=byId('victory-confetti-layer').children.length;
+    for(let i=0;i<30;i++)ui.pushKillFeed('A','B','Rifle');
+    const feedCap=ui.killFeedTimers.size;
+    ui.resetHUD();const cleared=ui.killFeedTimers.size===0&&byId('damage-numbers-layer').children.length===0;
+    ui.showFinalStandings({selfPlayerId:'a',winnerName:'Beta',players:[
+      {id:'a',name:'Alpha',isParticipant:true,eliminations:2},
+      {id:'b',name:'Beta',isParticipant:true,eliminations:3},
+      {id:'observer',name:'Observer',isParticipant:false,eliminations:0},
+    ]},{a:2,b:1});
+    const standings=[...byId('end-standings').children].map(e=>({text:e.textContent,self:e.classList.contains('is-self'),winner:e.classList.contains('is-winner')}));
+    ui.updateCountdown(0);const drop=byId('hud-storm-timer').textContent;
+    const player={id:'a',position:{x:300,y:0,z:300},velocity:{x:0,y:0,z:0},yaw:0,health:100,maxHealth:100,shield:50,maxShield:100,
+      eliminations:2,materials:{wood:100,stone:50,metal:25},selectedMaterial:'wood',inventory:[null,null,null,null,null],activeSlot:0,alive:true};
+    const match={phase:'ACTIVE',alivePlayers:4,players:new Map([['a',player]]),lootItems:new Map(),storm:{phase:6,phaseTimer:28,isShrinking:false,
+      currentRadius:30,currentCenterX:0,currentCenterZ:0,targetRadius:18,targetCenterX:0,targetCenterZ:0}};
+    const before=JSON.stringify(match.storm);ui.updateHUD(.2,match,player,null,false,new THREE.PerspectiveCamera());
+    const initial=byId('hud-storm-phase').textContent;
+    const readoutFits=['hud-storm-phase','hud-storm-timer'].every(id=>byId(id).scrollWidth<=byId(id).clientWidth);
+    match.storm.isShrinking=true;ui.updateHUD(.2,match,player,null,false,new THREE.PerspectiveCamera());
+    const closing=byId('hud-storm-phase').textContent;
+    ui.updateHUD(.2,match,player,null,true,new THREE.PerspectiveCamera());const outside=byId('hud-storm-phase').textContent;
+    const guidance=byId('hud-storm-timer').textContent;
+    const snapshotUnchanged=JSON.stringify({...match.storm,isShrinking:false})===before;
+    ui.resetHUD();ui.clearFinalStandings();
+    return {breakClass,healthClass,safeNames,truthfulTotal,damageCap,reducedCap,reducedConfetti,feedCap,cleared,standings,drop,initial,closing,outside,guidance,snapshotUnchanged,readoutFits};
+  });
+  assert.equal(presentation.breakClass,'hitmarker shield-break');assert.equal(presentation.healthClass,'hitmarker health');
+  assert.equal(presentation.safeNames,true);assert.equal(presentation.truthfulTotal,true);assert.equal(presentation.damageCap,24);assert.equal(presentation.reducedCap,12);
+  assert.equal(presentation.reducedConfetti,0);assert.equal(presentation.feedCap,5);assert.equal(presentation.cleared,true);
+  assert.deepEqual(presentation.standings,[{text:'#1 · Beta · 3 ELIMS',self:false,winner:true},{text:'#2 · Alpha · 2 ELIMS',self:true,winner:false}]);
+  assert.equal(presentation.readoutFits,true,'storm readout clipped');assert.equal(presentation.drop,'DROP!');assert.match(presentation.initial,/FINAL 6/);assert.match(presentation.closing,/CLOSING/);
+  assert.match(presentation.outside,/OUTSIDE/);assert.match(presentation.guidance,/0:28.*407m NW/);assert.equal(presentation.snapshotUnchanged,true);
+  console.log('3.5 real HUD: confirmed-hit styles, safe names, bounded damage/feed, reset, standings, countdown, storm guidance PASS');
   await page.evaluate(()=>{controls.destroy();hud.destroy()});
   const before=await page.evaluate(()=>events.length);await pointer('touch-fire-btn','pointerdown',99);assert.equal(await page.evaluate(()=>events.length),before,'disposed input listener retained');
   const desktop=await browser.newContext({hasTouch:false,isMobile:false});
   const desk=await desktop.newPage();
-  const baselineHtml=execFileSync('git',['show','4e4b9b3:index.html'],{encoding:'utf8'});
-  const baselineCss=execFileSync('git',['show','4e4b9b3:src/styles/main.css'],{encoding:'utf8'});
+  const baselineHtml=execFileSync('git',['show','e7dfd92:index.html'],{encoding:'utf8'});
+  const baselineCss=execFileSync('git',['show','e7dfd92:src/styles/main.css'],{encoding:'utf8'});
   for(const [width,height] of [[1440,900],[800,600]]) {
     await desk.setViewportSize({width,height});const snapshots=[];
     for(const [html,css] of [[baselineHtml,baselineCss],[fs.readFileSync('index.html','utf8'),fs.readFileSync('src/styles/main.css','utf8')]]) {
@@ -133,6 +182,6 @@ try {
     }
     assert.deepEqual(snapshots[1],snapshots[0],`desktop geometry changed at ${width}x${height}`);
   }
-  console.log('Desktop 1440x900 and narrow 800x600: identical to 3.3');
+  console.log('Desktop 1440x900 and narrow 800x600: identical to 3.4');
   console.log(JSON.stringify({layoutCases:sizes.length*6,results,input:'all actions, independent pointers, cancellation, panel isolation, cleanup PASS'},null,2));
 } finally {await browser.close()}

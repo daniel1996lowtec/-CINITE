@@ -30,7 +30,7 @@ function emit(element,type,extra={}){const event=new Event(type,{cancelable:true
 
 test('mobile HUD preferences: malformed, nonfinite, out-of-range and foreign values are safely normalized',()=>{
   for(const input of [null,undefined,[],{},'bad',{buttonSize:NaN,hudScale:Infinity,sensitivity:'2',advancedBuild:'true'}])assert.deepEqual(normalizeMobileHud(input),DEFAULT_MOBILE_HUD);
-  assert.deepEqual(normalizeMobileHud({buttonSize:99,hudScale:-1,sensitivity:99,advancedBuild:true,token:'not retained'}),{buttonSize:1.15,hudScale:.9,sensitivity:2.5,advancedBuild:true});
+  assert.deepEqual(normalizeMobileHud({buttonSize:99,hudScale:-1,sensitivity:99,advancedBuild:true,token:'not retained'}),{buttonSize:1.15,hudScale:.9,sensitivity:2.5,advancedBuild:true,reducedMotion:false});
 });
 test('mobile HUD: pointer expansion, compatibility-click deduplication, keyboard, reset and listener cleanup',()=>{
   const {doc,e}=documentFixture();const hud=new MobileHud(doc,()=>{});
@@ -67,4 +67,13 @@ test('mobile HUD: storage denial, corrupt JSON, legacy touch fallback and remoun
       hud.destroy();
     }
   }
+});
+
+test('3.5 reduced motion follows OS initially, persists explicit choice and resets to OS',()=>{
+  const {doc,e,stored}=documentFixture();doc.defaultView.matchMedia=()=>({matches:true});const seen=[];
+  let hud=new MobileHud(doc,()=>{},value=>seen.push(value));assert.equal(seen.at(-1),true);
+  e('setting-reduced-motion').checked=false;emit(e('setting-reduced-motion'),'change');assert.equal(seen.at(-1),false);
+  assert.equal(JSON.parse(stored.get(MOBILE_HUD_KEY)).reducedMotion,false);hud.destroy();
+  hud=new MobileHud(doc,()=>{},value=>seen.push(value));assert.equal(seen.at(-1),false);
+  emit(e('btn-reset-mobile-hud'),'click');assert.equal(seen.at(-1),true);hud.destroy();
 });

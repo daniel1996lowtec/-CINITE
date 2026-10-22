@@ -761,7 +761,7 @@
           <canvas id="minimap-canvas" width="176" height="176"></canvas>
         </div>
         <div class="storm-banner">
-          <span id="hud-storm-phase">PHASE 1 · SHRINKS IN</span>
+          <span id="hud-storm-phase" aria-live="polite" aria-atomic="true">PHASE 1 · SHRINKS IN</span>
           <span id="hud-storm-timer">1:30</span>
         </div>
       </div>
@@ -1184,6 +1184,8 @@
             <input id="setting-mobile-button-size" type="range" min="0.85" max="1.15" step="0.05" value="1">
             <label for="setting-mobile-hud-scale">Information scale <output id="val-mobile-hud-scale">100%</output></label>
             <input id="setting-mobile-hud-scale" type="range" min="0.9" max="1.1" step="0.05" value="1">
+            <label><input id="setting-reduced-motion" type="checkbox"> Reduced motion (all devices)</label>
+            <small>Reduces camera FOV pulses, shake and animated feedback; aiming recoil is unchanged. Defaults to your device preference.</small>
             <label><input id="setting-mobile-advanced-build" type="checkbox"> Open advanced build controls by default</label>
             <small>BUILD opens all four pieces and materials. FIRE places the selected piece. Tap the selected piece again to place it and exit build mode. BACK returns to combat buttons.</small>
             <button id="btn-reset-mobile-hud" class="secondary-action-btn" type="button">Reset mobile HUD &amp; camera</button>

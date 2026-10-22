@@ -4,17 +4,18 @@ export interface MobileHudPreferences {
   hudScale: number;
   sensitivity: number;
   advancedBuild: boolean;
+  reducedMotion: boolean;
 }
 export const MOBILE_HUD_KEY = 'ci_craft_mobile_hud_v1';
 export const DEFAULT_MOBILE_HUD: Readonly<MobileHudPreferences> = {
-  buttonSize: 1, hudScale: 1, sensitivity: 1, advancedBuild: false,
+  buttonSize: 1, hudScale: 1, sensitivity: 1, advancedBuild: false, reducedMotion: false,
 };
 export function normalizeMobileHud(value: unknown): MobileHudPreferences {
   const v = value && typeof value === 'object' ? value as Partial<MobileHudPreferences> : {};
   const number = (n: unknown, min: number, max: number) =>
     typeof n === 'number' && Number.isFinite(n) ? Math.max(min,Math.min(max,n)) : 1;
   return { buttonSize:number(v.buttonSize,.85,1.15), hudScale:number(v.hudScale,.9,1.1),
-    sensitivity:number(v.sensitivity,.3,2.5), advancedBuild:v.advancedBuild === true };
+    sensitivity:number(v.sensitivity,.3,2.5), advancedBuild:v.advancedBuild === true, reducedMotion:v.reducedMotion === true };
 }
 
 export class MobileHud {
@@ -26,14 +27,21 @@ export class MobileHud {
   private readonly doc: Document;
   private readonly onSensitivity: (value: number) => void;
   private lastSensitivity = Number.NaN;
-  constructor(doc: Document, onSensitivity: (value: number) => void) {
+  private readonly onReducedMotion: (value: boolean) => void;
+  private lastReducedMotion: boolean | undefined;
+  constructor(doc: Document, onSensitivity: (value: number) => void, onReducedMotion: (value: boolean) => void = () => {}) {
     this.doc = doc;
+    this.onReducedMotion = onReducedMotion;
     this.onSensitivity = onSensitivity;
     this.panel = doc.getElementById('touch-build-panel');
     this.secondary = doc.getElementById('touch-secondary-actions');
     this.toggle = doc.getElementById('touch-build-toggle-btn');
+    this.preferences.reducedMotion = doc.defaultView?.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
     try {
-      this.preferences = normalizeMobileHud(JSON.parse(doc.defaultView?.localStorage.getItem(MOBILE_HUD_KEY) || '{}'));
+      const saved: unknown = JSON.parse(doc.defaultView?.localStorage.getItem(MOBILE_HUD_KEY) || '{}');
+      const normalized = normalizeMobileHud(saved);
+      if (!saved || typeof saved !== 'object' || !('reducedMotion' in saved)) normalized.reducedMotion = this.preferences.reducedMotion;
+      this.preferences = normalized;
     } catch { /* Denied storage / malformed JSON must never stop gameplay. */ }
     const bind = (id: string, event: string, action: () => void) => {
       const element = doc.getElementById(id);
@@ -77,8 +85,12 @@ export class MobileHud {
       this.preferences.advancedBuild = (doc.getElementById('setting-mobile-advanced-build') as HTMLInputElement).checked;
       this.resetPanel(); this.save();
     });
+    bind('setting-reduced-motion','change',() => {
+      this.preferences.reducedMotion = (doc.getElementById('setting-reduced-motion') as HTMLInputElement).checked;
+      this.apply(); this.save();
+    });
     bind('btn-reset-mobile-hud','click',() => {
-      this.preferences = {...DEFAULT_MOBILE_HUD}; this.apply(); this.resetPanel(); this.save();
+      this.preferences = {...DEFAULT_MOBILE_HUD, reducedMotion:doc.defaultView?.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false}; this.apply(); this.resetPanel(); this.save();
     });
     this.apply(); this.resetPanel();
   }
@@ -98,6 +110,12 @@ export class MobileHud {
     }
     const advanced = this.doc.getElementById('setting-mobile-advanced-build') as HTMLInputElement | null;
     if (advanced) advanced.checked = this.preferences.advancedBuild;
+    const reduced = this.doc.getElementById('setting-reduced-motion') as HTMLInputElement | null;
+    if (reduced) reduced.checked = this.preferences.reducedMotion;
+    if (this.lastReducedMotion !== this.preferences.reducedMotion) {
+      this.lastReducedMotion = this.preferences.reducedMotion;
+      this.onReducedMotion(this.preferences.reducedMotion);
+    }
     if (this.lastSensitivity !== this.preferences.sensitivity) {
       this.lastSensitivity = this.preferences.sensitivity;
       this.onSensitivity(this.preferences.sensitivity);

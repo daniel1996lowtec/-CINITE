@@ -3,6 +3,8 @@ import { MatchState } from '../network/schemas';
 import { advanceStormState } from './StormConfig';
 
 export class StormSystem {
+  public reducedMotion = false;
+  private disposed = false;
   private scene: THREE.Scene;
   private stormWallMesh: THREE.Mesh;
   private stormLatticeMesh: THREE.LineSegments;
@@ -101,6 +103,7 @@ export class StormSystem {
   }
 
   public update(dt: number, state: MatchState): void {
+    if (this.disposed) return;
     const storm = state.storm;
 
     advanceStormState(storm, dt);
@@ -109,7 +112,8 @@ export class StormSystem {
   }
 
   public syncVisuals(state: MatchState, dt: number = 0): void {
-    this.animTime += dt;
+    if (this.disposed) return;
+    if (!this.reducedMotion) this.animTime += dt;
     const storm = state.storm;
     const r = Math.max(1, storm.currentRadius);
     const intensity = THREE.MathUtils.clamp((storm.phase - 5) / 3, 0, 1);
@@ -168,6 +172,8 @@ export class StormSystem {
   }
 
   public dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     for (const object of [this.stormWallMesh, this.stormLatticeMesh, this.safeZoneRingMesh,
       this.currentZoneRingMesh, this.finalZoneBeacon]) {
       object.removeFromParent(); object.geometry.dispose();

@@ -185,22 +185,23 @@ export class SoundManager {
     this.trackVoice(0.07);
   }
 
-  public playDamageTaken(): void {
+  public playDamageTaken(shield = false): void {
     if (!this.canPlay('damage_taken', 75)) return;
     const ctx = this.ensureContext();
     if (!ctx) return;
     const now = ctx.currentTime;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
-    osc.type = 'sawtooth';
-    osc.frequency.setValueAtTime(155, now);
-    osc.frequency.exponentialRampToValueAtTime(52, now + 0.13);
+    osc.type = shield ? 'sine' : 'triangle';
+    osc.frequency.setValueAtTime(shield ? 740 : 155, now);
+    osc.frequency.exponentialRampToValueAtTime(shield ? 310 : 52, now + 0.13);
     gain.gain.setValueAtTime(this.masterVolume * 0.36, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
     osc.connect(gain);
     gain.connect(ctx.destination);
     osc.start(now);
     osc.stop(now + 0.15);
+    osc.onended = () => { osc.disconnect(); gain.disconnect(); };
     this.trackVoice(0.15);
   }
 
@@ -224,6 +225,7 @@ export class SoundManager {
       gain.connect(ctx.destination);
       osc.start(t);
       osc.stop(t + 0.1);
+      osc.onended = () => { osc.disconnect(); gain.disconnect(); };
     });
     this.trackVoice(0.2);
   }
@@ -267,6 +269,7 @@ export class SoundManager {
     gain.connect(ctx.destination);
     osc.start(now);
     osc.stop(now + 0.075);
+    osc.onended = () => { osc.disconnect(); gain.disconnect(); };
     this.trackVoice(0.08);
   }
 
@@ -441,6 +444,7 @@ export class SoundManager {
       gain.connect(ctx.destination);
       osc.start(now);
       osc.stop(now + 0.15);
+      osc.onended = () => { osc.disconnect(); gain.disconnect(); };
 
       const subOsc = ctx.createOscillator();
       const subGain = ctx.createGain();
@@ -453,6 +457,7 @@ export class SoundManager {
       subGain.connect(ctx.destination);
       subOsc.start(now);
       subOsc.stop(now + 0.085);
+      subOsc.onended = () => { subOsc.disconnect(); subGain.disconnect(); };
       this.trackVoice(0.16);
     } else {
       osc.frequency.setValueAtTime(isShield ? 1120 : 840, now);
@@ -463,6 +468,7 @@ export class SoundManager {
       gain.connect(ctx.destination);
       osc.start(now);
       osc.stop(now + 0.072);
+      osc.onended = () => { osc.disconnect(); gain.disconnect(); };
       this.trackVoice(0.075);
     }
   }
@@ -544,6 +550,24 @@ export class SoundManager {
     this.trackVoice(0.06);
   }
 
+  /** Original, brief endgame ambience; never a loop or a fabricated countdown. */
+  public playFinalZoneCue(): void {
+    if (!this.canPlay('final_zone',1500)) return;
+    const ctx = this.ensureContext(); if (!ctx) return;
+    const now = ctx.currentTime;
+    for (const frequency of [146.83,220]) {
+      const osc = ctx.createOscillator(), gain = ctx.createGain();
+      osc.type = 'sine'; osc.frequency.setValueAtTime(frequency,now);
+      gain.gain.setValueAtTime(.001,now);
+      gain.gain.linearRampToValueAtTime(this.masterVolume*.09,now+.08);
+      gain.gain.exponentialRampToValueAtTime(.001,now+.6);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.onended = () => { osc.disconnect(); gain.disconnect(); };
+      osc.start(now); osc.stop(now+.62);
+    }
+    this.trackVoice(.65);
+  }
+
   public playStormWarning(): void {
     if (!this.canPlay('storm_warn', 1500)) return;
     const ctx = this.ensureContext();
@@ -560,6 +584,7 @@ export class SoundManager {
     gain.connect(ctx.destination);
     osc.start(now);
     osc.stop(now + 0.36);
+    osc.onended = () => { osc.disconnect(); gain.disconnect(); };
     this.trackVoice(0.36);
   }
 

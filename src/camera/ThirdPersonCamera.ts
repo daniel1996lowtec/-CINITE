@@ -10,6 +10,7 @@ export class ThirdPersonCamera {
   public pitch: number = 0.08;
   public sensitivity: number = 1.0;
   public touchSensitivity: number = 1.0;
+  public reducedMotion = false;
 
   private currentPos = new THREE.Vector3(0, 12, 12);
   private currentLookAt = new THREE.Vector3(0, 2, 0);
@@ -154,6 +155,7 @@ export class ThirdPersonCamera {
     isHeadshot: boolean = false,
     isElimination: boolean = false
   ): void {
+    if (this.reducedMotion) return;
     const pulse = isElimination ? -1.15 : isHeadshot ? -0.75 : -0.42;
     this.hitConfirmFovPulse = Math.max(-1.4, Math.min(this.hitConfirmFovPulse, pulse));
   }
@@ -222,7 +224,7 @@ export class ThirdPersonCamera {
       : isSprinting
       ? 74
       : 68;
-    const targetFov = baseTargetFov + this.recoilFovOffset + this.hitConfirmFovPulse;
+    const targetFov = baseTargetFov + (this.reducedMotion ? 0 : this.recoilFovOffset + this.hitConfirmFovPulse);
     if (Math.abs(this.camera.fov - targetFov) > 0.04) {
       this.camera.fov = THREE.MathUtils.lerp(
         this.camera.fov,
@@ -233,9 +235,9 @@ export class ThirdPersonCamera {
     }
 
     const subtleBreathPitch =
-      Math.sin(this.swayPhase) * 0.0011 * (1 - this.aimBlend * 0.68);
+      (this.reducedMotion ? 0 : Math.sin(this.swayPhase)) * 0.0011 * (1 - this.aimBlend * 0.68);
     const subtleBreathYaw =
-      Math.cos(this.swayPhase * 0.5) * 0.0008 * (1 - this.aimBlend * 0.68);
+      (this.reducedMotion ? 0 : Math.cos(this.swayPhase * 0.5)) * 0.0008 * (1 - this.aimBlend * 0.68);
 
     const effectiveYaw = this.yaw + this.recoilYawOffset + subtleBreathYaw;
     const effectivePitch = THREE.MathUtils.clamp(
@@ -311,7 +313,7 @@ export class ThirdPersonCamera {
       }
     }
 
-    if (this.screenShakeIntensity > 0.005) {
+    if (!this.reducedMotion && this.screenShakeIntensity > 0.005) {
       desiredPos.x += (Math.random() - 0.5) * this.screenShakeIntensity;
       desiredPos.y += (Math.random() - 0.5) * this.screenShakeIntensity;
     }

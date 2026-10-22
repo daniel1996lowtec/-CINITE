@@ -1109,7 +1109,8 @@ window.addEventListener('DOMContentLoaded', () => {
     engine.applySettings({ mouseSensitivity: v });
   });
 
-  const mobileHud = new MobileHud(document, value => engine.applySettings({touchSensitivity:value}));
+  const mobileHud = new MobileHud(document, value => engine.applySettings({touchSensitivity:value}),
+    reducedMotion => engine.applySettings({reducedMotion}));
 
   const volInput = document.getElementById('setting-volume') as HTMLInputElement;
   const volVal = document.getElementById('val-volume')!;

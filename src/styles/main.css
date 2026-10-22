@@ -4239,3 +4239,18 @@ input:disabled {
     transform: none; max-width: none;
   }
 }
+
+/* 3.5: transient feedback only; no new HUD controls or geometry shifts. */
+.hitmarker.health { border-color: #fff4e6; width: 20px; height: 20px; }
+#storm-vignette.damage-flash { box-shadow: inset 0 0 110px rgba(var(--damage-flash-color,239,68,68),.48) !important; }
+.end-standing-row.is-self { background: #38bdf818; border-left: 2px solid #67e8f9; }
+.end-standing-row.is-winner { color: #fde68a; font-weight: 800; }
+.reduced-motion .victory-spark { display: none; }
+.reduced-motion #hud-overlay *, .reduced-motion #end-overlay *, .reduced-motion #countdown-overlay * {
+  animation: none !important; transition: none !important;
+}
+.reduced-motion #storm-vignette.damage-flash { box-shadow: inset 0 0 65px rgba(var(--damage-flash-color,239,68,68),.24) !important; }
+@media (pointer: coarse) {
+  .storm-banner { flex-direction: column; align-items: flex-start; gap: 0; }
+  #hud-storm-phase, #hud-storm-timer { max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+}

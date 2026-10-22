@@ -45,7 +45,7 @@ import {
   isPointInFootprint,
 } from './WorldLayout';
 
-type ArchitectureShape = 'box' | 'glass' | 'cone' | 'cylinder' | 'glow' | 'metal' | 'paint' | 'contact';
+type ArchitectureShape = 'box' | 'glass' | 'cone' | 'cylinder' | 'glow' | 'metal' | 'paint' | 'contact' | 'decal';
 type ArchitectureTier = 'essential' | 'detail';
 
 interface InstanceSpec {
@@ -67,7 +67,7 @@ interface ShapeOptions {
   rotationZ?: number;
 }
 
-const ARCHITECTURE_SHAPES: ArchitectureShape[] = ['box', 'glass', 'cone', 'cylinder', 'glow', 'metal', 'paint', 'contact'];
+const ARCHITECTURE_SHAPES: ArchitectureShape[] = ['box', 'glass', 'cone', 'cylinder', 'glow', 'metal', 'paint', 'contact', 'decal'];
 
 /**
  * Builds the additive island districts around the original IslandWorld.
@@ -692,6 +692,11 @@ export class MapExpansionBuilder {
           outWidth - 0.28,
           i % 4 === 0 ? paleConcrete : treadColor
         );
+        if (i === 0 || i === steps - 1) {
+          // Paint on existing tread tops: not a new obstacle or a loot beacon.
+          addSideBox(side,along,y+.112,centreOut,run/steps*.36,1,outWidth-.52,
+            0xfde68a,{shape:'decal'});
+        }
       }
 
       for (const t of [0.18, 0.5, 0.82]) {
@@ -1825,6 +1830,12 @@ export class MapExpansionBuilder {
           { tier: 'detail' }
         );
       }
+    }
+
+    // Flush threshold paint identifies real Aurora entrances without changing
+    // their collision, floor heights, door opening or loot ownership.
+    for (const offset of [.5,1.1]) {
+      box(0,floorTop(0)+.018,hd-offset,2.4,1,.12,placement.accentColor,{shape:'decal'});
     }
 
     // Structural columns and one offset cover block per occupied level. The
@@ -3203,7 +3214,8 @@ export class MapExpansionBuilder {
 
     const geometryFor = (shape: ArchitectureShape): THREE.BufferGeometry => {
       switch (shape) {
-        case 'contact': return contactGeo;
+        case 'contact':
+        case 'decal': return contactGeo;
         case 'cone':
           return coneGeo;
         case 'cylinder':
@@ -3218,20 +3230,26 @@ export class MapExpansionBuilder {
     };
     const materialFor = (shape: ArchitectureShape): THREE.Material => {
       if (shape === 'metal') return metalMat;
-      if (shape === 'paint') return paintMat;
+      if (shape === 'paint' || shape === 'decal') return paintMat;
       if (shape === 'contact') return contactMat;
       if (shape === 'glass') return glassMat;
       if (shape === 'glow') return glowMat;
       return standardMat;
     };
 
-    for (const [key, specs] of this.instances.entries()) {
+    for (const [key, queuedSpecs] of this.instances.entries()) {
       const [, shapeName, tierName] = key.split('|') as [string, ArchitectureShape, ArchitectureTier];
+      // Later decks can cover an end tread. Omit that optional paint instead
+      // of leaving markings buried underneath the final walkable landing.
+      const specs = shapeName === 'decal' ? queuedSpecs.filter(spec => {
+        const e = spec.matrix.elements;
+        return Math.abs(e[13]-this.world.getGroundHeightAt(e[12],e[13]+.1,e[14])) < .15;
+      }) : queuedSpecs;
       if (!ARCHITECTURE_SHAPES.includes(shapeName) || specs.length === 0) continue;
       const inst = new THREE.InstancedMesh(geometryFor(shapeName), materialFor(shapeName), specs.length);
       inst.name = `Expansion_${key.replaceAll('|', '_')}`;
       inst.instanceMatrix.setUsage(THREE.StaticDrawUsage);
-      inst.castShadow = shapeName !== 'glass' && shapeName !== 'glow' && shapeName !== 'contact';
+      inst.castShadow = shapeName !== 'decal' && shapeName !== 'glass' && shapeName !== 'glow' && shapeName !== 'contact';
       inst.receiveShadow = shapeName !== 'glow' && shapeName !== 'contact';
       const displayColor = new THREE.Color();
       specs.forEach((spec, index) => {

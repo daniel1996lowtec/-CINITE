@@ -5,6 +5,7 @@ import {
   STARFIELD_RADIUS,
   SUN_DISTANCE,
   getSunDirection,
+  getEnvironmentPreset,
   getSurfaceVariation,
 } from './VisualAtmosphere';
 import {
@@ -947,18 +948,13 @@ export class TerrainGenerator {
     const pos = this.skyDome.geometry.attributes.position;
     const colAttr = this.skyDome.geometry.attributes.color as THREE.BufferAttribute;
 
-    const cZenith = new THREE.Color(
-      preset === 'day' ? 0x0284c7 : preset === 'sunset' ? 0x311042 : 0x020617
-    );
-    const cMid = new THREE.Color(
-      preset === 'day' ? 0x38bdf8 : preset === 'sunset' ? 0xc026d3 : 0x0f172a
-    );
-    const cHorizon = new THREE.Color(
-      preset === 'day' ? 0xbae6fd : preset === 'sunset' ? 0xf97316 : 0x1e293b
-    );
-    const cGround = new THREE.Color(
-      preset === 'day' ? 0x365314 : preset === 'sunset' ? 0x451a03 : 0x020617
-    );
+    // One authored palette for the visible sky and PMREM lighting. Updating
+    // presets paints vertex colors once; no sky shader or per-frame uploads.
+    const environment = getEnvironmentPreset(preset);
+    const cZenith = new THREE.Color(environment.zenith);
+    const cHorizon = new THREE.Color(environment.horizon);
+    const cMid = cZenith.clone().lerp(cHorizon,.45);
+    const cGround = new THREE.Color(environment.ground);
     const cSunGlow = new THREE.Color(
       preset === 'day' ? 0xfef3c7 : preset === 'sunset' ? 0xffd9a0 : 0xbfdbfe
     );

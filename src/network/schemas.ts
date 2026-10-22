@@ -492,6 +492,8 @@ export interface LobbyConfig {
 }
 
 export interface GameSettings {
+  /** Presentation only: never scales aiming recoil or weapon spread. */
+  reducedMotion?: boolean;
   mouseSensitivity: number;
   touchSensitivity?: number;
   audioVolume: number;

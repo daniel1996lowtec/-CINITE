@@ -1,3 +1,4 @@
+import { combatFeedbackGain } from '../ui/combatFeedback';
 import * as THREE from 'three';
 import {
   BuildPieceType,
@@ -105,6 +106,7 @@ export class GameEngine {
   private lastServerHitSig = '';
   private lastServerHitAt = 0;
   private wasLocalInStorm = false;
+  private lastAudibleStormPhase = 0;
   private lastCountdownBeepInt = 0;
   private matchResultRecorded = false;
 
@@ -645,7 +647,7 @@ export class GameEngine {
           const remoteShooter = this.network.state.players.get(shooterId);
           this.particles.spawnShellCasing(startVec, remoteShooter?.yaw || 0);
         }
-        this.particles.spawnImpactBurst(endVec, 0xe2e8f0, 5, 3.2);
+        // A fire endpoint is not a confirmed impact. Hit/build events own impact FX.
 
         const distFactor = Math.max(0, 1 - d / 160);
         if (distFactor > 0.02) {
@@ -699,17 +701,14 @@ export class GameEngine {
         ev.hitPoint?.z ?? victim.position.z
       );
 
-      this.characterMeshes
-        .get(victim.id)
-        ?.triggerHitFlash(ev.isHeadshot, ev.isShieldHit);
-      this.particles.spawnSurfaceImpact(
-        hitVec,
-        ev.isShieldHit ? 'shield' : 'flesh',
-        isShieldBreak,
-        ev.isHeadshot
-      );
-      if (isShieldBreak) {
-        this.sound.playShieldBreak(1.0);
+      const combatHit = ev.attackerId !== 'storm';
+      const gain = isLocalAttacker || isLocalVictim ? 1 : localPlayer
+        ? combatFeedbackGain(Math.hypot(hitVec.x-localPlayer.position.x,hitVec.y-localPlayer.position.y,hitVec.z-localPlayer.position.z)) : 0;
+      if (combatHit && gain > 0) {
+        this.characterMeshes.get(victim.id)?.triggerHitFlash(ev.isHeadshot, ev.isShieldHit);
+        this.particles.spawnSurfaceImpact(hitVec,ev.isShieldHit ? 'shield' : 'flesh',isShieldBreak,ev.isHeadshot);
+        if (isShieldBreak) this.sound.playShieldBreak(gain);
+        else this.sound.playSurfaceImpact(ev.isShieldHit ? 'shield' : 'flesh',gain * .65);
       }
 
       if (isLocalVictim) {
@@ -717,8 +716,8 @@ export class GameEngine {
         if (source && localPlayer) this.hud.showDamageDirection(localPlayer,source.position,ev.isShieldHit);
         if (ev.attackerId === 'storm') this.hud.showCombatCue(`STORM DAMAGE −${Math.round(ev.damage)} HP`, '#c084fc');
         else if (isShieldBreak) this.hud.showCombatCue('SHIELD BROKEN — FIND COVER', '#67e8f9');
-        this.sound.playDamageTaken();
-        this.hud.triggerDamageTakenFlash();
+        this.sound.playDamageTaken(ev.isShieldHit);
+        this.hud.triggerDamageTakenFlash(ev.isShieldHit, ev.attackerId === 'storm');
         this.hud.spawnDamageNumber(
           hitVec,
           ev.damage,
@@ -768,7 +767,7 @@ export class GameEngine {
           ev.weaponName,
           ev.isHeadshot
         );
-        this.particles.spawnEliminationEffect(
+        if (gain > 0) this.particles.spawnEliminationEffect(
           new THREE.Vector3(victim.position.x, victim.position.y, victim.position.z)
         );
         this.recountAliveCombatants();
@@ -962,6 +961,7 @@ export class GameEngine {
     this.adaptiveDetailReduced = reduced;
     const quality = this.getResolvedGraphicsQuality();
     this.stormSystem.setDetailEnabled(quality !== 'low' && !reduced);
+    this.world.setLandmarkDetail(quality !== 'low' && !reduced);
 
     if (quality === 'high') {
       this.world.detailFoliageGroup.visible = !reduced;
@@ -1017,6 +1017,10 @@ export class GameEngine {
     );
     this.tpCamera.sensitivity = this.settings.mouseSensitivity;
     this.tpCamera.touchSensitivity = this.settings.touchSensitivity;
+    this.tpCamera.reducedMotion = Boolean(this.settings.reducedMotion);
+    this.hud.reducedMotion = Boolean(this.settings.reducedMotion);
+    this.stormSystem.reducedMotion = Boolean(this.settings.reducedMotion);
+    document.documentElement.classList.toggle('reduced-motion',Boolean(this.settings.reducedMotion));
     this.sound.setVolume(this.settings.audioVolume);
     if (this.settings.sfxVolume !== undefined) {
       this.sound.setSfxVolume(this.settings.sfxVolume);
@@ -1085,6 +1089,7 @@ export class GameEngine {
     this.renderer.shadowMap.needsUpdate = true;
 
     this.stormSystem.setDetailEnabled(quality !== 'low' && !this.adaptiveDetailReduced);
+    this.world.setLandmarkDetail(quality !== 'low' && !this.adaptiveDetailReduced);
     this.applyTimeOfDay(this.settings.timeOfDay);
 
     const fpsEl = document.getElementById('hud-fps-counter');
@@ -1334,6 +1339,7 @@ export class GameEngine {
     this.clearTransientInput();
     this.activeBuildPreview = null;
     this.spectatedPlayerId = null;
+    this.wasLocalInStorm = false; this.lastAudibleStormPhase = 0;
     this.countdownTimer = 2.6;
     this.lastCountdownBeepInt = 4;
     this.matchResultRecorded = false;
@@ -1961,6 +1967,10 @@ export class GameEngine {
         hudSubject.position.z
       );
 
+    if (this.lastAudibleStormPhase !== 0 && state.storm.phase !== this.lastAudibleStormPhase && state.storm.phase >= 6) {
+      this.sound.playFinalZoneCue();
+    }
+    this.lastAudibleStormPhase = state.storm.phase;
     if (localInStorm && !this.wasLocalInStorm) {
       this.sound.playStormWarning();
     }
@@ -2071,8 +2081,8 @@ export class GameEngine {
     const isShieldBreak = hadShield && victim.shield <= 0;
 
     if (victim.id === this.network.localPlayerId) {
-      this.sound.playDamageTaken();
-      this.hud.triggerDamageTakenFlash();
+      this.sound.playDamageTaken(isShieldHit);
+      this.hud.triggerDamageTakenFlash(isShieldHit);
     }
 
     const victimMesh = this.characterMeshes.get(victim.id);
@@ -2131,7 +2141,7 @@ export class GameEngine {
     victim.health = Math.max(0, victim.health - damage);
     if (victim.id === this.network.localPlayerId) {
       this.sound.playDamageTaken();
-      this.hud.triggerDamageTakenFlash();
+      this.hud.triggerDamageTakenFlash(false, sourceName === 'The Storm');
     }
     if (victim.health <= 0) {
       this.eliminatePlayer(victim, attacker, sourceName, false);
