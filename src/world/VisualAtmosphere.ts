@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 export type AtmospherePreset = 'day' | 'sunset' | 'night';
-export type GraphicsQualitySetting = 'auto' | 'low' | 'medium' | 'high';
+export type GraphicsQualitySetting = 'auto' | 'low' | 'medium' | 'high' | 'ultra';
 export type ResolvedGraphicsQuality = Exclude<GraphicsQualitySetting, 'auto'>;
 
 export interface DeviceCapabilitySignals {
@@ -113,6 +113,8 @@ export function getCameraFarForQuality(quality: ResolvedGraphicsQuality): number
       return 360;
     case 'medium':
       return 480;
+    case 'ultra':
+      return 760;
     case 'high':
     default:
       return 620;

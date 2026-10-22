@@ -583,30 +583,35 @@ export class IslandWorld {
     const wallMat = new THREE.MeshStandardMaterial({
       color: wallColor,
       map: this.getPatternTexture('stone'),
-      flatShading: true,
-      roughness: 0.7,
+      flatShading: false,
+      roughness: 0.68,
+      metalness: 0.04,
     });
     const roofMat = new THREE.MeshStandardMaterial({
       color: roofColor,
-      flatShading: true,
-      roughness: 0.55,
+      flatShading: false,
+      roughness: 0.52,
+      metalness: 0.06,
     });
     const floorMat = new THREE.MeshStandardMaterial({
       color: 0xd6d3d1,
-      flatShading: true,
-      roughness: 0.82,
+      flatShading: false,
+      roughness: 0.78,
     });
     const trimMat = new THREE.MeshStandardMaterial({
       color: 0xf8fafc,
-      flatShading: true,
-      roughness: 0.55,
+      flatShading: false,
+      roughness: 0.48,
     });
     const glassMat = new THREE.MeshStandardMaterial({
-      color: 0x7dd3fc,
+      color: 0xbae6fd,
       emissive: 0x0284c7,
-      emissiveIntensity: 0.35,
+      emissiveIntensity: 0.22,
+      roughness: 0.08,
+      metalness: 0.62,
+      envMapIntensity: 1.5,
       transparent: true,
-      opacity: 0.55,
+      opacity: 0.68,
     });
 
     const wallThick = 0.45;
@@ -2184,8 +2189,8 @@ export class IslandWorld {
     const trunkGeo = new THREE.CylinderGeometry(0.28, 0.48, 1.0, 6);
     const trunkMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
-      flatShading: true,
-      roughness: 0.8,
+      flatShading: false,
+      roughness: 0.78,
     });
     const trunkInst = new THREE.InstancedMesh(trunkGeo, trunkMat, Math.max(1, totalTrunks));
     trunkInst.castShadow = true;
@@ -2195,8 +2200,8 @@ export class IslandWorld {
     const leafMat = applyFoliageWind(
       new THREE.MeshStandardMaterial({
         color: 0xffffff,
-        flatShading: true,
-        roughness: 0.75,
+        flatShading: false,
+        roughness: 0.68,
       }),
       { strength: 0.032, baseY: -1, height: 2 }
     );
@@ -2259,15 +2264,36 @@ export class IslandWorld {
 
       if (style === 'pine') {
         for (let k = 0; k < 3; k++) {
-          pineConeInst.setColorAt(coneCursor++, color.setHex(leafColor));
+          color
+            .setHex(leafColor)
+            .offsetHSL(
+              (variation - 0.5) * 0.03,
+              (variation - 0.5) * 0.06,
+              (variation - 0.5) * 0.08 + k * 0.025
+            );
+          pineConeInst.setColorAt(coneCursor++, color);
         }
       } else if (style === 'palm') {
         for (let k = 0; k < 5; k++) {
-          palmFrondInst.setColorAt(frondCursor++, color.setHex(leafColor));
+          color
+            .setHex(leafColor)
+            .offsetHSL(
+              (variation - 0.5) * 0.03,
+              (variation - 0.5) * 0.06,
+              (variation - 0.5) * 0.07 + (k % 2) * 0.02
+            );
+          palmFrondInst.setColorAt(frondCursor++, color);
         }
       } else {
         for (let k = 0; k < 2; k++) {
-          leafCrownInst.setColorAt(crownCursor++, color.setHex(leafColor));
+          color
+            .setHex(leafColor)
+            .offsetHSL(
+              (variation - 0.5) * 0.04,
+              (variation - 0.5) * 0.06,
+              (variation - 0.5) * 0.08 + k * 0.03
+            );
+          leafCrownInst.setColorAt(crownCursor++, color);
         }
       }
 

@@ -571,97 +571,99 @@ export class TerrainGenerator {
         }
       }
 
+      const microNoise = getSurfaceVariation(vx, vz);
+      const fineVariation = Math.sin(vx * 0.21 + vz * 0.17) * 0.5 + 0.5;
+
       if (vy < -0.35) {
         // Deep seabed & riverbed
-        color.setHex(0x0369a1);
-      } else if (vy < 0.42) {
+        color.setHex(0x075985);
+      } else if (vy < 0.08) {
+        // Shallow turquoise lagoon shelf
+        color.setHex(0x0e7490).lerp(new THREE.Color(0xc49f6c), (vy + 0.35) / 0.43);
+      } else if (vy < 0.52) {
         // Wet shoreline sand
-        color.setHex(0xd97706);
+        color.setHex(0xc49f6c).lerp(new THREE.Color(0xdcc59a), (vy - 0.08) / 0.44);
       } else if (
         vy < 1.85 ||
         distCenter > this.islandRadius * 0.88 ||
         (riverDist < 6.4 && vy < 2.5) ||
         (lakeDist > 20 && lakeDist < 26.5 && vy < 2.6)
       ) {
-        // Warm golden beach sand & riverbank pebble-sand
-        const sandCheck = (Math.floor(vx * 0.25) + Math.floor(vz * 0.25)) % 2 === 0;
-        color.setHex(sandCheck ? 0xfde047 : 0xfacc15);
+        // Warm Mediterranean coastal sand & riverbank pebble-sand
+        color.setHex(0xdcc59a).lerp(new THREE.Color(0xe8d7b4), fineVariation * 0.65);
       } else if (Math.hypot(vx, vz) < 30) {
-        // Pipeline Plaza paved town square tiles with cyan/slate accents
+        // Pipeline Plaza paved town square tiles with warm travertine/slate tones
         const tile = (Math.floor(vx * 0.35) + Math.floor(vz * 0.35)) % 2 === 0;
-        color.setHex(tile ? 0x94a3b8 : 0xcbd5e1);
+        color.setHex(tile ? 0x94a3b8 : 0xb8c4d0);
       } else if (roadDist < 3.6) {
-        // Navigable cobblestone & compacted dirt road
+        // Navigable cobblestone & compacted limestone road
         const cobble = (Math.floor(vx * 0.55) + Math.floor(vz * 0.55)) % 2 === 0;
-        color.setHex(cobble ? 0xc29b61 : 0xd6b07a);
-      } else if (roadDist < 4.9) {
-        // Soft dirt road shoulder transition
-        color.copy(dirtShoulderColor);
+        color.setHex(cobble ? 0xb59567 : 0xc6a87a);
+      } else if (roadDist < 5.1) {
+        // Smooth dirt road shoulder transition into surrounding meadow
+        const shoulderT = Math.min(1, Math.max(0, (roadDist - 3.6) / 1.5));
+        color.copy(dirtShoulderColor).lerp(new THREE.Color(0x4d7c42), shoulderT * 0.65);
       } else if (expansionSettlement) {
-        // Handcrafted ground treatments make secondary settlements readable
-        // from the drop ship without adding extra terrain meshes.
         const checker = (Math.floor(vx * 0.32) + Math.floor(vz * 0.32)) % 2 === 0;
         switch (expansionSettlement.ground) {
           case 'paved':
-            color.setHex(checker ? 0x94a3b8 : 0xb6c2d2);
+            color.setHex(checker ? 0x94a3b8 : 0xb0bccb);
             break;
           case 'industrial':
             color.setHex(checker ? 0x78716c : 0x8b8580);
             break;
           case 'farm':
-            color.setHex(Math.sin(vz * 1.25) > 0 ? 0xa16207 : 0x65a30d);
+            color.setHex(Math.sin(vz * 1.25) > 0 ? 0x9a6b26 : 0x5c8432);
             break;
           case 'sand':
-            color.setHex(checker ? 0xfacc15 : 0xfde047);
+            color.setHex(checker ? 0xdcc59a : 0xe8d7b4);
             break;
           case 'alpine':
             color.setHex(checker ? 0xcbd5e1 : 0xe2e8f0);
             break;
           case 'dirt':
           default:
-            color.setHex(checker ? 0xb48a5a : 0xc29b61);
+            color.setHex(checker ? 0xa88458 : 0xb89466);
             break;
         }
       } else if (distKeep < 25) {
         const keepTile = (Math.floor(vx * 0.3) + Math.floor(vz * 0.3)) % 2 === 0;
-        color.setHex(keepTile ? 0x64748b : 0x475569);
+        color.setHex(keepTile ? 0x64748b : 0x526071);
       } else if (distSilos < 22) {
         color.setHex(0x64748b);
       } else if (distDocks < 22) {
         color.setHex(0xa8a29e);
       } else if (distRuins < 23) {
-        color.setHex(0x84a98c);
+        color.setHex(0x76897b);
       } else if (distFarm < 25 && Math.sin(vx * 1.4) > 0) {
-        color.setHex(0xeab308);
+        color.setHex(0xc89d3c);
       } else if (vy > 16.0) {
         // Alpine snow cap
         color.setHex(0xf8fafc);
       } else if (vy > 10.6) {
-        // High mountain rock
-        color.setHex(0x64748b);
+        // High mountain limestone & slate rock
+        color.setHex(0x6b7482).lerp(new THREE.Color(0x7c8694), fineVariation * 0.5);
       } else if (distGitGrove < 38) {
-        // Lush emerald forest floor
-        const checker = (Math.floor(vx * 0.09) + Math.floor(vz * 0.09)) % 2 === 0;
-        color.setHex(checker ? 0x16a34a : 0x15803d);
+        // Lush deep-emerald forest floor
+        color.setHex(0x2d5a34).lerp(new THREE.Color(0x3b7042), fineVariation * 0.7);
       } else if (vy > 7.2) {
-        // Highland meadow grass
-        color.setHex(0x22c55e);
+        // Highland olive-meadow grass
+        color.setHex(0x46733d).lerp(new THREE.Color(0x58874b), fineVariation * 0.65);
       } else {
-        // Vibrant stylized lowland meadow grass
-        const checker = (Math.floor(vx * 0.08) + Math.floor(vz * 0.08)) % 2 === 0;
-        color.setHex(checker ? 0x4ade80 : 0x34d399);
+        // Natural coastal & lowland meadow turf (no harsh neon-green checkerboards)
+        color
+          .setHex(0x4d7c42)
+          .lerp(new THREE.Color(0x5e8e50), (microNoise * 0.5 + 0.5) * 0.72);
       }
 
       // Slope-based cliff & escarpment rock blending on steep terrain
-      if (vy > 1.8 && vy < 15.8 && slope > 0.46) {
-        const rockWeight = Math.min(1, (slope - 0.46) / 0.42);
-        color.lerp(cliffRockColor, rockWeight * 0.85);
+      if (vy > 1.8 && vy < 15.8 && slope > 0.42) {
+        const rockWeight = Math.min(1, (slope - 0.42) / 0.44);
+        color.lerp(cliffRockColor, rockWeight * 0.88);
       }
 
-      // Smooth, deterministic tonal variation softens the intentionally
-      // readable biome/checker colours at landscape scale. Heights and all
-      // gameplay placement remain untouched.
-      color.offsetHSL(0, 0, getSurfaceVariation(vx, vz) * 0.024);
+      // Smooth, deterministic tonal variation softens biome transitions
+      color.offsetHSL(0, 0, microNoise * 0.028);
 
       colors.push(color.r, color.g, color.b);
     }
@@ -684,9 +686,33 @@ export class TerrainGenerator {
     this.terrainMesh.receiveShadow = true;
     scene.add(this.terrainMesh);
 
-    // Stylized Ocean, Mirror Lake & Winding River Water Plane with Specular Shimmer
+    // Stylized Ocean, Mirror Lake & Winding River Water Plane with Coastal Depth Gradient
     const waterGeo = new THREE.PlaneGeometry(1600, 1600, 64, 64);
     waterGeo.rotateX(-Math.PI / 2);
+    const waterPosAttr = waterGeo.attributes.position;
+    const waterColors: number[] = [];
+    const shallowTurquoise = new THREE.Color(0x2dd4bf);
+    const midLagoon = new THREE.Color(0x06b6d4);
+    const deepOcean = new THREE.Color(0x0284c7);
+    const waterColTmp = new THREE.Color();
+    for (let i = 0; i < waterPosAttr.count; i++) {
+      const wx = waterPosAttr.getX(i);
+      const wz = waterPosAttr.getZ(i);
+      const distCenter = Math.hypot(wx, wz);
+      const lakeDist = Math.hypot(wx - -46, wz - 38);
+      if (distCenter < this.islandRadius * 0.96 || lakeDist < 32) {
+        // Mirror Lake, river & immediate beach surf: luminous tropical turquoise
+        waterColTmp.copy(shallowTurquoise).lerp(midLagoon, 0.35);
+      } else if (distCenter < this.islandRadius * 1.28) {
+        const t = (distCenter - this.islandRadius * 0.96) / (this.islandRadius * 0.32);
+        waterColTmp.copy(midLagoon).lerp(deepOcean, Math.min(1, Math.max(0, t)));
+      } else {
+        waterColTmp.copy(deepOcean);
+      }
+      waterColors.push(waterColTmp.r, waterColTmp.g, waterColTmp.b);
+    }
+    waterGeo.setAttribute('color', new THREE.Float32BufferAttribute(waterColors, 3));
+
     this.waterTexture = this.createWaterRippleTexture();
     this.waterBumpTexture = this.waterTexture?.clone() ?? null;
     if (this.waterBumpTexture) {
@@ -694,15 +720,16 @@ export class TerrainGenerator {
       this.waterBumpTexture.needsUpdate = true;
     }
     const waterMat = new THREE.MeshStandardMaterial({
-      color: 0x0799d8,
+      color: 0xffffff,
+      vertexColors: true,
       map: this.waterTexture,
       bumpMap: this.waterBumpTexture,
       bumpScale: 0.18,
       emissive: 0x0369a1,
-      emissiveIntensity: 0.12,
-      roughness: 0.06,
-      metalness: 0.08,
-      envMapIntensity: 1.15,
+      emissiveIntensity: 0.1,
+      roughness: 0.05,
+      metalness: 0.12,
+      envMapIntensity: 1.35,
       transparent: true,
       opacity: 0.92,
       flatShading: false,

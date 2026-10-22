@@ -35,10 +35,13 @@ async function loadCharacterModules() {
     const cosmetics = await import(
       pathToFileURL(path.join(tmpDir, 'CharacterCosmetics.mjs')).href
     );
+    const weapons = await import(
+      pathToFileURL(path.join(tmpDir, 'WeaponDefinitions.mjs')).href
+    );
     const character = await import(
       pathToFileURL(path.join(tmpDir, 'CharacterMesh.mjs')).href
     );
-    return { THREE, cosmetics, character };
+    return { THREE, cosmetics, weapons, character };
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
@@ -136,9 +139,22 @@ function makePlayerState(overrides = {}) {
 }
 
 test('CI CRAFT 5.1 character model fix: no protruding blue BoxGeometry placeholders on back or arms across outfits, postures, weapon switches, and respawns', async () => {
-  const { THREE, cosmetics, character } = await loadCharacterModules();
+  const { THREE, cosmetics, weapons, character } = await loadCharacterModules();
   const { CharacterMesh } = character;
   await preloadBundledRig(CharacterMesh);
+
+  // Verify the starter harvester has no glowing blue BoxGeometry blade
+  const harvesterMesh = weapons.createWeaponMesh('harvester', 'rare');
+  harvesterMesh.traverse((child) => {
+    if (child.isMesh) {
+      assert.notEqual(
+        child.geometry.type,
+        'BoxGeometry',
+        'Harvester must not use a BoxGeometry blade'
+      );
+      assert.equal(child.material.flatShading, false);
+    }
+  });
 
   const camera = new THREE.Vector3(0, 1.6, 3.2);
   for (const outfitId of cosmetics.OUTFIT_PRESET_IDS) {
@@ -303,13 +319,89 @@ test('CI CRAFT 5.1 parachute redesign: curved multi-cell canopy, connected suspe
       assert.ok(mesh.gliderGroup.getObjectByName(`suspension_line_rear_${i}`));
     }
 
-    // Verify clean stowage upon landing
+    // Verify weaponSocket is stowed during gliding and both hands grip the steering toggles via IK
+    assert.equal(mesh.weaponSocket.visible, false, 'Weapon must be stowed while gliding');
+    const leftHandPos = mesh.gltfBones.leftHand.getWorldPosition(new THREE.Vector3());
+    const rightHandPos = mesh.gltfBones.rightHand.getWorldPosition(new THREE.Vector3());
+    const leftTogglePos = mesh.gliderGroup
+      .getObjectByName('steering_toggle_left')
+      .getWorldPosition(new THREE.Vector3());
+    const rightTogglePos = mesh.gliderGroup
+      .getObjectByName('steering_toggle_right')
+      .getWorldPosition(new THREE.Vector3());
+    assert.ok(
+      leftHandPos.distanceTo(leftTogglePos) < 0.025,
+      `Left hand must grip left steering toggle (dist=${leftHandPos.distanceTo(leftTogglePos)})`
+    );
+    assert.ok(
+      rightHandPos.distanceTo(rightTogglePos) < 0.025,
+      `Right hand must grip right steering toggle (dist=${rightHandPos.distanceTo(rightTogglePos)})`
+    );
+
+    // Verify clean stowage upon landing and weapon re-equip
     state.isGliding = false;
     state.isGrounded = true;
     state.velocity = { x: 0, y: 0, z: 0 };
     mesh.update(state, 1 / 60, camera);
     assert.equal(mesh.gliderGroup.visible, false, 'Parachute must stow cleanly on landing');
+    assert.equal(mesh.weaponSocket.visible, true, 'Weapon must reappear on landing');
   } finally {
     mesh.dispose();
+  }
+});
+
+test('CI CRAFT 6.0 quality tiers & world visual upgrade: LOW/MEDIUM/HIGH/ULTRA tiers, smooth terrain/water vertex gradients, and non-neon biome palette', async () => {
+  const { loadWorldModules } = await import('../scripts/headlessWorld.mjs');
+  const tmpDir = fs.mkdtempSync(path.join(ROOT_DIR, '.graphics60-test-'));
+  try {
+    const visualCode = stripTypeScriptTypes(
+      fs.readFileSync(path.join(ROOT_DIR, 'src/world/VisualAtmosphere.ts'), 'utf8')
+    );
+    fs.writeFileSync(path.join(tmpDir, 'VisualAtmosphere.mjs'), visualCode);
+
+    const visual = await import(
+      pathToFileURL(path.join(tmpDir, 'VisualAtmosphere.mjs')).href
+    );
+    const { THREE, IslandWorld } = await loadWorldModules();
+
+    // 1. Quality tiers LOW, MEDIUM, HIGH, ULTRA
+    assert.equal(
+      visual.resolveGraphicsQuality('ultra', {
+        coarsePointer: false,
+        hardwareConcurrency: 16,
+        deviceMemoryGb: 16,
+        devicePixelRatio: 2,
+      }),
+      'ultra'
+    );
+    assert.notEqual(
+      visual.resolveGraphicsQuality('auto', {
+        coarsePointer: true,
+        hardwareConcurrency: 4,
+        deviceMemoryGb: 3,
+        devicePixelRatio: 2,
+      }),
+      'ultra',
+      'Auto must never force ULTRA on low-end mobile devices'
+    );
+    assert.ok(
+      visual.getCameraFarForQuality('ultra') > visual.getCameraFarForQuality('high')
+    );
+
+    // 2. Terrain & Water smooth PBR shading + coastal water vertex color gradient
+    const scene = new THREE.Scene();
+    const world = new IslandWorld(scene);
+    world.generate();
+    assert.equal(world.terrain.terrainMesh.material.flatShading, false);
+    assert.equal(world.terrain.waterMesh.material.flatShading, false);
+    assert.equal(world.terrain.waterMesh.material.vertexColors, true);
+    assert.ok(
+      world.terrain.waterMesh.geometry.getAttribute('color'),
+      'Water mesh must have coastal depth vertex colors'
+    );
+    world.branding?.dispose();
+    world.mapExpansion.disposeArchitecture();
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
