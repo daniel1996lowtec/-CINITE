@@ -10,7 +10,28 @@
  */
 import { createWorldLootMap, getChestRewards, validateLootClaim } from './worldLoot.mjs';
 import { resetInventory, inventoryAction, advanceInventory, fireInventory, collectInventory, inventorySnapshot, cancelInventoryAction, weaponStats as catalogueStats } from './inventory.mjs';
-import { canReachLoot, hasLineOfSight, worldProps, buildTransform, isBuildPlacementClear, isPlayerPositionClear, safeSpawnPosition } from './worldGeometry.mjs';
+import { canReachLoot, hasLineOfSight, worldProps, buildTransform, isBuildPlacementClear, isPlayerPositionClear, safeSpawnPosition, safeRespawnPosition } from './worldGeometry.mjs';
+import {
+  DEFAULT_GAME_MODE,
+  MATCH_DURATION_SECONDS,
+  normalizeGameMode,
+  isValidGameMode,
+  getMatchRules,
+  isRespawnMode,
+  isTimedMode,
+  isStormEnabledForMode,
+  getRemainingMatchSeconds,
+  isMatchTimeExpired,
+  createInitialVitals,
+  applyAuthoritativeDamage,
+  applyRespawnVitals,
+  assignTeamsForMode,
+  areTeammates,
+  createInitialTeamScores,
+  computeTeamScores,
+  evaluateMatchOutcome,
+  normalizeTdmTeam,
+} from '../shared/matchRules.mjs';
 import { validateChatText, createChatRateLimiter } from './textChat.mjs';
 const allowChatAttempt = createChatRateLimiter();
 import http from 'node:http';
@@ -59,6 +80,14 @@ const TEAM_MODES = new Set(['solo', 'duo', 'squad']);
 const TEAM_MODE_SIZES = { solo: 1, duo: 2, squad: 4 };
 const LOBBY_START_CONDITIONS = new Set(['all_ready', 'host_start', 'fill_lobby']);
 const BOT_DIFFICULTIES = new Set(['easy', 'medium', 'hard']);
+const RESPAWN_MATCH_DURATION_SECONDS = Math.max(
+  1,
+  Math.min(
+    3600,
+    Number(process.env.RESPAWN_MATCH_DURATION_SECONDS || MATCH_DURATION_SECONDS) ||
+      MATCH_DURATION_SECONDS
+  )
+);
 const HUMAN_MATCH_COUNTDOWN_MS = Math.max(
   250,
   Math.min(
@@ -563,11 +592,43 @@ function resolveLobbyConfig(rawConfig, { fallbackMode = 'online_ai_fill' } = {})
     return { config: null, error: 'Only the CI Island map is available.', code: 'invalid_map' };
   }
 
-  const teamMode = String(raw.teamMode || raw.gameMode || 'solo').trim().toLowerCase();
+  let matchMode = DEFAULT_GAME_MODE;
+  if (raw.matchMode !== undefined) {
+    if (!isValidGameMode(raw.matchMode)) {
+      return {
+        config: null,
+        error: 'Game mode must be Battle Royale, Free for All, or Team Deathmatch.',
+        code: 'invalid_game_mode',
+      };
+    }
+    matchMode = normalizeGameMode(raw.matchMode);
+  } else if (raw.gameMode !== undefined) {
+    const rawGameMode = String(raw.gameMode).trim().toLowerCase();
+    if (isValidGameMode(rawGameMode)) {
+      matchMode = normalizeGameMode(rawGameMode);
+    } else if (!TEAM_MODES.has(rawGameMode)) {
+      return {
+        config: null,
+        error: 'Game mode must be Battle Royale, Free for All, or Team Deathmatch.',
+        code: 'invalid_game_mode',
+      };
+    }
+  }
+
+  const rawTeamCandidate =
+    raw.teamMode !== undefined
+      ? raw.teamMode
+      : raw.gameMode !== undefined && TEAM_MODES.has(String(raw.gameMode).trim().toLowerCase())
+        ? raw.gameMode
+        : 'solo';
+  const teamMode =
+    matchMode === 'battle_royale'
+      ? String(rawTeamCandidate || 'solo').trim().toLowerCase()
+      : 'solo';
   if (!TEAM_MODES.has(teamMode)) {
     return { config: null, error: 'Game format must be Solo, Duo or Squad.', code: 'invalid_team_mode' };
   }
-  if (!humanOnly && teamMode !== 'solo') {
+  if (!humanOnly && matchMode === 'battle_royale' && teamMode !== 'solo') {
     return {
       config: null,
       error: 'Duo and Squad are server-authoritative human-only formats. AI Fill lobbies use Solo format.',
@@ -640,12 +701,16 @@ function resolveLobbyConfig(rawConfig, { fallbackMode = 'online_ai_fill' } = {})
 
   const hostName = sanitizeCallsign(raw.hostName || raw.playerName || 'Commander_CI');
   const name = sanitizeLobbyName(rawLobbyName, `${hostName}'s Lobby`);
+  const modeRules = getMatchRules(matchMode);
+  const durationSeconds =
+    modeRules.durationSeconds !== null ? RESPAWN_MATCH_DURATION_SECONDS : null;
 
   return {
     config: {
       name,
       visibility,
       mode,
+      matchMode,
       humanOnly,
       aiFillEnabled: !humanOnly,
       maxPlayers,
@@ -653,6 +718,10 @@ function resolveLobbyConfig(rawConfig, { fallbackMode = 'online_ai_fill' } = {})
       mapId,
       mapName: LOBBY_MAPS.get(mapId),
       teamMode,
+      scoreLimit: modeRules.scoreLimit,
+      targetKills: modeRules.targetKills,
+      durationSeconds,
+      autoRespawn: modeRules.autoRespawn,
       botCount: humanOnly ? 0 : rawBotCount,
       botDifficulty,
       startCondition,
@@ -671,13 +740,20 @@ function resolveLobbyConfig(rawConfig, { fallbackMode = 'online_ai_fill' } = {})
   };
 }
 
-function defaultLobbyConfigForMode(mode, code = 'CICRAFT-1') {
+function defaultLobbyConfigForMode(
+  mode,
+  code = 'CICRAFT-1',
+  matchMode = DEFAULT_GAME_MODE
+) {
   const humanOnly = isHumanOnlyMode(mode);
   const visibility = roomVisibilityForMode(mode);
+  const normalizedMatchMode = normalizeGameMode(matchMode);
+  const modeRules = getMatchRules(normalizedMatchMode);
   return {
     name: `${code} Lobby`,
     visibility,
     mode,
+    matchMode: normalizedMatchMode,
     humanOnly,
     aiFillEnabled: mode === 'online_ai_fill',
     maxPlayers: ROOM_MAX_HUMANS,
@@ -685,6 +761,11 @@ function defaultLobbyConfigForMode(mode, code = 'CICRAFT-1') {
     mapId: 'ci_island',
     mapName: LOBBY_MAPS.get('ci_island'),
     teamMode: 'solo',
+    scoreLimit: modeRules.scoreLimit,
+    targetKills: modeRules.targetKills,
+    durationSeconds:
+      modeRules.durationSeconds !== null ? RESPAWN_MATCH_DURATION_SECONDS : null,
+    autoRespawn: modeRules.autoRespawn,
     botCount: 0,
     botDifficulty: 'medium',
     startCondition: 'all_ready',
@@ -923,9 +1004,12 @@ function getOrCreateRoom(
     const mode = lobbyConfig?.mode || inferRoomModeForCode(normalized) || requestedMode;
     const config = lobbyConfig || defaultLobbyConfigForMode(mode, normalized);
     const lobbyManaged = isLobbyManagedRoom({ mode, isLobbyManaged: config.isLobbyManaged });
+    const matchMode = normalizeGameMode(config.matchMode || DEFAULT_GAME_MODE);
+    const modeRules = getMatchRules(matchMode);
     rooms.set(normalized, {
       code: normalized,
       mode,
+      matchMode,
       name: config.name,
       visibility: config.visibility,
       // Legacy online rooms preserve the existing instant-drop behavior.
@@ -937,6 +1021,20 @@ function getOrCreateRoom(
       mapId: config.mapId,
       mapName: config.mapName,
       teamMode: config.teamMode,
+      scoreLimit: config.scoreLimit ?? modeRules.scoreLimit,
+      targetKills: config.targetKills ?? modeRules.targetKills,
+      durationSeconds:
+        config.durationSeconds !== undefined
+          ? config.durationSeconds
+          : modeRules.durationSeconds !== null
+            ? RESPAWN_MATCH_DURATION_SECONDS
+            : null,
+      autoRespawn: Boolean(config.autoRespawn ?? modeRules.autoRespawn),
+      teamScores: createInitialTeamScores(),
+      isDraw: false,
+      endReason: '',
+      respawnSeq: 0,
+      finishingMatch: false,
       configuredBotCount: config.botCount,
       botDifficulty: config.botDifficulty,
       startCondition: config.startCondition,
@@ -1055,28 +1153,45 @@ function getLobbyJoinBlock(room) {
 }
 
 function assignLobbyTeams(room, participants) {
-  const ordered = [...participants].sort(
-    (a, b) => (a.joinedAt || 0) - (b.joinedAt || 0) || String(a.id).localeCompare(String(b.id))
+  return assignTeamsForMode(
+    room.matchMode || DEFAULT_GAME_MODE,
+    participants,
+    room.teamMode || 'solo'
   );
-  if (room.teamMode === 'solo' || !TEAM_MODES.has(room.teamMode)) {
-    ordered.forEach((player, index) => {
-      player.teamId = `solo_${player.id}`;
-      player.teamIndex = index;
-    });
-    return ordered;
-  }
+}
 
-  const teamSize = TEAM_MODE_SIZES[room.teamMode] || 1;
-  const teamCount = Math.max(
-    ordered.length >= 2 ? 2 : 1,
-    Math.ceil(ordered.length / Math.max(1, teamSize))
+function assignAdhocPlayerTeam(room, player) {
+  const matchMode = normalizeGameMode(room.matchMode || DEFAULT_GAME_MODE);
+  if (matchMode === 'team_deathmatch') {
+    const existing = normalizeTdmTeam(player.teamId ?? player.teamIndex);
+    if (existing) {
+      player.teamId = existing;
+      player.teamIndex = existing === 'red' ? 0 : 1;
+      return;
+    }
+    let redCount = 0;
+    let blueCount = 0;
+    for (const candidate of getRoomHumanPlayers(room)) {
+      if (candidate.id === player.id) continue;
+      const t = normalizeTdmTeam(candidate.teamId ?? candidate.teamIndex);
+      if (t === 'red') redCount += 1;
+      else if (t === 'blue') blueCount += 1;
+    }
+    const assigned = redCount <= blueCount ? 'red' : 'blue';
+    player.teamId = assigned;
+    player.teamIndex = assigned === 'red' ? 0 : 1;
+    return;
+  }
+  if (!player.teamId) {
+    player.teamId = `solo_${player.id}`;
+    player.teamIndex = Math.max(0, getRoomHumanPlayers(room).length - 1);
+  }
+}
+
+function getRoomActiveParticipants(room) {
+  return getRoomHumanPlayers(room).filter((player) =>
+    isLobbyManagedRoom(room) ? Boolean(player.isParticipant) : true
   );
-  ordered.forEach((player, index) => {
-    const teamIndex = index % teamCount;
-    player.teamId = `team_${teamIndex + 1}`;
-    player.teamIndex = teamIndex;
-  });
-  return ordered;
 }
 
 function refreshProvisionalLobbyTeams(room) {
@@ -1139,6 +1254,21 @@ function buildLobbySummary(room) {
   const status = getLobbyStatus(room);
   const joinBlock = getLobbyJoinBlock(room);
   const currentPlayers = counts.connectedHumans;
+  const matchMode = normalizeGameMode(room.matchMode || DEFAULT_GAME_MODE);
+  const modeRules = getMatchRules(matchMode);
+  const durationSeconds =
+    room.durationSeconds !== undefined
+      ? room.durationSeconds
+      : modeRules.durationSeconds;
+  const timeRemaining = getRemainingMatchSeconds(
+    matchMode,
+    room.matchTimer,
+    durationSeconds
+  );
+  const teamScores = computeTeamScores(
+    getRoomActiveParticipants(room),
+    room.teamScores
+  );
   return {
     id: room.code,
     roomId: room.code,
@@ -1149,6 +1279,7 @@ function buildLobbySummary(room) {
     hostPlayerId: room.hostPlayerId || null,
     mode: room.mode,
     roomMode: room.mode,
+    matchMode,
     visibility: room.visibility,
     isPrivate: room.visibility === 'private',
     hasPassword: Boolean(room.passwordHash),
@@ -1169,7 +1300,15 @@ function buildLobbySummary(room) {
     mapId: room.mapId || 'ci_island',
     mapName: room.mapName || LOBBY_MAPS.get(room.mapId || 'ci_island'),
     teamMode: room.teamMode || 'solo',
-    gameMode: room.teamMode || 'solo',
+    gameMode: matchMode !== 'battle_royale' ? matchMode : (room.teamMode || 'solo'),
+    scoreLimit: room.scoreLimit ?? modeRules.scoreLimit,
+    targetKills: room.targetKills ?? modeRules.targetKills,
+    durationSeconds,
+    timeRemaining: timeRemaining === null ? null : Math.ceil(timeRemaining),
+    autoRespawn: Boolean(room.autoRespawn ?? modeRules.autoRespawn),
+    teamScores,
+    isDraw: Boolean(room.isDraw),
+    endReason: room.endReason || '',
     startCondition: room.startCondition || 'all_ready',
     allowLateJoin: Boolean(room.allowLateJoin),
     canJoin: joinBlock.canJoin,
@@ -1202,6 +1341,9 @@ function applyLobbyListFilters(lobbies, rawFilters = {}) {
   const search = String(filters.search || filters.query || '').trim().toLowerCase();
   const visibility = String(filters.visibility || 'all').trim().toLowerCase();
   const teamMode = String(filters.teamMode || filters.gameMode || 'all').trim().toLowerCase();
+  const matchModeFilter = String(filters.matchMode || filters.gameMode || 'all')
+    .trim()
+    .toLowerCase();
   const mapId = String(filters.mapId || filters.map || 'all').trim().toLowerCase();
   const status = String(filters.status || 'all').trim().toLowerCase();
   const matchType = String(filters.matchType || filters.roomMode || 'all').trim().toLowerCase();
@@ -1220,7 +1362,12 @@ function applyLobbyListFilters(lobbies, rawFilters = {}) {
     if (Boolean(filters.humanOnly) && !lobby.humanOnly) return false;
     if (matchType === 'human_only' && !lobby.humanOnly) return false;
     if ((matchType === 'ai_fill' || matchType === 'online_ai_fill') && lobby.humanOnly) return false;
-    if (TEAM_MODES.has(teamMode) && lobby.teamMode !== teamMode) return false;
+    if (isValidGameMode(matchModeFilter)) {
+      const normalizedFilterMode = normalizeGameMode(matchModeFilter);
+      if ((lobby.matchMode || 'battle_royale') !== normalizedFilterMode) return false;
+    } else if (TEAM_MODES.has(teamMode) && lobby.teamMode !== teamMode) {
+      return false;
+    }
     if (mapId !== 'all' && lobby.mapId !== mapId) return false;
     if (status !== 'all' && lobby.status !== status) return false;
     if (lobby.availableSlots < minSlots) return false;
@@ -1345,8 +1492,17 @@ function buildRoomSummary(room) {
     minPlayers: room.minPlayers,
     mapId: lobby.mapId,
     mapName: lobby.mapName,
+    matchMode: lobby.matchMode,
     teamMode: lobby.teamMode,
     gameMode: lobby.gameMode,
+    scoreLimit: lobby.scoreLimit,
+    targetKills: lobby.targetKills,
+    durationSeconds: lobby.durationSeconds,
+    timeRemaining: lobby.timeRemaining,
+    autoRespawn: lobby.autoRespawn,
+    teamScores: lobby.teamScores,
+    isDraw: lobby.isDraw,
+    endReason: lobby.endReason,
     startCondition: lobby.startCondition,
     allowLateJoin: lobby.allowLateJoin,
     createdAt: room.createdAt || 0,
@@ -1453,21 +1609,39 @@ async function startLobbyMatch(room) {
   room.winnerTeamId = '';
   room.winnerName = '';
   room.matchEndedAt = 0;
+  room.teamScores = createInitialTeamScores();
+  room.isDraw = false;
+  room.endReason = '';
+  room.finishingMatch = false;
 
   const participants = getLobbyEligibleHumans(room).filter((player) => player.isReady);
   assignLobbyTeams(room, participants);
+  const respawnMode = isRespawnMode(room.matchMode);
   for (const player of getRoomHumanPlayers(room)) {
     const isParticipant = participants.includes(player);
+    const vitals = createInitialVitals(room.matchMode);
     player.isParticipant = isParticipant;
-    player.alive = isParticipant;
-    player.health = 100;
-    player.shield = 50;
+    player.alive = isParticipant ? vitals.alive : false;
+    player.health = vitals.health;
+    player.maxHealth = vitals.maxHealth;
+    player.shield = vitals.shield;
+    player.maxShield = vitals.maxShield;
+    player.livesRemaining = isParticipant ? vitals.livesRemaining : 0;
     player.eliminations = 0;
+    player.deaths = 0;
+    player.respawns = 0;
+    player.damageDealt = 0;
     clearLegendaryTowerWeaponOwnership(player);
     resetServerCombatState(player);
     resetInventory(player);
     if (isParticipant) {
       room.matchParticipantIds.add(player.id);
+      if (respawnMode) {
+        player.position = safeRespawnPosition(room, player);
+        player.velocity = { x: 0, y: 0, z: 0 };
+        player.isGliding = false;
+        player.isGrounded = true;
+      }
     }
   }
 
@@ -1503,6 +1677,13 @@ async function startLobbyMatch(room) {
       selfPlayerId: player.id,
       players,
     });
+    if (respawnMode && player.isParticipant) {
+      sendToPlayer(player, {
+        type: 'position_corrected',
+        position: player.position,
+        respawned: true,
+      });
+    }
     sendInventoryState(player);
   }
   broadcastToRoom(room, {
@@ -1681,10 +1862,173 @@ async function awardHumanWinningTeam(room, winningTeam, eventSuffix) {
   }
 }
 
+function respawnRoomPlayer(room, player) {
+  const spawnPos = safeRespawnPosition(room, player);
+  applyRespawnVitals(player, spawnPos);
+  clearLegendaryTowerWeaponOwnership(player);
+  resetServerCombatState(player);
+  resetInventory(player);
+  sendInventoryState(player);
+  sendToPlayer(player, {
+    type: 'position_corrected',
+    position: player.position,
+    respawned: true,
+  });
+  broadcastToRoom(room, {
+    type: 'player_respawned',
+    roomCode: room.code,
+    playerId: player.id,
+    playerName: player.name,
+    teamId: player.teamId || '',
+    teamIndex: Number.isFinite(Number(player.teamIndex))
+      ? Number(player.teamIndex)
+      : -1,
+    position: player.position,
+    health: player.health,
+    shield: player.shield,
+    livesRemaining: player.livesRemaining,
+    deaths: player.deaths || 0,
+    respawns: player.respawns || 0,
+  });
+  return spawnPos;
+}
+
+async function finishModeMatch(room, outcome, alreadyAwardedWinnerId = null) {
+  if (!room || room.phase === 'ended' || room.finishingMatch) return;
+  room.finishingMatch = true;
+  try {
+    cancelHumanCountdown(room);
+    room.phase = 'ended';
+    room.matchEndedAt = Date.now();
+    room.isDraw = Boolean(outcome.isDraw);
+    room.endReason = outcome.reason || '';
+    room.teamScores =
+      outcome.teamScores ||
+      computeTeamScores(getRoomActiveParticipants(room), room.teamScores);
+    room.winnerId = outcome.winnerId || null;
+    room.winnerIds = Array.isArray(outcome.winnerIds) ? [...outcome.winnerIds] : [];
+    room.winnerTeamId = outcome.winnerTeamId || '';
+    room.winnerName = outcome.winnerName || (outcome.isDraw ? 'DRAW' : '');
+
+    if (outcome.placements && typeof outcome.placements === 'object') {
+      for (const [pid, place] of Object.entries(outcome.placements)) {
+        room.placements.set(pid, Number(place) || 1);
+      }
+    }
+
+    const participants = getRoomActiveParticipants(room);
+    for (const participant of participants) {
+      const isWinner =
+        !outcome.isDraw &&
+        Array.isArray(outcome.winnerIds) &&
+        outcome.winnerIds.includes(participant.id);
+      const placement =
+        room.placements.get(participant.id) || (isWinner ? 1 : 2);
+      room.placements.set(participant.id, placement);
+
+      if (isWinner) {
+        if (participant.id !== alreadyAwardedWinnerId) {
+          await awardHumanWinner(
+            room,
+            participant,
+            outcome.reason || 'mode_victory'
+          );
+        }
+      } else if (
+        participant.accountId &&
+        participant._placementAwardedForMatchSeq !== room.matchSeq
+      ) {
+        participant._placementAwardedForMatchSeq = room.matchSeq;
+        const profile = await applyAuthoritativeProgression(participant, {
+          eventId: `${room.code}_match_${room.matchSeq}_end_${participant.accountId}`,
+          roomCode: room.code,
+          eventType: outcome.isDraw ? 'match_draw' : 'match_completed',
+          placement,
+          xpDelta: outcome.isDraw ? 125 : placement <= 3 ? 150 : 75,
+        });
+        sendToPlayer(participant, { type: 'server_progression', profile });
+      }
+    }
+
+    for (const player of getRoomHumanPlayers(room)) {
+      player.isReady = false;
+    }
+
+    const summary = buildRoomSummary(room);
+    const players = buildRoomPlayersSnapshot(room);
+    const placements = Object.fromEntries(room.placements.entries());
+    for (const player of getRoomHumanPlayers(room)) {
+      if (!player.isConnected) continue;
+      sendToPlayer(player, {
+        type: 'match_ended',
+        ...summary,
+        selfPlayerId: player.id,
+        players,
+        placements,
+      });
+    }
+    broadcastRoomState(room);
+    queueLobbyDirectoryBroadcast('match_ended');
+  } finally {
+    room.finishingMatch = false;
+  }
+}
+
 async function handleHumanForfeit(room, player, reason = 'left_room') {
   if (!isHumanOnlyMode(room.mode) || room.phase !== 'active') return;
-  if (!player?.isParticipant || !player.alive) return;
+  if (!player?.isParticipant) return;
 
+  if (isRespawnMode(room.matchMode)) {
+    player.alive = false;
+    player.isParticipant = false;
+    const remaining = getRoomHumanPlayers(room).filter(
+      (p) => p.isParticipant && p.isConnected
+    );
+    if (room.minPlayers >= 2 && remaining.length >= 1) {
+      if (room.matchMode === 'free_for_all' && remaining.length === 1) {
+        const winner = remaining[0];
+        await finishModeMatch(room, {
+          ended: true,
+          reason: `forfeit_${reason}`,
+          isDraw: false,
+          winnerId: winner.id,
+          winnerIds: [winner.id],
+          winnerTeamId: winner.teamId || `solo_${winner.id}`,
+          winnerName: winner.name,
+          teamScores: computeTeamScores(remaining, room.teamScores),
+          placements: { [winner.id]: 1, [player.id]: 2 },
+        });
+      } else if (room.matchMode === 'team_deathmatch') {
+        const remainingTeams = new Set(
+          remaining
+            .map((p) => normalizeTdmTeam(p.teamId ?? p.teamIndex))
+            .filter(Boolean)
+        );
+        if (remainingTeams.size === 1) {
+          const [winningTeam] = Array.from(remainingTeams);
+          const winners = remaining.filter(
+            (p) => normalizeTdmTeam(p.teamId ?? p.teamIndex) === winningTeam
+          );
+          await finishModeMatch(room, {
+            ended: true,
+            reason: `forfeit_${reason}`,
+            isDraw: false,
+            winnerId: winners[0]?.id || null,
+            winnerIds: winners.map((p) => p.id),
+            winnerTeamId: winningTeam,
+            winnerName: winningTeam === 'red' ? 'RED TEAM' : 'BLUE TEAM',
+            teamScores: computeTeamScores(remaining, room.teamScores),
+            placements: Object.fromEntries(
+              winners.map((p) => [p.id, 1]).concat([[player.id, 2]])
+            ),
+          });
+        }
+      }
+    }
+    return;
+  }
+
+  if (!player.alive) return;
   player.alive = false;
   await recordTeamPlacementIfEliminated(
     room,
@@ -2617,7 +2961,15 @@ server.on('upgrade', (req, socket) => {
               rejectJoin('room_not_found', `Room ${roomCode} was not found.`);
               continue;
             }
-            room = getOrCreateRoom(roomCode, modeResolution.mode);
+            const requestedMatchMode = normalizeGameMode(
+              msg.matchMode ?? msg.gameMode ?? DEFAULT_GAME_MODE
+            );
+            const adhocConfig = defaultLobbyConfigForMode(
+              modeResolution.mode,
+              roomCode,
+              requestedMatchMode
+            );
+            room = getOrCreateRoom(roomCode, modeResolution.mode, adhocConfig);
           }
 
           const humanOnlyRoom = isHumanOnlyMode(room.mode);
@@ -2757,6 +3109,8 @@ server.on('upgrade', (req, socket) => {
 
           if (!player) {
             isFreshJoinOrReset = true;
+            const vitals = createInitialVitals(room.matchMode);
+            const respawnMode = isRespawnMode(room.matchMode);
             player = {
               // Public IDs are opaque and unrelated to the private session
               // token. Session/account tokens are never broadcast.
@@ -2778,17 +3132,23 @@ server.on('upgrade', (req, socket) => {
               yaw: 0,
               facingYaw: 0,
               pitch: 0,
-              health: 100,
-              shield: 50,
+              health: vitals.health,
+              maxHealth: vitals.maxHealth,
+              shield: vitals.shield,
+              maxShield: vitals.maxShield,
+              livesRemaining: vitals.livesRemaining,
               eliminations: 0,
+              deaths: 0,
+              respawns: 0,
+              damageDealt: 0,
               alive: true,
               isConnected: true,
               disconnectedAt: 0,
               joinedAt: Date.now(),
               isAiming: false,
               isSprinting: false,
-              isGrounded: !msg.isGliding,
-              isGliding: Boolean(msg.isGliding),
+              isGrounded: respawnMode ? true : !msg.isGliding,
+              isGliding: respawnMode ? false : Boolean(msg.isGliding),
               isReloading: false,
               equippedCategory: 'assault_rifle',
               equippedRarity: 'uncommon',
@@ -2809,6 +3169,12 @@ server.on('upgrade', (req, socket) => {
             };
             resetInventory(player);
             room.players.set(currentSessionToken, player);
+            if (!lobbyManagedRoom) {
+              assignAdhocPlayerTeam(room, player);
+              if (respawnMode && !msg.position) {
+                player.position = safeRespawnPosition(room, player);
+              }
+            }
           } else {
             if (player.socket && player.socket !== socket && !player.socket.destroyed) {
               cancelInventoryAction(player);
@@ -3243,12 +3609,14 @@ server.on('upgrade', (req, socket) => {
           if (!victim || !victim.alive) continue;
           if (isHumanOnlyMode(currentRoom.mode) && !victim.isParticipant) continue;
           if (
-            currentRoom.teamMode !== 'solo' &&
-            attacker.id !== victim.id &&
-            attacker.teamId &&
-            attacker.teamId === victim.teamId
+            areTeammates(
+              currentRoom.matchMode,
+              attacker,
+              victim,
+              currentRoom.teamMode
+            )
           ) {
-            // Server-enforced friendly-fire protection for Duo/Squad.
+            // Server-enforced friendly-fire protection for Team Deathmatch and Duo/Squad.
             continue;
           }
 
@@ -3299,18 +3667,10 @@ server.on('upgrade', (req, socket) => {
             validatedHitPoint.y - Number(victim.position?.y || 0) >= 1.38;
           const rawDamage = getServerWeaponDamage(weaponStats, isHeadshot);
           if (rawDamage <= 0) continue;
-          const isShieldHit = victim.shield > 0;
-
-          let rem = rawDamage;
-          if (victim.shield > 0) {
-            const absorbed = Math.min(victim.shield, rem);
-            victim.shield -= absorbed;
-            rem -= absorbed;
-          }
-          if (rem > 0) {
-            victim.health = Math.max(0, victim.health - rem);
-          }
-          const isShieldBreak = isShieldHit && victim.shield <= 0;
+          const dmgResult = applyAuthoritativeDamage(victim, rawDamage);
+          const isShieldHit = dmgResult.isShieldHit;
+          const isShieldBreak = dmgResult.isShieldBreak;
+          attacker.damageDealt = (attacker.damageDealt || 0) + rawDamage;
 
           const eventId = `${currentRoom.code}_hit_${++currentRoom.hitEventSeq}`;
 
@@ -3318,60 +3678,112 @@ server.on('upgrade', (req, socket) => {
           let winsDelta = 0;
           let attackerPlacement = 0;
           let matchWinner = null;
+          let modeOutcomeToFinish = null;
+          let respawned = false;
+          let respawnPos = null;
+          let victimHealthForHit = victim.health;
+          let victimShieldForHit = victim.shield;
 
-          if (victim.health <= 0 && victim.alive) {
-            victim.alive = false;
+          if (dmgResult.lethal && victim.alive) {
             eliminated = true;
             attacker.eliminations = (attacker.eliminations || 0) + 1;
+            victim.deaths = (victim.deaths || 0) + 1;
 
-            const alivePlayers = getRoomHumanPlayers(currentRoom).filter(
-              (p) =>
-                p.alive &&
-                (!isHumanOnlyMode(currentRoom.mode) || p.isParticipant)
-            );
-
-            if (isHumanOnlyMode(currentRoom.mode)) {
-              await recordTeamPlacementIfEliminated(
-                currentRoom,
-                victim,
-                'eliminated',
-                eventId
-              );
-              // Human-only victory is evaluated only from authenticated
-              // human match participants. No bot participant can exist in
-              // this room, and local AI settings have no effect here.
-              matchWinner = getWinningHumanTeam(currentRoom);
-              if (matchWinner?.players.some((player) => player.id === attacker.id)) {
-                winsDelta = 1;
-                attackerPlacement = 1;
-              }
-            } else {
-              const victimPlacement = Math.max(2, alivePlayers.length + 1);
-              currentRoom.placements.set(victim.id, victimPlacement);
-
-              const victimProfile = await applyAuthoritativeProgression(victim, {
-                eventId: `${eventId}_victim`,
-                roomCode: currentRoom.code,
-                eventType: 'eliminated',
-                placement: victimPlacement,
-                xpDelta: victimPlacement <= 3 ? 150 : victimPlacement <= 5 ? 75 : 0,
-              });
-
-              if (victim.socket && !victim.socket.destroyed) {
-                victim.socket.write(
-                  encodeWsFrame({
-                    type: 'server_progression',
-                    profile: victimProfile,
-                  })
+            if (isRespawnMode(currentRoom.matchMode)) {
+              victimHealthForHit = 0;
+              victimShieldForHit = 0;
+              if (currentRoom.matchMode === 'team_deathmatch') {
+                const attackerTeam = normalizeTdmTeam(
+                  attacker.teamId ?? attacker.teamIndex
+                );
+                if (attackerTeam) {
+                  currentRoom.teamScores[attackerTeam] =
+                    (currentRoom.teamScores[attackerTeam] || 0) + 1;
+                }
+                currentRoom.teamScores = computeTeamScores(
+                  getRoomActiveParticipants(currentRoom),
+                  currentRoom.teamScores
                 );
               }
 
-              if (
-                alivePlayers.length === 1 &&
-                alivePlayers[0].id === attacker.id
-              ) {
-                winsDelta = 1;
-                attackerPlacement = 1;
+              const outcome = evaluateMatchOutcome({
+                mode: currentRoom.matchMode,
+                players: getRoomActiveParticipants(currentRoom),
+                teamScores: currentRoom.teamScores,
+                elapsedSeconds: currentRoom.matchTimer,
+                minPlayers: currentRoom.minPlayers,
+                teamMode: currentRoom.teamMode,
+                durationSeconds: currentRoom.durationSeconds,
+              });
+
+              if (outcome.ended) {
+                victim.alive = false;
+                modeOutcomeToFinish = outcome;
+                if (
+                  !outcome.isDraw &&
+                  Array.isArray(outcome.winnerIds) &&
+                  outcome.winnerIds.includes(attacker.id)
+                ) {
+                  winsDelta = 1;
+                  attackerPlacement = 1;
+                }
+              } else {
+                respawned = true;
+                respawnPos = respawnRoomPlayer(currentRoom, victim);
+              }
+            } else {
+              victim.alive = false;
+              victim.livesRemaining = 0;
+
+              const alivePlayers = getRoomHumanPlayers(currentRoom).filter(
+                (p) =>
+                  p.alive &&
+                  (!isHumanOnlyMode(currentRoom.mode) || p.isParticipant)
+              );
+
+              if (isHumanOnlyMode(currentRoom.mode)) {
+                await recordTeamPlacementIfEliminated(
+                  currentRoom,
+                  victim,
+                  'eliminated',
+                  eventId
+                );
+                // Human-only victory is evaluated only from authenticated
+                // human match participants. No bot participant can exist in
+                // this room, and local AI settings have no effect here.
+                matchWinner = getWinningHumanTeam(currentRoom);
+                if (matchWinner?.players.some((player) => player.id === attacker.id)) {
+                  winsDelta = 1;
+                  attackerPlacement = 1;
+                }
+              } else {
+                const victimPlacement = Math.max(2, alivePlayers.length + 1);
+                currentRoom.placements.set(victim.id, victimPlacement);
+
+                const victimProfile = await applyAuthoritativeProgression(victim, {
+                  eventId: `${eventId}_victim`,
+                  roomCode: currentRoom.code,
+                  eventType: 'eliminated',
+                  placement: victimPlacement,
+                  xpDelta: victimPlacement <= 3 ? 150 : victimPlacement <= 5 ? 75 : 0,
+                });
+
+                if (victim.socket && !victim.socket.destroyed) {
+                  victim.socket.write(
+                    encodeWsFrame({
+                      type: 'server_progression',
+                      profile: victimProfile,
+                    })
+                  );
+                }
+
+                if (
+                  alivePlayers.length === 1 &&
+                  alivePlayers[0].id === attacker.id
+                ) {
+                  winsDelta = 1;
+                  attackerPlacement = 1;
+                }
               }
             }
           }
@@ -3410,8 +3822,10 @@ server.on('upgrade', (req, socket) => {
             victimId: victim.id,
             victimName: victim.name,
             damage: rawDamage,
-            victimHealth: victim.health,
-            victimShield: victim.shield,
+            victimHealth: victimHealthForHit,
+            victimShield: victimShieldForHit,
+            victimLivesRemaining: victim.livesRemaining ?? null,
+            victimDeaths: victim.deaths || 0,
             isHeadshot,
             isShieldHit,
             isShieldBreak,
@@ -3423,9 +3837,21 @@ server.on('upgrade', (req, socket) => {
             weaponRarity: weaponStats.rarity,
             hitPoint: validatedHitPoint,
             eliminated,
+            respawned,
+            respawnPosition: respawnPos || undefined,
+            teamScores: computeTeamScores(
+              getRoomActiveParticipants(currentRoom),
+              currentRoom.teamScores
+            ),
           });
 
-          if (matchWinner) {
+          if (modeOutcomeToFinish) {
+            await finishModeMatch(
+              currentRoom,
+              modeOutcomeToFinish,
+              winsDelta > 0 ? attacker.id : null
+            );
+          } else if (matchWinner) {
             for (const winner of matchWinner.players) {
               if (winner.id !== attacker.id) {
                 await awardHumanWinner(currentRoom, winner, 'combat');
@@ -3754,7 +4180,21 @@ function sanitizeVelocity(raw, fallback) {
 
 function updateRoomStorm(room, dt) {
   room.matchTimer += dt;
-  advanceServerStorm(room.storm, dt);
+  if (isStormEnabledForMode(room.matchMode)) {
+    advanceServerStorm(room.storm, dt);
+  } else {
+    const remaining = getRemainingMatchSeconds(
+      room.matchMode,
+      room.matchTimer,
+      room.durationSeconds
+    );
+    room.storm.phase = 1;
+    room.storm.isShrinking = false;
+    room.storm.currentRadius = 255;
+    room.storm.targetRadius = 255;
+    room.storm.damagePerSecond = 0;
+    room.storm.phaseTimer = remaining ?? MATCH_DURATION_SECONDS;
+  }
 }
 
 function q2(n) {
@@ -3786,8 +4226,21 @@ function buildRoomPlayersSnapshot(room) {
       facingYaw: q3(p.facingYaw),
       pitch: q3(p.pitch),
       health: p.health,
+      maxHealth: p.maxHealth || 100,
       shield: p.shield,
+      maxShield: p.maxShield || 100,
+      livesRemaining:
+        p.livesRemaining === undefined
+          ? isRespawnMode(room.matchMode)
+            ? null
+            : p.alive
+              ? 1
+              : 0
+          : p.livesRemaining,
       eliminations: p.eliminations,
+      deaths: p.deaths || 0,
+      respawns: p.respawns || 0,
+      damageDealt: p.damageDealt || 0,
       alive: p.alive,
       isConnected: p.isConnected,
       isAiming: p.isAiming,
@@ -3865,10 +4318,26 @@ const roomTickInterval = setInterval(() => {
     if (hasConnected) {
       if (room.phase === 'active') {
         updateRoomStorm(room, 0.05);
-        if (isHumanOnlyMode(room.mode)) {
+        if (isStormEnabledForMode(room.matchMode) && isHumanOnlyMode(room.mode)) {
           void applyHumanStormDamage(room).catch(() => {
             // Progression/database failures must not stop the room tick.
           });
+        } else if (
+          isTimedMode(room.matchMode) &&
+          isMatchTimeExpired(room.matchMode, room.matchTimer, room.durationSeconds)
+        ) {
+          const outcome = evaluateMatchOutcome({
+            mode: room.matchMode,
+            players: getRoomActiveParticipants(room),
+            teamScores: room.teamScores,
+            elapsedSeconds: room.matchTimer,
+            minPlayers: room.minPlayers,
+            teamMode: room.teamMode,
+            durationSeconds: room.durationSeconds,
+          });
+          if (outcome.ended) {
+            void finishModeMatch(room, outcome).catch(() => {});
+          }
         }
       }
       broadcastRoomState(room);

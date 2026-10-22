@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import {
   BuildPieceType,
   CosmeticLoadout,
+  GameModeChoice,
   GameSettings,
   LobbyConfig,
   PlayerInputPacket,
@@ -15,6 +16,19 @@ import {
   getStarterLoadoutItems,
   isHumanOnlySessionMode,
 } from '../network/schemas';
+import {
+  DEFAULT_GAME_MODE,
+  areTeammates,
+  computeTeamScores,
+  evaluateMatchOutcome,
+  gameModeLabel,
+  getRemainingMatchSeconds,
+  isMatchTimeExpired,
+  isRespawnMode,
+  isStormEnabledForMode,
+  isTimedMode,
+  normalizeGameMode,
+} from '../../shared/matchRules.mjs';
 import {
   NetworkConnectionState,
   NetworkManager,
@@ -761,7 +775,9 @@ export class GameEngine {
       // The 20Hz snapshot can mark a victim dead before the delayed combat
       // event arrives. eventId was deduplicated above; do not suppress its FX.
       if (ev.eliminated) {
-        victim.alive = false;
+        const respawnMode =
+          isRespawnMode(state.matchMode) || Boolean(ev.respawned);
+        victim.deaths = ev.victimDeaths ?? (victim.deaths || 0) + 1;
         if (isLocalAttacker && localPlayer) {
           localPlayer.eliminations = ev.attackerEliminations ?? (localPlayer.eliminations + 1);
           this.sound.playHitmarker(ev.isHeadshot, false, true);
@@ -783,6 +799,28 @@ export class GameEngine {
         if (gain > 0) this.particles.spawnEliminationEffect(
           new THREE.Vector3(victim.position.x, victim.position.y, victim.position.z)
         );
+
+        if (respawnMode && state.phase !== 'ENDED') {
+          victim.alive = true;
+          victim.health = 100;
+          victim.shield = 50;
+          victim.isGliding = false;
+          victim.isGrounded = true;
+          if (ev.respawnPosition) {
+            victim.position.x = ev.respawnPosition.x;
+            victim.position.y = ev.respawnPosition.y;
+            victim.position.z = ev.respawnPosition.z;
+            victim.velocity = { x: 0, y: 0, z: 0 };
+          }
+          if (isLocalVictim && localPlayer) {
+            this.localEliminatedByName = ev.attackerName;
+            this.hud.showCombatCue('RESPAWNED — BACK IN ACTION', '#38bdf8');
+          }
+          this.recountAliveCombatants();
+          return;
+        }
+
+        victim.alive = false;
         this.recountAliveCombatants();
 
         if (isLocalVictim && localPlayer) {
@@ -830,6 +868,22 @@ export class GameEngine {
           this.sound.playVictory();
           this.showEndScreen(true, 1, localPlayer, '');
         }
+      }
+    };
+
+    this.network.onPlayerRespawned = (ev) => {
+      const isSelf =
+        ev.playerId === this.network.localPlayerId ||
+        ev.playerId === this.network.serverPlayerId;
+      if (isSelf) {
+        this.hud.showCombatCue('RESPAWNED — FULL VITALITY', '#38bdf8');
+      }
+      if (ev.position) {
+        this.particles.spawnShockwaveRing(
+          new THREE.Vector3(ev.position.x, ev.position.y + 0.2, ev.position.z),
+          0x38bdf8,
+          2.2
+        );
       }
     };
   }
@@ -1273,6 +1327,7 @@ export class GameEngine {
     this.serverAuthorizedLobbyStart = true;
     this.startMatch({
       ...pendingConfig,
+      matchMode: snapshot.matchMode || pendingConfig.matchMode || DEFAULT_GAME_MODE,
       roomCode: snapshot.roomCode,
       // The server snapshot is authoritative for these room settings. In a
       // human-only room it is always zero; in AI Fill it is the host's
@@ -1306,12 +1361,19 @@ export class GameEngine {
     if (!localPlayer) return;
 
     this.network.state.phase = 'ENDED';
+    this.network.state.matchMode = snapshot.matchMode || this.network.state.matchMode;
     this.network.state.winnerName = snapshot.winnerName || 'No winner recorded';
+    this.network.state.winnerTeamId = snapshot.winnerTeamId || '';
+    this.network.state.teamScores = { ...snapshot.teamScores };
+    this.network.state.isDraw = Boolean(snapshot.isDraw);
+    this.network.state.endReason = snapshot.endReason || '';
     const finalSelf = snapshot.players.find(p => p.id === this.network.serverPlayerId);
     if (finalSelf) localPlayer.eliminations = finalSelf.eliminations ?? localPlayer.eliminations;
+    const isDraw = Boolean(snapshot.isDraw);
     const isVictory =
-      snapshot.winnerId === this.network.serverPlayerId ||
-      snapshot.winnerIds.includes(this.network.serverPlayerId);
+      !isDraw &&
+      (snapshot.winnerId === this.network.serverPlayerId ||
+        snapshot.winnerIds.includes(this.network.serverPlayerId));
     const serverPlacement = placements[this.network.serverPlayerId];
     const placement = isVictory
       ? 1
@@ -1324,7 +1386,8 @@ export class GameEngine {
       isVictory,
       placement,
       localPlayer,
-      this.localEliminatedByName
+      this.localEliminatedByName,
+      isDraw
     );
   }
 
@@ -1341,8 +1404,17 @@ export class GameEngine {
       return;
     }
 
+    const resolvedMatchMode: GameModeChoice = normalizeGameMode(
+      config.matchMode ||
+        config.createLobby?.matchMode ||
+        this.network.roomSnapshot?.matchMode ||
+        DEFAULT_GAME_MODE
+    );
+    const respawnMode = isRespawnMode(resolvedMatchMode);
     this.currentConfig = {
       ...config,
+      matchMode: resolvedMatchMode,
+      skyDrop: respawnMode ? false : config.skyDrop,
       botCount: effectiveBotCountForMode(config.mode, config.botCount),
       cosmetics: config.cosmetics || this.progression.cosmetics,
     };
@@ -1417,7 +1489,8 @@ export class GameEngine {
         this.currentConfig.botCount,
         this.network.state,
         this.world,
-        this.currentConfig.skyDrop
+        this.currentConfig.skyDrop,
+        this.currentConfig.matchMode
       );
       for (const bot of bots) {
         this.createCharacterMeshForPlayer(bot);
@@ -1457,13 +1530,14 @@ export class GameEngine {
     const cdModePill = document.getElementById('countdown-mode-pill');
     if (cdOverlay) cdOverlay.classList.remove('hidden');
     if (cdModePill) {
+      const modeTitle = gameModeLabel(this.currentConfig.matchMode).toUpperCase();
       cdModePill.textContent = isHumanOnly
-        ? `👥 HUMAN PLAYERS ONLY — NO BOTS • ROOM: ${this.network.roomCode} • ${this.network.state.totalParticipants} HUMANS`
+        ? `👥 ${modeTitle} — HUMAN PLAYERS ONLY • ROOM: ${this.network.roomCode} • ${this.network.state.totalParticipants} HUMANS`
         : isServerLobbyStart
-          ? `🌐 MULTIPLAYER LOBBY: ${this.network.roomCode} • ${this.network.roomSnapshot?.matchParticipantCount ?? 1} HUMANS + ${this.currentConfig.botCount} AI`
+          ? `🌐 ${modeTitle} LOBBY: ${this.network.roomCode} • ${this.network.roomSnapshot?.matchParticipantCount ?? 1} HUMANS + ${this.currentConfig.botCount} AI`
           : this.currentConfig.mode === 'online'
-            ? `🌐 ONLINE ROOM: ${this.network.roomCode}`
-            : `🤖 SOLO BATTLE ROYALE (${this.network.state.totalParticipants} CONTENDERS)`;
+            ? `🌐 ${modeTitle} ONLINE ROOM: ${this.network.roomCode}`
+            : `🤖 SOLO ${modeTitle} (${this.network.state.totalParticipants} CONTENDERS)`;
     }
 
     this.requestPointerLock();
@@ -1800,6 +1874,45 @@ export class GameEngine {
 
     if (state.phase === 'ACTIVE' && !this.network.roomConnected) {
       state.matchTimer += dt;
+      state.timeRemaining = getRemainingMatchSeconds(
+        state.matchMode,
+        state.matchTimer,
+        state.durationSeconds
+      );
+      if (
+        isTimedMode(state.matchMode) &&
+        isMatchTimeExpired(state.matchMode, state.matchTimer, state.durationSeconds)
+      ) {
+        const outcome = evaluateMatchOutcome({
+          mode: state.matchMode,
+          players: Array.from(state.players.values()),
+          teamScores: state.teamScores,
+          elapsedSeconds: state.matchTimer,
+          minPlayers: 1,
+          durationSeconds: state.durationSeconds,
+        });
+        if (outcome.ended) {
+          state.phase = 'ENDED';
+          state.winnerName = outcome.winnerName;
+          state.winnerTeamId = outcome.winnerTeamId;
+          state.teamScores = outcome.teamScores;
+          state.isDraw = outcome.isDraw;
+          state.endReason = outcome.reason;
+          const isVictory =
+            !outcome.isDraw && outcome.winnerIds.includes(localPlayer.id);
+          const placement =
+            outcome.placements[localPlayer.id] || (isVictory ? 1 : 2);
+          if (isVictory) this.sound.playVictory();
+          this.showEndScreen(
+            isVictory,
+            placement,
+            localPlayer,
+            '',
+            outcome.isDraw
+          );
+          return;
+        }
+      }
     }
 
     const keyboardMoveX =
@@ -1945,28 +2058,32 @@ export class GameEngine {
       this.perfMonitor.endSubsystem('botAi');
     }
 
-    // Storm update: if connected to an authoritative online room, server drives storm coordinates
-    if (this.network.isOnlineRoom && this.network.roomConnected) {
-      this.stormSystem.syncVisuals(state, dt);
-    } else {
-      this.stormSystem.update(dt, state);
-    }
+    // Storm update: only active in Battle Royale mode
+    if (isStormEnabledForMode(state.matchMode)) {
+      if (this.network.isOnlineRoom && this.network.roomConnected) {
+        this.stormSystem.syncVisuals(state, dt);
+      } else {
+        this.stormSystem.update(dt, state);
+      }
 
-    if (!isHumanOnlySessionMode(this.currentConfig.mode)) {
-      this.stormDamageTicker += dt;
-      if (this.stormDamageTicker >= 1.0) {
-        this.stormDamageTicker = 0;
-        for (const p of state.players.values()) {
-          if (!p.alive || p.isGliding) continue;
-          if (!p.isBot && p.id !== this.network.localPlayerId) continue;
-          if (this.stormSystem.isPositionInStorm(state, p.position.x, p.position.z)) {
-            this.applyDirectHealthDamage(p, state.storm.damagePerSecond, null, 'The Storm');
+      if (!isHumanOnlySessionMode(this.currentConfig.mode)) {
+        this.stormDamageTicker += dt;
+        if (this.stormDamageTicker >= 1.0) {
+          this.stormDamageTicker = 0;
+          for (const p of state.players.values()) {
+            if (!p.alive || p.isGliding) continue;
+            if (!p.isBot && p.id !== this.network.localPlayerId) continue;
+            if (this.stormSystem.isPositionInStorm(state, p.position.x, p.position.z)) {
+              this.applyDirectHealthDamage(p, state.storm.damagePerSecond, null, 'The Storm');
+            }
           }
         }
+      } else {
+        // Human-only storm damage/eliminations are server-authoritative and
+        // arrive as server_hit events; local prediction would double-apply it.
+        this.stormDamageTicker = 0;
       }
     } else {
-      // Human-only storm damage/eliminations are server-authoritative and
-      // arrive as server_hit events; local prediction would double-apply it.
       this.stormDamageTicker = 0;
     }
 
@@ -1992,6 +2109,7 @@ export class GameEngine {
       hudSubject.position.z
     );
     const localInStorm =
+      isStormEnabledForMode(state.matchMode) &&
       hudSubject.alive &&
       !hudSubject.isGliding &&
       this.stormSystem.isPositionInStorm(
@@ -2065,11 +2183,12 @@ export class GameEngine {
   ): void {
     if (!victim.alive) return;
     if (
-      this.currentConfig.teamMode &&
-      this.currentConfig.teamMode !== 'solo' &&
-      attacker.id !== victim.id &&
-      attacker.teamId &&
-      attacker.teamId === victim.teamId
+      areTeammates(
+        this.network.state.matchMode,
+        attacker,
+        victim,
+        this.currentConfig.teamMode || 'solo'
+      )
     ) {
       return;
     }
@@ -2181,6 +2300,35 @@ export class GameEngine {
     }
   }
 
+  private respawnLocalPlayer(localPlayer: PlayerState): void {
+    const angle = ((localPlayer.respawns || 0) * 1.9 + 0.6) % (Math.PI * 2);
+    const radius = 38 + ((localPlayer.respawns || 0) % 3) * 18;
+    const rawX = Math.cos(angle) * radius;
+    const rawZ = Math.sin(angle) * radius;
+    const groundY = this.world.terrain.getTerrainHeight(rawX, rawZ);
+    localPlayer.alive = true;
+    localPlayer.health = 100;
+    localPlayer.maxHealth = 100;
+    localPlayer.shield = 50;
+    localPlayer.maxShield = 100;
+    localPlayer.livesRemaining = null;
+    localPlayer.respawns = (localPlayer.respawns || 0) + 1;
+    localPlayer.isGliding = false;
+    localPlayer.isGrounded = true;
+    localPlayer.isReloading = false;
+    localPlayer.isHealing = false;
+    localPlayer.position.x = rawX;
+    localPlayer.position.y = Math.max(1.0, groundY + 0.25);
+    localPlayer.position.z = rawZ;
+    localPlayer.velocity = { x: 0, y: 0, z: 0 };
+    for (const slot of localPlayer.inventory) {
+      if (slot && !slot.isConsumable && slot.maxClipAmmo > 0) {
+        slot.clipAmmo = slot.maxClipAmmo;
+      }
+    }
+    localPlayer.ammo = { none: 0, light: 72, medium: 90, shells: 24, heavy: 15 };
+  }
+
   private eliminatePlayer(
     victim: PlayerState,
     killer: PlayerState | null,
@@ -2189,6 +2337,7 @@ export class GameEngine {
   ): void {
     if (!victim.alive) return;
     victim.alive = false;
+    victim.deaths = (victim.deaths || 0) + 1;
 
     const state = this.network.state;
     const eliminatedPlacement = state.aliveCount;
@@ -2214,6 +2363,50 @@ export class GameEngine {
       new THREE.Vector3(victim.position.x, victim.position.y, victim.position.z)
     );
 
+    const localPlayer = state.players.get(this.network.localPlayerId)!;
+
+    if (isRespawnMode(state.matchMode)) {
+      state.teamScores = computeTeamScores(Array.from(state.players.values()));
+      const outcome = evaluateMatchOutcome({
+        mode: state.matchMode,
+        players: Array.from(state.players.values()),
+        teamScores: state.teamScores,
+        elapsedSeconds: state.matchTimer,
+        minPlayers: 1,
+        durationSeconds: state.durationSeconds,
+      });
+
+      if (outcome.ended) {
+        state.phase = 'ENDED';
+        state.winnerName = outcome.winnerName;
+        state.winnerTeamId = outcome.winnerTeamId;
+        state.isDraw = outcome.isDraw;
+        state.endReason = outcome.reason;
+        const isVictory =
+          !outcome.isDraw && outcome.winnerIds.includes(localPlayer.id);
+        const placement =
+          outcome.placements[localPlayer.id] || (isVictory ? 1 : 2);
+        if (isVictory) this.sound.playVictory();
+        this.showEndScreen(
+          isVictory,
+          placement,
+          localPlayer,
+          killer?.name || '',
+          outcome.isDraw
+        );
+        return;
+      }
+
+      if (victim.isBot) {
+        this.botController.respawnBot(victim, state, this.world);
+      } else if (victim.id === localPlayer.id) {
+        this.respawnLocalPlayer(localPlayer);
+        this.hud.showCombatCue('RESPAWNED — BACK IN ACTION', '#38bdf8');
+      }
+      this.recountAliveCombatants();
+      return;
+    }
+
     this.lootSystem.dropEliminatedPlayerLoot(state, victim);
 
     let alive = 0;
@@ -2226,7 +2419,6 @@ export class GameEngine {
     }
     state.aliveCount = alive;
 
-    const localPlayer = state.players.get(this.network.localPlayerId)!;
     if (victim.id === localPlayer.id) {
       this.showEndScreen(false, eliminatedPlacement, localPlayer, killer?.name || 'The Storm');
     } else if (alive <= 1 && localPlayer.alive) {
@@ -2241,7 +2433,8 @@ export class GameEngine {
     isVictory: boolean,
     placement: number,
     localPlayer: PlayerState,
-    eliminatedBy: string
+    eliminatedBy: string,
+    isDraw: boolean = false
   ): void {
     this.clearTransientInput();
     if (document.pointerLockElement) {
@@ -2266,22 +2459,49 @@ export class GameEngine {
     const subtitle = document.getElementById('end-banner-subtitle')!;
     const spectateBtn = document.getElementById('btn-spectate-match');
 
-    banner.textContent = isVictory ? '👑 VICTORY ROYALE!' : '💀 ELIMINATED';
-    banner.className = isVictory ? 'end-title victory' : 'end-title defeated';
-    const teamMode = this.currentConfig.teamMode || 'solo';
-    const isTeamMatch = teamMode === 'duo' || teamMode === 'squad';
-    const placementTotal = isTeamMatch
-      ? new Set(
-          Array.from(this.network.state.players.values()).map(
-            (player) => player.teamId || player.id
-          )
-        ).size
-      : this.network.state.totalParticipants;
-    subtitle.textContent = isVictory
-      ? isTeamMatch
-        ? `Your ${teamMode === 'duo' ? 'Duo' : 'Squad'} team conquered the CI Craft Island!`
-        : `${localPlayer.name} conquered the CI Craft Island!`
-      : `Eliminated by ${eliminatedBy} — Placed #${placement} of ${placementTotal}${isTeamMatch ? ' teams' : ''}`;
+    const matchMode = this.network.state.matchMode || 'battle_royale';
+    if (isDraw) {
+      banner.textContent = '🤝 MATCH DRAW';
+      banner.className = 'end-title defeated';
+      subtitle.textContent =
+        matchMode === 'team_deathmatch'
+          ? `Time expired with RED ${this.network.state.teamScores.red} — ${this.network.state.teamScores.blue} BLUE tied!`
+          : `Time expired in a tied Free for All (${localPlayer.eliminations} Eliminations)!`;
+    } else if (matchMode === 'team_deathmatch') {
+      banner.textContent = isVictory
+        ? '🏆 TEAM DEATHMATCH VICTORY!'
+        : '💀 TEAM DEFEATED';
+      banner.className = isVictory ? 'end-title victory' : 'end-title defeated';
+      const winningLabel =
+        this.network.state.winnerName ||
+        (this.network.state.winnerTeamId === 'blue' ? 'BLUE TEAM' : 'RED TEAM');
+      subtitle.textContent = `${winningLabel} won Team Deathmatch (${this.network.state.teamScores.red} RED — ${this.network.state.teamScores.blue} BLUE)`;
+    } else if (matchMode === 'free_for_all') {
+      banner.textContent = isVictory
+        ? '🏆 FREE FOR ALL VICTORY!'
+        : '💀 MATCH COMPLETE';
+      banner.className = isVictory ? 'end-title victory' : 'end-title defeated';
+      subtitle.textContent = isVictory
+        ? `${localPlayer.name} won Free for All with ${localPlayer.eliminations} Eliminations!`
+        : `${this.network.state.winnerName || 'Opponent'} won Free for All — Placed #${placement} (${localPlayer.eliminations} Eliminations)`;
+    } else {
+      banner.textContent = isVictory ? '👑 VICTORY ROYALE!' : '💀 ELIMINATED';
+      banner.className = isVictory ? 'end-title victory' : 'end-title defeated';
+      const teamMode = this.currentConfig.teamMode || 'solo';
+      const isTeamMatch = teamMode === 'duo' || teamMode === 'squad';
+      const placementTotal = isTeamMatch
+        ? new Set(
+            Array.from(this.network.state.players.values()).map(
+              (player) => player.teamId || player.id
+            )
+          ).size
+        : this.network.state.totalParticipants;
+      subtitle.textContent = isVictory
+        ? isTeamMatch
+          ? `Your ${teamMode === 'duo' ? 'Duo' : 'Squad'} team conquered the CI Craft Island!`
+          : `${localPlayer.name} conquered the CI Craft Island!`
+        : `Eliminated by ${eliminatedBy} — Placed #${placement} of ${placementTotal}${isTeamMatch ? ' teams' : ''}`;
+    }
 
     if (spectateBtn) {
       spectateBtn.classList.toggle(

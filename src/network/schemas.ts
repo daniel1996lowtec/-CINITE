@@ -24,6 +24,18 @@ export type BuildPieceType = 'wall' | 'ramp' | 'floor' | 'roof';
 
 export type BuildMaterialType = 'wood' | 'stone' | 'metal';
 
+export type GameModeChoice =
+  | 'battle_royale'
+  | 'free_for_all'
+  | 'team_deathmatch';
+
+export type TdmTeamId = 'red' | 'blue';
+
+export interface TeamScoreState {
+  red: number;
+  blue: number;
+}
+
 export type BotDifficulty = 'easy' | 'medium' | 'hard';
 
 export type TimeOfDayPreset = 'day' | 'sunset' | 'night';
@@ -208,6 +220,9 @@ export interface PlayerState {
   inventory: (InventorySlot | null)[];
   ammo: AmmoReserveState;
   materials: MaterialReserveState;
+  livesRemaining?: number | null;
+  deaths?: number;
+  respawns?: number;
   eliminations: number;
   damageDealt: number;
   shotsFired: number;
@@ -264,7 +279,17 @@ export interface StormState {
 
 export interface MatchState {
   phase: 'LOBBY' | 'ACTIVE' | 'ENDED';
+  matchMode: GameModeChoice;
   matchTimer: number;
+  timeRemaining: number | null;
+  durationSeconds: number | null;
+  scoreLimit: number | null;
+  targetKills: number | null;
+  autoRespawn: boolean;
+  teamScores: TeamScoreState;
+  isDraw: boolean;
+  endReason: string;
+  winnerTeamId: string;
   aliveCount: number;
   totalParticipants: number;
   winnerName: string;
@@ -327,7 +352,9 @@ export interface CreateLobbyRequest {
   humanOnly: boolean;
   maxPlayers: 2 | 4 | 8 | 16 | 20;
   mapId: LobbyMapId;
+  matchMode?: GameModeChoice;
   teamMode: TeamMode;
+  gameMode?: TeamMode | GameModeChoice;
   botCount: number;
   botDifficulty?: BotDifficulty;
   startCondition: LobbyStartCondition;
@@ -345,6 +372,7 @@ export interface LobbySummary {
   hostPlayerId: string | null;
   mode: MultiplayerRoomMode;
   roomMode: MultiplayerRoomMode;
+  matchMode?: GameModeChoice;
   visibility: RoomVisibility;
   isPrivate: boolean;
   hasPassword: boolean;
@@ -365,7 +393,15 @@ export interface LobbySummary {
   mapId: LobbyMapId;
   mapName: string;
   teamMode: TeamMode;
-  gameMode: TeamMode;
+  gameMode: TeamMode | GameModeChoice;
+  scoreLimit?: number | null;
+  targetKills?: number | null;
+  durationSeconds?: number | null;
+  timeRemaining?: number | null;
+  autoRespawn?: boolean;
+  teamScores?: TeamScoreState;
+  isDraw?: boolean;
+  endReason?: string;
   startCondition: LobbyStartCondition;
   allowLateJoin: boolean;
   canJoin: boolean;
@@ -400,6 +436,9 @@ export function effectiveBotCountForMode(
 
 export interface RoomPlayerSummary {
   eliminations?: number;
+  deaths?: number;
+  respawns?: number;
+  livesRemaining?: number | null;
   id: string;
   name: string;
   participantType: 'human';
@@ -429,6 +468,7 @@ export interface RoomSnapshot {
   isSelfHost: boolean;
   mode: MultiplayerRoomMode;
   roomMode: MultiplayerRoomMode;
+  matchMode: GameModeChoice;
   visibility: RoomVisibility;
   isPrivate: boolean;
   hasPassword: boolean;
@@ -455,7 +495,15 @@ export interface RoomSnapshot {
   mapId: LobbyMapId;
   mapName: string;
   teamMode: TeamMode;
-  gameMode: TeamMode;
+  gameMode: TeamMode | GameModeChoice;
+  scoreLimit: number | null;
+  targetKills: number | null;
+  durationSeconds: number | null;
+  timeRemaining: number | null;
+  autoRespawn: boolean;
+  teamScores: TeamScoreState;
+  isDraw: boolean;
+  endReason: string;
   startCondition: LobbyStartCondition;
   allowLateJoin: boolean;
   createdAt: number;
@@ -475,6 +523,7 @@ export interface RoomSnapshot {
 export interface LobbyConfig {
   playerName: string;
   mode: SessionMode;
+  matchMode?: GameModeChoice;
   roomCode?: string;
   roomPassword?: string;
   createLobby?: CreateLobbyRequest;
@@ -502,3 +551,95 @@ export interface GameSettings {
   timeOfDay: TimeOfDayPreset;
   showFps: boolean;
 }
+
+export const DEFAULT_GAME_MODE: GameModeChoice = 'battle_royale';
+
+export function isValidGameMode(raw: unknown): boolean {
+  const v = String(raw ?? '').trim().toLowerCase();
+  return (
+    v === 'battle_royale' ||
+    v === 'br' ||
+    v === 'free_for_all' ||
+    v === 'ffa' ||
+    v === 'team_deathmatch' ||
+    v === 'tdm'
+  );
+}
+
+export function normalizeGameMode(raw: unknown): GameModeChoice {
+  const v = String(raw ?? '').trim().toLowerCase();
+  if (v === 'free_for_all' || v === 'ffa') return 'free_for_all';
+  if (v === 'team_deathmatch' || v === 'tdm') return 'team_deathmatch';
+  return 'battle_royale';
+}
+
+export function isRespawnMode(mode: unknown): boolean {
+  const m = normalizeGameMode(mode);
+  return m === 'free_for_all' || m === 'team_deathmatch';
+}
+
+export function getMatchRules(mode: unknown): {
+  id: GameModeChoice;
+  label: string;
+  shortLabel: string;
+  durationSeconds: number | null;
+  targetKills: number | null;
+  scoreLimit: number | null;
+  autoRespawn: boolean;
+  stormEnabled: boolean;
+} {
+  const m = normalizeGameMode(mode);
+  if (m === 'free_for_all') {
+    return {
+      id: 'free_for_all',
+      label: 'Free for All',
+      shortLabel: 'FFA',
+      durationSeconds: 600,
+      targetKills: 50,
+      scoreLimit: 50,
+      autoRespawn: true,
+      stormEnabled: false,
+    };
+  }
+  if (m === 'team_deathmatch') {
+    return {
+      id: 'team_deathmatch',
+      label: 'Team Deathmatch',
+      shortLabel: 'TDM',
+      durationSeconds: 600,
+      targetKills: 50,
+      scoreLimit: 50,
+      autoRespawn: true,
+      stormEnabled: false,
+    };
+  }
+  return {
+    id: 'battle_royale',
+    label: 'Battle Royale',
+    shortLabel: 'BR',
+    durationSeconds: null,
+    targetKills: null,
+    scoreLimit: null,
+    autoRespawn: false,
+    stormEnabled: true,
+  };
+}
+
+export function getRemainingMatchSeconds(
+  mode: unknown,
+  elapsedSeconds = 0,
+  durationOverride?: number | null
+): number | null {
+  const rules = getMatchRules(mode);
+  const duration =
+    typeof durationOverride === 'number' && durationOverride > 0
+      ? durationOverride
+      : rules.durationSeconds;
+  if (typeof duration !== 'number') return null;
+  return Math.max(0, duration - Math.max(0, Number(elapsedSeconds) || 0));
+}
+
+export function createInitialTeamScores(): TeamScoreState {
+  return { red: 0, blue: 0 };
+}
+

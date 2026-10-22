@@ -10,6 +10,7 @@ import {
   BotDifficulty,
   BuildPieceType,
   CreateLobbyRequest,
+  GameModeChoice,
   LobbyConfig,
   LobbySummary,
   OutfitPresetId,
@@ -21,6 +22,11 @@ import {
   getStarterLoadoutItems,
   isHumanOnlySessionMode,
 } from './network/schemas';
+import {
+  DEFAULT_GAME_MODE,
+  gameModeLabel,
+  normalizeGameMode,
+} from '../shared/matchRules.mjs';
 import {
   ACCENT_COLOR_SWATCHES,
   ARMOR_COLOR_SWATCHES,
@@ -489,23 +495,25 @@ window.addEventListener('DOMContentLoaded', () => {
 
   const renderRoomStatusBar = (snapshot: RoomSnapshot | null) => {
     if (!connStatusEl || !playerCountEl) return;
+    const modeLabel = gameModeLabel(menuShell.selectedGameMode).toUpperCase();
     if (mainMenuMode === 'solo' && !snapshot) {
       const botCount = parseInt(botCountSelectEl?.value || '14', 10) || 14;
       connStatusEl.className = 'room-status-tag';
-      connStatusEl.textContent = '🟢 READY • SOLO + AI BOTS';
+      connStatusEl.textContent = `🟢 READY • SOLO ${modeLabel} + AI BOTS`;
       playerCountEl.textContent = `👥 1 Human + ${botCount} AI Combatants`;
       return;
     }
     if (!snapshot) {
       connStatusEl.className = 'room-status-tag warn';
-      connStatusEl.textContent = '🌐 MULTIPLAYER LOBBY BROWSER';
+      connStatusEl.textContent = `🌐 MULTIPLAYER • ${modeLabel}`;
       playerCountEl.textContent = '👥 Browse or create a live lobby';
       return;
     }
+    const snapModeLabel = gameModeLabel(snapshot.matchMode).toUpperCase();
     connStatusEl.className = snapshot.phase === 'ended' ? 'room-status-tag warn' : 'room-status-tag';
     connStatusEl.textContent = snapshot.humanOnly
-      ? `👥 ${snapshot.roomCode} • HUMAN PLAYERS ONLY — NO BOTS • ${lobbyPhaseLabel(snapshot)}`
-      : `🌐 ${snapshot.roomCode} • AI FILL • ${lobbyPhaseLabel(snapshot)}`;
+      ? `👥 ${snapshot.roomCode} • ${snapModeLabel} • HUMAN ONLY • ${lobbyPhaseLabel(snapshot)}`
+      : `🌐 ${snapshot.roomCode} • ${snapModeLabel} • AI FILL • ${lobbyPhaseLabel(snapshot)}`;
     playerCountEl.textContent = `👥 ${snapshot.connectedHumans} Humans • ${snapshot.readyHumans} Ready • 🤖 ${snapshot.botCount} AI`;
   };
 
@@ -541,9 +549,20 @@ window.addEventListener('DOMContentLoaded', () => {
     ) as HTMLInputElement | null;
     const requestedBotCount =
       overrides.botCount ?? (parseInt(botCountSelectEl?.value || '14', 10) || 14);
+    const soloModeSelect = document.getElementById(
+      'solo-game-mode-select'
+    ) as HTMLSelectElement | null;
+    const resolvedMatchMode: GameModeChoice = normalizeGameMode(
+      overrides.matchMode ||
+        overrides.createLobby?.matchMode ||
+        soloModeSelect?.value ||
+        menuShell.selectedGameMode ||
+        DEFAULT_GAME_MODE
+    );
     return {
       playerName: playerNameInput?.value.trim() || engine.progression.state.callsign || '',
       mode,
+      matchMode: resolvedMatchMode,
       roomCode: roomCode || undefined,
       skyDrop: skyDropCheck?.checked ?? true,
       starterLoadout:
@@ -555,6 +574,10 @@ window.addEventListener('DOMContentLoaded', () => {
         overrides.difficulty ||
         ((difficultySelectEl?.value as BotDifficulty) || 'medium'),
     };
+  };
+
+  menuShell.onGameModeChange = () => {
+    renderRoomStatusBar(activeLobbySnapshot);
   };
 
   const enterLobbyWithConfig = async (

@@ -4,6 +4,7 @@ import {
   BuildMaterialType,
   BuildPieceType,
   CosmeticLoadout,
+  GameModeChoice,
   InventorySlot,
   BotDifficulty,
   CreateLobbyRequest,
@@ -23,11 +24,19 @@ import {
   StarterLoadoutType,
   StormState,
   TeamMode,
+  TeamScoreState,
   WeaponCategory,
   WeaponRarity,
   getStarterLoadoutItems as resolveStarterLoadoutItems,
   isHumanOnlySessionMode,
   roomModeForSessionMode,
+  DEFAULT_GAME_MODE,
+  createInitialTeamScores,
+  getMatchRules,
+  getRemainingMatchSeconds,
+  isRespawnMode,
+  isValidGameMode,
+  normalizeGameMode,
 } from './schemas';
 import { normalizeOutfitPresetId } from '../entities/CharacterCosmetics';
 import { createWeaponStats } from '../weapons/WeaponDefinitions';
@@ -43,12 +52,31 @@ export interface ServerHitEvent {
   damage: number;
   victimHealth: number;
   victimShield: number;
+  victimLivesRemaining?: number | null;
+  victimDeaths?: number;
   isHeadshot: boolean;
   isShieldHit: boolean;
   isShieldBreak?: boolean;
   weaponName: string;
   hitPoint: { x: number; y: number; z: number };
   eliminated: boolean;
+  respawned?: boolean;
+  respawnPosition?: { x: number; y: number; z: number };
+  teamScores?: TeamScoreState;
+}
+
+export interface PlayerRespawnedEvent {
+  roomCode?: string;
+  playerId: string;
+  playerName: string;
+  teamId?: string;
+  teamIndex?: number;
+  position: { x: number; y: number; z: number };
+  health: number;
+  shield: number;
+  livesRemaining?: number | null;
+  deaths?: number;
+  respawns?: number;
 }
 
 export type NetworkConnectionState =
@@ -138,6 +166,7 @@ export function normalizeLobbySummary(
     hostPlayerId: snapshot.hostPlayerId,
     mode: snapshot.mode,
     roomMode: snapshot.roomMode,
+    matchMode: snapshot.matchMode,
     visibility: snapshot.visibility,
     isPrivate: snapshot.isPrivate,
     hasPassword: snapshot.hasPassword,
@@ -159,6 +188,14 @@ export function normalizeLobbySummary(
     mapName: snapshot.mapName,
     teamMode: snapshot.teamMode,
     gameMode: snapshot.gameMode,
+    scoreLimit: snapshot.scoreLimit,
+    targetKills: snapshot.targetKills,
+    durationSeconds: snapshot.durationSeconds,
+    timeRemaining: snapshot.timeRemaining,
+    autoRespawn: snapshot.autoRespawn,
+    teamScores: snapshot.teamScores,
+    isDraw: snapshot.isDraw,
+    endReason: snapshot.endReason,
     startCondition: snapshot.startCondition,
     allowLateJoin: snapshot.allowLateJoin,
     canJoin: Boolean(data.canJoin ?? snapshot.phase === 'lobby'),
@@ -197,6 +234,12 @@ function normalizeRoomSnapshot(
             id: String(player.id || ''),
             name: String(player.name || 'Commander_CI'),
             eliminations: Math.max(0, Math.floor(Number(player.eliminations) || 0)),
+            deaths: Math.max(0, Math.floor(Number(player.deaths) || 0)),
+            respawns: Math.max(0, Math.floor(Number(player.respawns) || 0)),
+            livesRemaining:
+              player.livesRemaining === null || player.livesRemaining === undefined
+                ? null
+                : Number(player.livesRemaining),
             participantType: 'human',
             isBot: false,
             isAuthenticated: Boolean(player.isAuthenticated),
@@ -270,6 +313,35 @@ function normalizeRoomSnapshot(
               ? 'full'
               : 'waiting';
 
+  const matchMode: GameModeChoice = isValidGameMode(data.matchMode)
+    ? normalizeGameMode(data.matchMode)
+    : isValidGameMode(data.gameMode)
+      ? normalizeGameMode(data.gameMode)
+      : DEFAULT_GAME_MODE;
+  const modeRules = getMatchRules(matchMode);
+  const rawTeamScores =
+    data.teamScores && typeof data.teamScores === 'object'
+      ? (data.teamScores as Record<string, unknown>)
+      : null;
+  const teamScores: TeamScoreState = {
+    red: Math.max(0, Math.floor(Number(rawTeamScores?.red) || 0)),
+    blue: Math.max(0, Math.floor(Number(rawTeamScores?.blue) || 0)),
+  };
+  const durationSeconds =
+    data.durationSeconds === null
+      ? null
+      : typeof data.durationSeconds === 'number'
+        ? data.durationSeconds
+        : modeRules.durationSeconds;
+  const timeRemaining =
+    typeof data.timeRemaining === 'number'
+      ? Math.max(0, data.timeRemaining)
+      : getRemainingMatchSeconds(
+          matchMode,
+          Number(data.matchTimer || 0),
+          durationSeconds
+        );
+
   return {
     id: roomCode,
     roomId: roomCode,
@@ -281,6 +353,7 @@ function normalizeRoomSnapshot(
     isSelfHost: Boolean(selfPlayerId && hostPlayerId === selfPlayerId),
     mode,
     roomMode: mode,
+    matchMode,
     visibility,
     isPrivate: visibility === 'private',
     hasPassword: Boolean(data.hasPassword),
@@ -316,7 +389,25 @@ function normalizeRoomSnapshot(
     mapId: 'ci_island',
     mapName: String(data.mapName || 'CI Island'),
     teamMode: normalizeTeamMode(data.teamMode ?? data.gameMode),
-    gameMode: normalizeTeamMode(data.teamMode ?? data.gameMode),
+    gameMode:
+      matchMode !== 'battle_royale'
+        ? matchMode
+        : normalizeTeamMode(data.teamMode ?? data.gameMode),
+    scoreLimit:
+      data.scoreLimit === null
+        ? null
+        : Number(data.scoreLimit ?? modeRules.scoreLimit ?? 0) || modeRules.scoreLimit,
+    targetKills:
+      data.targetKills === null
+        ? null
+        : Number(data.targetKills ?? modeRules.targetKills ?? 0) ||
+          modeRules.targetKills,
+    durationSeconds,
+    timeRemaining,
+    autoRespawn: Boolean(data.autoRespawn ?? modeRules.autoRespawn),
+    teamScores,
+    isDraw: Boolean(data.isDraw),
+    endReason: String(data.endReason || ''),
     startCondition: normalizeStartCondition(data.startCondition),
     allowLateJoin: Boolean(data.allowLateJoin),
     createdAt: Number(data.createdAt || 0),
@@ -409,6 +500,7 @@ export class NetworkManager {
     hitPoint: { x: number; y: number; z: number }
   ) => void;
   public onServerHitEvent?: (ev: ServerHitEvent) => void;
+  public onPlayerRespawned?: (ev: PlayerRespawnedEvent) => void;
   public onRemoteLootCollected?: (
     collectorId: string,
     lootId: string,
@@ -627,11 +719,25 @@ export class NetworkManager {
     }
   }
 
-  public createFreshMatchState(): MatchState {
+  public createFreshMatchState(
+    matchMode: GameModeChoice = DEFAULT_GAME_MODE
+  ): MatchState {
     this.remoteTargets.clear();
+    const normalizedMode = normalizeGameMode(matchMode);
+    const rules = getMatchRules(normalizedMode);
     return {
       phase: 'LOBBY',
+      matchMode: normalizedMode,
       matchTimer: 0,
+      timeRemaining: rules.durationSeconds,
+      durationSeconds: rules.durationSeconds,
+      scoreLimit: rules.scoreLimit,
+      targetKills: rules.targetKills,
+      autoRespawn: rules.autoRespawn,
+      teamScores: createInitialTeamScores(),
+      isDraw: false,
+      endReason: '',
+      winnerTeamId: '',
       aliveCount: 0,
       totalParticipants: 0,
       winnerName: '',
@@ -712,6 +818,9 @@ export class NetworkManager {
       maxHealth: 100,
       shield: 50,
       maxShield: 100,
+      livesRemaining: isRespawnMode(config.matchMode) ? null : 1,
+      deaths: 0,
+      respawns: 0,
       eliminations: 0,
       damageDealt: 0,
       shotsFired: 0,
@@ -744,16 +853,29 @@ export class NetworkManager {
     spawnY: number,
     spawnZ: number
   ): PlayerState {
-    this.state = this.createFreshMatchState();
+    const matchMode = normalizeGameMode(config.matchMode || DEFAULT_GAME_MODE);
+    this.state = this.createFreshMatchState(matchMode);
     this.state.phase = 'ACTIVE';
     this.isOnlineRoom = config.mode !== 'solo_bots';
     this.roomMode = roomModeForSessionMode(config.mode);
     this.roomCode = (config.roomCode || 'CICRAFT-1').trim().toUpperCase();
-    this.activeRoomConfig = config;
+    this.activeRoomConfig = { ...config, matchMode };
 
-    const localPlayer = this.createLocalPlayerState(config, spawnX, spawnY, spawnZ);
+    const localPlayer = this.createLocalPlayerState(
+      this.activeRoomConfig,
+      spawnX,
+      spawnY,
+      spawnZ
+    );
     localPlayer.isParticipant = true;
     localPlayer.isReady = true;
+    if (matchMode === 'team_deathmatch') {
+      localPlayer.teamId = 'red';
+      localPlayer.teamIndex = 0;
+    } else {
+      localPlayer.teamId = `solo_${localPlayer.id}`;
+      localPlayer.teamIndex = 0;
+    }
     this.activeLocalPlayer = localPlayer;
     this.state.players.set(this.localPlayerId, localPlayer);
 
@@ -801,7 +923,10 @@ export class NetworkManager {
       return this.activeLocalPlayer;
     }
 
-    this.state = this.createFreshMatchState();
+    const requestedMatchMode = normalizeGameMode(
+      config.matchMode || config.createLobby?.matchMode || DEFAULT_GAME_MODE
+    );
+    this.state = this.createFreshMatchState(requestedMatchMode);
     this.state.phase = 'LOBBY';
     this.isOnlineRoom = true;
     this.roomMode = requestedMode;
@@ -834,8 +959,11 @@ export class NetworkManager {
   ): PlayerState {
     const previousSnapshot = this.roomSnapshot;
     const previousServerPlayerId = this.serverPlayerId;
+    const matchMode = normalizeGameMode(
+      previousSnapshot?.matchMode || config.matchMode || DEFAULT_GAME_MODE
+    );
 
-    this.state = this.createFreshMatchState();
+    this.state = this.createFreshMatchState(matchMode);
     this.state.phase = 'ACTIVE';
     this.isOnlineRoom = true;
     this.roomMode = roomModeForSessionMode(config.mode);
@@ -844,9 +972,14 @@ export class NetworkManager {
       .toUpperCase();
     this.roomSnapshot = previousSnapshot;
     this.serverPlayerId = previousServerPlayerId;
-    this.activeRoomConfig = config;
+    this.activeRoomConfig = { ...config, matchMode };
 
-    const localPlayer = this.createLocalPlayerState(config, spawnX, spawnY, spawnZ);
+    const localPlayer = this.createLocalPlayerState(
+      this.activeRoomConfig,
+      spawnX,
+      spawnY,
+      spawnZ
+    );
     localPlayer.isReady = true;
     localPlayer.isParticipant = true;
     const selfSummary = previousSnapshot?.players.find(
@@ -859,6 +992,13 @@ export class NetworkManager {
     this.state.players.set(this.localPlayerId, localPlayer);
 
     if (previousSnapshot) {
+      this.state.matchMode = previousSnapshot.matchMode;
+      this.state.scoreLimit = previousSnapshot.scoreLimit;
+      this.state.targetKills = previousSnapshot.targetKills;
+      this.state.durationSeconds = previousSnapshot.durationSeconds;
+      this.state.timeRemaining = previousSnapshot.timeRemaining;
+      this.state.autoRespawn = previousSnapshot.autoRespawn;
+      this.state.teamScores = { ...previousSnapshot.teamScores };
       const humanParticipants =
         previousSnapshot.matchParticipantCount || previousSnapshot.connectedHumans || 1;
       this.state.totalParticipants = previousSnapshot.humanOnly
@@ -904,6 +1044,11 @@ export class NetworkManager {
       type: 'join_room',
       roomCode: this.roomCode,
       roomMode: this.roomMode,
+      matchMode:
+        config.matchMode ||
+        config.createLobby?.matchMode ||
+        this.roomSnapshot?.matchMode ||
+        DEFAULT_GAME_MODE,
       purpose: this.pendingConnectionPurpose,
       joinIntent:
         this.pendingConnectionPurpose === 'lobby' ? 'join_existing' : 'join_or_create',
@@ -1269,6 +1414,16 @@ export class NetworkManager {
             : snapshot.phase === 'ended'
               ? 'ENDED'
               : 'LOBBY';
+        this.state.matchMode = snapshot.matchMode;
+        this.state.scoreLimit = snapshot.scoreLimit;
+        this.state.targetKills = snapshot.targetKills;
+        this.state.durationSeconds = snapshot.durationSeconds;
+        this.state.timeRemaining = snapshot.timeRemaining;
+        this.state.autoRespawn = snapshot.autoRespawn;
+        this.state.teamScores = { ...snapshot.teamScores };
+        this.state.isDraw = snapshot.isDraw;
+        this.state.endReason = snapshot.endReason;
+        this.state.winnerTeamId = snapshot.winnerTeamId;
 
         if (
           this.activeRoomConfig &&
@@ -1308,6 +1463,14 @@ export class NetworkManager {
         }
         if (typeof msg.matchTimer === 'number') {
           this.state.matchTimer = msg.matchTimer;
+          this.state.timeRemaining =
+            typeof snapshot.timeRemaining === 'number'
+              ? snapshot.timeRemaining
+              : getRemainingMatchSeconds(
+                  this.state.matchMode,
+                  this.state.matchTimer,
+                  this.state.durationSeconds
+                );
         }
 
         const players = msg.players as Array<Record<string, unknown>>;
@@ -1340,6 +1503,12 @@ export class NetworkManager {
             const localPlayer = this.state.players.get(this.localPlayerId);
             if (localPlayer) {
               localPlayer.eliminations = Math.max(0, Math.floor(Number(rp.eliminations) || 0));
+              localPlayer.deaths = Math.max(0, Math.floor(Number(rp.deaths) || 0));
+              localPlayer.respawns = Math.max(0, Math.floor(Number(rp.respawns) || 0));
+              localPlayer.livesRemaining =
+                rp.livesRemaining === null || rp.livesRemaining === undefined
+                  ? null
+                  : Number(rp.livesRemaining);
               localPlayer.isReady = Boolean(rp.isReady);
               localPlayer.isParticipant = Boolean(rp.isParticipant);
               localPlayer.isConnected = Boolean(rp.isConnected ?? true);
@@ -1540,6 +1709,12 @@ export class NetworkManager {
             existing.health = Number(rp.health ?? existing.health);
             existing.shield = Number(rp.shield ?? existing.shield);
             existing.eliminations = Number(rp.eliminations ?? existing.eliminations);
+            existing.deaths = Number(rp.deaths ?? existing.deaths ?? 0);
+            existing.respawns = Number(rp.respawns ?? existing.respawns ?? 0);
+            existing.livesRemaining =
+              rp.livesRemaining === null || rp.livesRemaining === undefined
+                ? null
+                : Number(rp.livesRemaining);
             existing.alive = Boolean(rp.alive ?? existing.alive);
             existing.isReady = Boolean(rp.isReady);
             existing.isParticipant = Boolean(rp.isParticipant);
@@ -1696,7 +1871,13 @@ export class NetworkManager {
         this.roomSnapshot = snapshot;
         this.roomMode = snapshot.mode;
         this.state.phase = 'ENDED';
+        this.state.matchMode = snapshot.matchMode;
         this.state.winnerName = snapshot.winnerName;
+        this.state.winnerTeamId = snapshot.winnerTeamId;
+        this.state.teamScores = { ...snapshot.teamScores };
+        this.state.isDraw = snapshot.isDraw;
+        this.state.endReason = snapshot.endReason;
+        this.state.timeRemaining = snapshot.timeRemaining;
         this.state.aliveCount = snapshot.aliveHumans;
         this.onRoomSnapshot?.(snapshot);
         const rawPlacements =
@@ -1777,7 +1958,81 @@ export class NetworkManager {
       }
 
       case 'server_hit': {
-        this.onServerHitEvent?.(msg as unknown as ServerHitEvent);
+        const hitEv = msg as unknown as ServerHitEvent;
+        if (hitEv.teamScores && typeof hitEv.teamScores === 'object') {
+          this.state.teamScores = {
+            red: Math.max(0, Math.floor(Number(hitEv.teamScores.red) || 0)),
+            blue: Math.max(0, Math.floor(Number(hitEv.teamScores.blue) || 0)),
+          };
+        }
+        this.onServerHitEvent?.(hitEv);
+        break;
+      }
+
+      case 'player_respawned': {
+        const ev: PlayerRespawnedEvent = {
+          roomCode: msg.roomCode ? String(msg.roomCode) : undefined,
+          playerId: String(msg.playerId || ''),
+          playerName: String(msg.playerName || 'Player'),
+          teamId: msg.teamId ? String(msg.teamId) : undefined,
+          teamIndex:
+            typeof msg.teamIndex === 'number' ? Number(msg.teamIndex) : undefined,
+          position: (msg.position as { x: number; y: number; z: number }) || {
+            x: 0,
+            y: 6,
+            z: 0,
+          },
+          health: Number(msg.health ?? 100),
+          shield: Number(msg.shield ?? 50),
+          livesRemaining:
+            msg.livesRemaining === null || msg.livesRemaining === undefined
+              ? null
+              : Number(msg.livesRemaining),
+          deaths: Math.max(0, Math.floor(Number(msg.deaths) || 0)),
+          respawns: Math.max(0, Math.floor(Number(msg.respawns) || 0)),
+        };
+        const isSelf =
+          ev.playerId === this.localPlayerId || ev.playerId === this.serverPlayerId;
+        const targetPlayer = isSelf
+          ? this.state.players.get(this.localPlayerId) || this.activeLocalPlayer
+          : this.state.players.get(ev.playerId);
+        if (targetPlayer) {
+          targetPlayer.alive = true;
+          targetPlayer.health = ev.health;
+          targetPlayer.shield = ev.shield;
+          targetPlayer.livesRemaining = ev.livesRemaining;
+          targetPlayer.deaths = ev.deaths;
+          targetPlayer.respawns = ev.respawns;
+          targetPlayer.isGliding = false;
+          targetPlayer.isGrounded = true;
+          targetPlayer.isReloading = false;
+          targetPlayer.isHealing = false;
+          targetPlayer.velocity = { x: 0, y: 0, z: 0 };
+          if (
+            ev.position &&
+            [ev.position.x, ev.position.y, ev.position.z].every(Number.isFinite)
+          ) {
+            targetPlayer.position.x = ev.position.x;
+            targetPlayer.position.y = ev.position.y;
+            targetPlayer.position.z = ev.position.z;
+          }
+          if (!isSelf) {
+            this.remoteTargets.set(ev.playerId, {
+              targetX: targetPlayer.position.x,
+              targetY: targetPlayer.position.y,
+              grounded: true,
+              targetZ: targetPlayer.position.z,
+              velX: 0,
+              velY: 0,
+              velZ: 0,
+              targetYaw: targetPlayer.yaw,
+              targetFacingYaw: targetPlayer.facingYaw,
+              targetPitch: targetPlayer.pitch,
+              lastPacketPerfMs: performance.now(),
+            });
+          }
+        }
+        this.onPlayerRespawned?.(ev);
         break;
       }
 
@@ -1787,6 +2042,11 @@ export class NetworkManager {
         if (player && position && [position.x,position.y,position.z].every(Number.isFinite)) {
           Object.assign(player.position,position);
           player.velocity = {x:0,y:0,z:0};
+          if (msg.respawned) {
+            player.alive = true;
+            player.isGliding = false;
+            player.isGrounded = true;
+          }
         }
         break;
       }
