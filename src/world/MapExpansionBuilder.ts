@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { BUILDING_BRANDING } from './WorldBrandingLayout';
 import type {
   BoxCollider,
   CylinderCollider,
@@ -6,6 +7,11 @@ import type {
   WalkableSurface,
 } from './IslandWorld';
 import { ISLAND_POIS } from './TerrainGenerator';
+import {
+  applyFoliageWind,
+  createArchitectureTextures,
+  type FoliageWindOptions,
+} from './VisualAtmosphere';
 import type {
   AxisAlignedFootprint,
   CardinalDirection,
@@ -14,6 +20,7 @@ import type {
   LegendaryTowerSide,
 } from './WorldLayout';
 import {
+  AURORA_HEIGHTS_SKYBRIDGE,
   EXISTING_MAJOR_FOOTPRINTS,
   EXPANSION_BUILDINGS,
   EXPANSION_LANDMARKS,
@@ -23,6 +30,8 @@ import {
   LEGENDARY_TOWER,
   LEGENDARY_TOWER_FLOOR_LOOT,
   LEGENDARY_TOWER_VAULT_LOOT,
+  getHighRiseFloorTop,
+  getHighRiseRoofTop,
   getLegendaryTowerAscentSide,
   getLegendaryTowerFloorHeight,
   buildingLocalToWorld,
@@ -37,7 +46,7 @@ import {
   isPointInFootprint,
 } from './WorldLayout';
 
-type ArchitectureShape = 'box' | 'glass' | 'cone' | 'cylinder' | 'glow';
+type ArchitectureShape = 'box' | 'glass' | 'cone' | 'cylinder' | 'glow' | 'metal' | 'paint' | 'contact' | 'decal';
 type ArchitectureTier = 'essential' | 'detail';
 
 interface InstanceSpec {
@@ -59,7 +68,7 @@ interface ShapeOptions {
   rotationZ?: number;
 }
 
-const ARCHITECTURE_SHAPES: ArchitectureShape[] = ['box', 'glass', 'cone', 'cylinder', 'glow'];
+const ARCHITECTURE_SHAPES: ArchitectureShape[] = ['box', 'glass', 'cone', 'cylinder', 'glow', 'metal', 'paint', 'contact', 'decal'];
 
 /**
  * Builds the additive island districts around the original IslandWorld.
@@ -104,6 +113,7 @@ export class MapExpansionBuilder {
     for (const placement of EXPANSION_BUILDINGS) {
       this.createBuilding(placement);
     }
+    this.buildAuroraHeightsSkybridge();
     this.buildSettlementInfrastructure();
     for (const landmark of EXPANSION_LANDMARKS) {
       this.createLandmark(landmark);
@@ -683,6 +693,11 @@ export class MapExpansionBuilder {
           outWidth - 0.28,
           i % 4 === 0 ? paleConcrete : treadColor
         );
+        if (i === 0 || i === steps - 1) {
+          // Paint on existing tread tops: not a new obstacle or a loot beacon.
+          addSideBox(side,along,y+.112,centreOut,run/steps*.36,1,outWidth-.52,
+            0xfde68a,{shape:'decal'});
+        }
       }
 
       for (const t of [0.18, 0.5, 0.82]) {
@@ -1473,7 +1488,625 @@ export class MapExpansionBuilder {
     this.world.spawnCrate(cx - 15, cz - 8);
   }
 
+  /**
+   * Aurora Heights towers use the same instanced box/glass/glow batches and
+   * AABB/walkable registries as every other expansion building. Their
+   * switchback ramps alternate side lanes, leaving a central playable slab
+   * on every occupied level and a final flight to the roof. No decorative
+   * floor is unreachable: ground, every intermediate level, balconies and
+   * the roof all have explicit walkable surfaces.
+   */
+  private createHighRiseBuilding(placement: ExpansionBuildingPlacement): void {
+    const baseY = this.world.terrain.getTerrainHeight(placement.x, placement.z);
+    const hw = placement.width / 2;
+    const hd = placement.depth / 2;
+    const wallT = 0.48;
+    const floorTop = (level: number): number => getHighRiseFloorTop(level);
+    const roofTop = getHighRiseRoofTop(placement);
+    const wallHeight = roofTop - floorTop(0);
+    const concrete = 0x94a3b8;
+    const darkTrim = 0x1e293b;
+    const floorColor = 0xcbd5e1;
+
+    const box = (
+      lx: number,
+      ly: number,
+      lz: number,
+      sx: number,
+      sy: number,
+      sz: number,
+      color: number,
+      options: ShapeOptions = {}
+    ) =>
+      this.addBuildingShape(placement, baseY, lx, ly, lz, sx, sy, sz, color, options);
+
+    const collider = (
+      suffix: string,
+      lx: number,
+      ly: number,
+      lz: number,
+      sx: number,
+      sy: number,
+      sz: number
+    ) =>
+      this.addBuildingCollider(placement, baseY, suffix, lx, ly, lz, sx, sy, sz);
+
+    const wall = (
+      suffix: string,
+      lx: number,
+      ly: number,
+      lz: number,
+      sx: number,
+      sy: number,
+      sz: number,
+      color: number = placement.wallColor
+    ) => {
+      box(lx, ly, lz, sx, sy, sz, color);
+      collider(suffix, lx, ly, lz, sx, sy, sz);
+    };
+
+    const addSlab = (
+      suffix: string,
+      minX: number,
+      maxX: number,
+      minZ: number,
+      maxZ: number,
+      top: number,
+      color: number,
+      withCollider: boolean = false
+    ) => {
+      const cx = (minX + maxX) / 2;
+      const cz = (minZ + maxZ) / 2;
+      const sx = maxX - minX;
+      const sz = maxZ - minZ;
+      box(cx, top - 0.12, cz, sx, 0.24, sz, color);
+      if (withCollider) collider(`${suffix}_slab`, cx, top - 0.12, cz, sx, 0.24, sz);
+      this.addBuildingWalkable(placement, baseY, suffix, minX, maxX, minZ, maxZ, () => top);
+    };
+
+    // Foundation and ground floor.
+    box(0, -0.2, 0, placement.width + 1.0, 1.18, placement.depth + 1.0, concrete);
+    addSlab('floor_0', -hw, hw, -hd, hd, floorTop(0), floorColor);
+    for (const side of [-1, 1]) {
+      box(0, 0.08, side * (hd + 0.85), Math.min(8.5, placement.width * 0.55), 0.16, 1.55, 0x64748b);
+      box(0, 0.2, side * (hd + 0.22), 4.4, 0.1, 0.3, placement.accentColor, {
+        shape: 'glass',
+        tier: 'detail',
+      });
+    }
+
+    // Switchback geometry. Transition L uses the west lane for even L and
+    // the east lane for odd L; every ramp rises from local south to north.
+    const laneWidth = 2.45;
+    const westLane = { min: -hw + wallT, max: -hw + wallT + laneWidth };
+    const eastLane = { min: hw - wallT - laneWidth, max: hw - wallT };
+    const laneForTransition = (level: number) => (level % 2 === 0 ? westLane : eastLane);
+    const rampRun = placement.depth - 3.4;
+
+    for (let level = 1; level <= placement.floors; level++) {
+      const isRoof = level === placement.floors;
+      const top = isRoof ? roofTop : floorTop(level);
+      const arrivalLane = laneForTransition(level - 1);
+      const oppositeLane = arrivalLane === westLane ? eastLane : westLane;
+      const slabColor = isRoof ? placement.roofColor : floorColor;
+
+      addSlab(
+        isRoof ? 'roof_central' : `floor_${level}_central`,
+        westLane.max,
+        eastLane.min,
+        -hd + 0.3,
+        hd - 0.3,
+        top,
+        slabColor,
+        isRoof
+      );
+      // The arrival landing intentionally has no AABB slab collider: the
+      // capsule is still intersecting that thin slab's Y range while rising
+      // on the ramp, so a box there would act as a wall at the stair head.
+      // Its walkable surface is the movement collider, as on lower floors.
+      addSlab(
+        isRoof ? 'roof_arrival_landing' : `floor_${level}_arrival_landing`,
+        arrivalLane.min,
+        arrivalLane.max,
+        -hd + 0.3,
+        -hd + 3.0,
+        top,
+        slabColor,
+        false
+      );
+      if (isRoof) {
+        addSlab(
+          'roof_opposite_lane',
+          oppositeLane.min,
+          oppositeLane.max,
+          -hd + 0.3,
+          hd - 0.3,
+          top,
+          slabColor,
+          true
+        );
+      } else {
+        addSlab(
+          `floor_${level}_departure_landing`,
+          oppositeLane.min,
+          oppositeLane.max,
+          hd - 3.0,
+          hd - 0.3,
+          top,
+          slabColor
+        );
+      }
+
+      // A bright stair-opening edge makes the vertical route legible in the
+      // open atrium without adding a movement collider across the landing.
+      const openingEdgeX = arrivalLane === westLane ? westLane.max : eastLane.min;
+      box(openingEdgeX, top + 0.06, 1.1, 0.14, 0.12, placement.depth - 5.2, placement.accentColor, {
+        shape: 'glass',
+        tier: 'detail',
+      });
+    }
+
+    for (let level = 0; level < placement.floors; level++) {
+      const lane = laneForTransition(level);
+      const laneCenterX = (lane.min + lane.max) / 2;
+      const lowY = floorTop(level);
+      const highY = level === placement.floors - 1 ? roofTop : floorTop(level + 1);
+      const rise = highY - lowY;
+      const rampAngle = Math.atan2(rise, rampRun);
+      box(
+        laneCenterX,
+        (lowY + highY) / 2 - 0.1,
+        0,
+        laneWidth,
+        0.22,
+        Math.hypot(rampRun, rise),
+        level % 2 === 0 ? 0x64748b : 0x78716c,
+        { rotationX: rampAngle }
+      );
+      box(
+        laneCenterX,
+        (lowY + highY) / 2 - 0.24,
+        0,
+        laneWidth + 0.16,
+        0.14,
+        Math.hypot(rampRun, rise),
+        darkTrim,
+        { rotationX: rampAngle, tier: 'detail' }
+      );
+      this.addBuildingWalkable(
+        placement,
+        baseY,
+        `ramp_${level}_to_${level + 1}`,
+        lane.min,
+        lane.max,
+        -rampRun / 2,
+        rampRun / 2,
+        (_lx, lz) => {
+          const t = THREE.MathUtils.clamp((rampRun / 2 - lz) / rampRun, 0, 1);
+          return lowY + t * rise;
+        }
+      );
+    }
+
+    const balconyLevels = [...new Set([2, placement.floors - 1])].filter(
+      (level) => level > 0 && level < placement.floors
+    );
+
+    // Full-height side walls.
+    wall('wall_left', -hw + wallT / 2, floorTop(0) + wallHeight / 2, 0, wallT, wallHeight, placement.depth);
+    wall('wall_right', hw - wallT / 2, floorTop(0) + wallHeight / 2, 0, wallT, wallHeight, placement.depth);
+
+    const doorWidth = 3.2;
+    const facadeSideWidth = Math.max(0.8, (placement.width - doorWidth) / 2);
+    const addFacade = (
+      sideSign: 1 | -1,
+      openings: Array<{ bottom: number; top: number }>
+    ) => {
+      const label = sideSign > 0 ? 'front' : 'rear';
+      const z = sideSign * (hd - wallT / 2);
+      wall(
+        `wall_${label}_left`,
+        -hw + facadeSideWidth / 2,
+        floorTop(0) + wallHeight / 2,
+        z,
+        facadeSideWidth,
+        wallHeight,
+        wallT
+      );
+      wall(
+        `wall_${label}_right`,
+        hw - facadeSideWidth / 2,
+        floorTop(0) + wallHeight / 2,
+        z,
+        facadeSideWidth,
+        wallHeight,
+        wallT
+      );
+
+      let cursor = floorTop(0);
+      let interval = 0;
+      for (const opening of [...openings].sort((a, b) => a.bottom - b.bottom)) {
+        if (opening.bottom > cursor + 0.02) {
+          wall(
+            `wall_${label}_centre_${interval++}`,
+            0,
+            (cursor + opening.bottom) / 2,
+            z,
+            doorWidth,
+            opening.bottom - cursor,
+            wallT
+          );
+        }
+        cursor = Math.max(cursor, opening.top);
+      }
+      if (roofTop > cursor + 0.02) {
+        wall(
+          `wall_${label}_centre_${interval++}`,
+          0,
+          (cursor + roofTop) / 2,
+          z,
+          doorWidth,
+          roofTop - cursor,
+          wallT
+        );
+      }
+    };
+
+    addFacade(1, [
+      { bottom: floorTop(0), top: floorTop(0) + 3.0 },
+      ...balconyLevels.map((level) => ({
+        bottom: floorTop(level),
+        top: floorTop(level) + 2.7,
+      })),
+    ]);
+    addFacade(-1, placement.rearDoor ? [{ bottom: floorTop(0), top: floorTop(0) + 3.0 }] : []);
+
+    for (const side of [-1, 1]) {
+      for (const edge of [-1, 1]) {
+        box(edge * (doorWidth / 2 + 0.16), floorTop(0) + 1.5, side * (hd + 0.08), 0.24, 3.0, 0.22, placement.accentColor, {
+          tier: 'detail',
+        });
+      }
+      box(0, floorTop(0) + 3.14, side * (hd + 0.1), doorWidth + 0.7, 0.22, 0.24, placement.roofColor, {
+        tier: 'detail',
+      });
+    }
+
+    // Facade bands, framed glass and vertical fins are detail-tier instances:
+    // they enrich silhouettes on capable devices and can be shed by adaptive
+    // quality without changing collision or interior routes.
+    for (let level = 0; level < placement.floors; level++) {
+      const top = floorTop(level);
+      const windowY = top + 2.55;
+      for (const side of [-1, 1]) {
+        box(0, top + 0.24, side * (hd + 0.05), placement.width + 0.18, 0.2, 0.14, placement.roofColor, {
+          tier: 'detail',
+        });
+        box(side * (hw + 0.05), top + 0.24, 0, 0.14, 0.2, placement.depth + 0.18, placement.roofColor, {
+          tier: 'detail',
+        });
+
+        for (const fraction of [-0.66, -0.33, 0, 0.33, 0.66]) {
+          const isDoorBay =
+            fraction === 0 &&
+            ((side > 0 && (level === 0 || balconyLevels.includes(level))) ||
+              (side < 0 && placement.rearDoor && level === 0));
+          if (isDoorBay) continue;
+          const wx = fraction * hw;
+          box(wx, windowY, side * (hd + 0.06), 1.62, 2.18, 0.07,
+            (level + Math.round(wx)) % 3 === 0 ? 0xfde68a : 0x7dd3fc, {
+            shape: 'glass',
+            tier: 'detail',
+          });
+        }
+        for (const fraction of [-0.3, 0, 0.3]) {
+          const wz = fraction * hd;
+          box(side * (hw + 0.06), windowY, wz, 0.07, 2.1, 1.5, 0x7dd3fc, {
+            shape: 'glass',
+            tier: 'detail',
+          });
+        }
+      }
+    }
+    for (const side of [-1, 1]) {
+      for (const fraction of [-0.58, 0.58]) {
+        box(
+          fraction * hw,
+          floorTop(0) + wallHeight / 2,
+          side * (hd + 0.14),
+          0.3,
+          wallHeight,
+          0.22,
+          placement.accentColor,
+          { tier: 'detail' }
+        );
+        box(
+          side * (hw + 0.14),
+          floorTop(0) + wallHeight / 2,
+          fraction * hd,
+          0.22,
+          wallHeight,
+          0.3,
+          placement.accentColor,
+          { tier: 'detail' }
+        );
+      }
+    }
+
+    // Flush threshold paint identifies real Aurora entrances without changing
+    // their collision, floor heights, door opening or loot ownership.
+    for (const offset of [.5,1.1]) {
+      box(0,floorTop(0)+.018,hd-offset,2.4,1,.12,placement.accentColor,{shape:'decal'});
+    }
+
+    // Structural columns and one offset cover block per occupied level. The
+    // centre aisle and both ramp lanes remain completely unobstructed.
+    for (const side of [-1, 1]) {
+      const lx = side * 3.4;
+      box(lx, floorTop(0) + wallHeight / 2, 0, 0.68, wallHeight, 0.68, darkTrim);
+      collider(`core_column_${side}`, lx, floorTop(0) + wallHeight / 2, 0, 0.68, wallHeight, 0.68);
+    }
+    for (let level = 0; level < placement.floors; level++) {
+      const top = floorTop(level);
+      const coverX = level % 2 === 0 ? -2.8 : 2.8;
+      const coverZ = level % 3 === 0 ? 1.8 : -1.5;
+      box(coverX, top + 0.52, coverZ, 3.0, 1.04, 0.72, level % 2 ? placement.roofColor : 0x475569);
+      collider(`floor_${level}_cover`, coverX, top + 0.52, coverZ, 3.0, 1.04, 0.72);
+      box(0, top + 4.72, 0, 1.5, 0.12, 0.5, 0xfef08a, { shape: 'glass', tier: 'detail' });
+    }
+
+    // Annex interiors: retail counter, office desks and a recessed maintenance
+    // cache. Walls have two broad ends open; neither central aisle nor ramp
+    // landing is blocked. Furniture uses the existing instanced box batches.
+    if (placement.id === 'aurora_exchange' || placement.id === 'aurora_observatory') {
+      for (const level of [0, 1, 3]) {
+        const top = floorTop(level);
+        const side = level === 1 ? -1 : 1;
+        box(side * 3.2, top + 1.25, -3.8, 3.1, 2.5, 0.18, placement.wallColor);
+        collider(`suite_${level}_divider`, side * 3.2, top + 1.25, -3.8, 3.1, 2.5, 0.18);
+        box(side * 3.1, top + 0.45, -5.6, 1.8, 0.9, 0.7, level === 0 ? 0x92400e : 0x475569);
+        collider(`suite_${level}_desk`, side * 3.1, top + 0.45, -5.6, 1.8, 0.9, 0.7);
+        box(side * 3.1, top + 1.05, -5.6, 0.7, 0.32, 0.08, placement.accentColor, { shape: 'glass', tier: 'detail' });
+        // Service labels and desk plinth contact shading use the same batches.
+        box(side * 3.1, top + .018, -5.6, 2.6, 1, 1.5, 0xffffff, {shape:'contact',tier:'detail'});
+        box(side * 3.1, top + .71, -5.23, .8, .1, .025, placement.accentColor, {shape:'glass',tier:'detail'});
+      }
+      box(-3.8, floorTop(0)+.42, -3.2, 2, .18, .62, 0x475569, {shape:'paint'});
+      box(-3.8, floorTop(0)+.78, -3.43, 2, .65, .14, placement.accentColor, {shape:'paint'});
+      collider('service_bench', -3.8, floorTop(0)+.55, -3.2, 2, 1.1, .62);
+      const cache = buildingLocalToWorld(placement, 3.3, -4.7);
+      this.world.chestSpawnPoints.push(new THREE.Vector3(cache.x, baseY + floorTop(3) + 0.18, cache.z));
+      // Offset rooftop shelter identifies the crown and offers actual cover.
+      box(0, roofTop + 1.05, 3.8, 3.5, 2.1, 0.35, placement.accentColor);
+      collider('crown_cover', 0, roofTop + 1.05, 3.8, 3.5, 2.1, 0.35);
+      box(0, roofTop + 2.2, 3.8, 4.0, 0.2, 2.0, placement.roofColor, { tier: 'detail' });
+    }
+
+    // Front balconies are exits back through the same facade doors, never
+    // one-way drops. Rails are real colliders.
+    for (const level of balconyLevels) {
+      const top = floorTop(level);
+      addSlab(`balcony_${level}`, -3.1, 3.1, hd - 0.08, hd + 2.15, top, concrete);
+      for (const side of [-1, 1]) {
+        box(side * 2.75, top / 2, hd + 1.95, 0.26, top, 0.26, darkTrim, { tier: 'detail' });
+        box(side * 3.05, top + 0.48, hd + 1.02, 0.16, 0.75, 2.2, darkTrim);
+        collider(`balcony_${level}_rail_${side}`, side * 3.05, top + 0.48, hd + 1.02, 0.16, 0.75, 2.2);
+      }
+      box(0, top + 0.48, hd + 2.08, 6.25, 0.75, 0.16, darkTrim);
+      collider(`balcony_${level}_rail_front`, 0, top + 0.48, hd + 2.08, 6.25, 0.75, 0.16);
+    }
+
+    // Rooftop parapets, cover and crown. The northern towers leave a centre
+    // gap on their facing sides for the skybridge.
+    const bridgeSide =
+      placement.id === AURORA_HEIGHTS_SKYBRIDGE.fromBuildingId
+        ? 1
+        : placement.id === AURORA_HEIGHTS_SKYBRIDGE.toBuildingId
+          ? -1
+          : 0;
+    const addParapet = (
+      suffix: string,
+      lx: number,
+      lz: number,
+      sx: number,
+      sz: number
+    ) => {
+      box(lx, roofTop + 0.48, lz, sx, 0.85, sz, 0xf8fafc);
+      collider(`roof_parapet_${suffix}`, lx, roofTop + 0.48, lz, sx, 0.85, sz);
+    };
+    addParapet('front', 0, hd + 0.1, placement.width + 0.45, 0.28);
+    addParapet('rear', 0, -hd - 0.1, placement.width + 0.45, 0.28);
+    for (const side of [-1, 1] as const) {
+      const x = side * (hw + 0.1);
+      if (bridgeSide === side) {
+        const gapHalf = AURORA_HEIGHTS_SKYBRIDGE.width / 2 + 0.35;
+        const segmentLength = Math.max(0.5, hd - gapHalf);
+        addParapet(`side_${side}_north`, x, -(gapHalf + segmentLength / 2), 0.28, segmentLength);
+        addParapet(`side_${side}_south`, x, gapHalf + segmentLength / 2, 0.28, segmentLength);
+      } else {
+        addParapet(`side_${side}`, x, 0, 0.28, placement.depth + 0.45);
+      }
+    }
+
+    const hvacA = { x: -hw * 0.42, z: -hd * 0.35 };
+    box(hvacA.x, roofTop + 0.5, hvacA.z, 2.4, 1.0, 1.6, 0x64748b, {shape:'metal'});
+    collider('roof_hvac_a', hvacA.x, roofTop + 0.5, hvacA.z, 2.4, 1.0, 1.6);
+    const hvacB = { x: hw * 0.38, z: hd * 0.3 };
+    box(hvacB.x, roofTop + 0.42, hvacB.z, 1.8, 0.84, 1.3, placement.roofColor, {shape:'paint'});
+    collider('roof_hvac_b', hvacB.x, roofTop + 0.42, hvacB.z, 1.8, 0.84, 1.3);
+    box(hw * 0.18, roofTop + 0.22, -hd * 0.42, 2.8, 0.14, 1.15, placement.accentColor, {
+      shape: 'glass',
+      rotationX: 0.16,
+      tier: 'detail',
+    });
+
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        box(sx * (hw - 0.35), roofTop + 0.95, sz * (hd - 0.35), 0.34, 1.9, 0.34, placement.accentColor, {
+          shape: 'glass',
+          tier: 'detail',
+        });
+      }
+    }
+    box(0, roofTop + 1.18, hd + 0.18, placement.width * 0.46, 0.72, 0.16, placement.accentColor, {
+      shape: 'glass',
+      tier: 'detail',
+    });
+    if (placement.floors >= 6) {
+      const antennaX = -hw * 0.55;
+      const antennaZ = -hd * 0.5;
+      box(antennaX, roofTop + 1.5, antennaZ, 0.2, 3.0, 0.2, darkTrim, {
+        shape: 'cylinder',
+      });
+      collider('roof_antenna', antennaX, roofTop + 1.5, antennaZ, 0.3, 3.0, 0.3);
+      box(antennaX, roofTop + 3.18, antennaZ, 0.52, 0.52, 0.52, 0xef4444, {
+        shape: 'glow',
+        tier: 'detail',
+      });
+    }
+
+    // 3.3 service architecture: reuse district instance/material buckets. All
+    // raised trim stays above walking headroom or inside existing solid HVAC.
+    // Warm/cool floor bands and a counted entrance code read without textures.
+    for (let band = 0; band < Math.min(6, placement.floors); band++) {
+      box(-1.35 + band * .5, floorTop(0) + 3.65, hd + .1, .3, .14, .08,
+        placement.id === 'aurora_exchange' ? 0xfbbf24 : placement.accentColor,
+        { shape: 'glass', tier: 'detail' });
+    }
+    for (const unit of [hvacA, hvacB]) {
+      box(unit.x, roofTop + .018, unit.z, 3.4, 1, 2.6, 0xffffff,
+        {shape:'contact',tier:'detail'});
+      for (const offset of [-.45, 0, .45]) {
+        box(unit.x + offset, roofTop + (unit === hvacA ? 1.02 : .86), unit.z, .12, .035, .9, darkTrim,
+          { tier: 'detail' });
+      }
+    }
+    for (const level of [1, 3]) {
+      // Exterior air conditioning above head height, away from ramp landings.
+      box(hw * .55, floorTop(level) + 3.5, -hd - .16, 1.05, .45, .25,
+        0x94a3b8, { tier: 'detail' });
+    }
+    if (placement.floors >= 6) {
+      for (const height of [2.25, 2.65]) {
+        box(-hw * .55, roofTop + height, -hd * .5, 1.25, .08, .08,
+          darkTrim, { tier: 'detail' });
+      }
+    }
+    if (placement.id === 'aurora_exchange') {
+      for (const x of [-1.2, -.4, .4, 1.2]) {
+        box(x, roofTop + 2.85, 3.8, .18, 1.3, .25, 0xfbbf24);
+        collider(`exchange_crown_fin_${x}`, x, roofTop + 2.85, 3.8, .18, 1.3, .25);
+      }
+    } else if (placement.id === 'aurora_observatory') {
+      box(hvacA.x, roofTop + 2.25, hvacA.z, .28, 2.5, .28, darkTrim);
+      collider('observatory_sensor_mast', hvacA.x, roofTop + 2.25, hvacA.z, .28, 2.5, .28);
+      box(hvacA.x, roofTop + 3.55, hvacA.z, 1.5, .12, .65, 0x67e8f9,
+        { shape: 'glass', tier: 'detail' });
+    }
+
+    // Ground, mid-tower and rooftop rewards. Points sit on the central slab
+    // or arrival landing, clear of cover/columns/HVAC colliders.
+    const lootPoint = (lx: number, lz: number, top: number) => {
+      const point = buildingLocalToWorld(placement, lx, lz);
+      this.world.lootSpawnPoints.push(new THREE.Vector3(point.x, baseY + top + 0.18, point.z));
+    };
+    lootPoint(-hw * 0.42, -hd * 0.35, floorTop(0));
+    const groundChest = buildingLocalToWorld(placement, hw * 0.38, hd * 0.32);
+    this.world.chestSpawnPoints.push(
+      new THREE.Vector3(groundChest.x, baseY + floorTop(0) + 0.18, groundChest.z)
+    );
+    const midLevel = Math.max(1, Math.floor(placement.floors / 2));
+    lootPoint(hw * 0.25, -hd * 0.3, floorTop(midLevel));
+    lootPoint(-hw * 0.28, hd * 0.25, roofTop);
+    if (placement.floors >= 6) {
+      const roofChest = buildingLocalToWorld(placement, hw * 0.3, -hd * 0.28);
+      this.world.chestSpawnPoints.push(
+        new THREE.Vector3(roofChest.x, baseY + roofTop + 0.18, roofChest.z)
+      );
+    }
+  }
+
+  private buildAuroraHeightsSkybridge(): void {
+    const from = EXPANSION_BUILDINGS.find(
+      (building) => building.id === AURORA_HEIGHTS_SKYBRIDGE.fromBuildingId
+    );
+    const to = EXPANSION_BUILDINGS.find(
+      (building) => building.id === AURORA_HEIGHTS_SKYBRIDGE.toBuildingId
+    );
+    if (!from || !to) return;
+
+    const fromBaseY = this.world.terrain.getTerrainHeight(from.x, from.z);
+    const toBaseY = this.world.terrain.getTerrainHeight(to.x, to.z);
+    const deckTop = Math.min(
+      fromBaseY + getHighRiseRoofTop(from),
+      toBaseY + getHighRiseRoofTop(to)
+    );
+    const fromEdgeX = from.x + from.width / 2;
+    const toEdgeX = to.x - to.width / 2;
+    const minX = fromEdgeX - 0.3;
+    const maxX = toEdgeX + 0.3;
+    const centreX = (minX + maxX) / 2;
+    const length = maxX - minX;
+    const centreZ = (from.z + to.z) / 2 + AURORA_HEIGHTS_SKYBRIDGE.localZ;
+    const width = AURORA_HEIGHTS_SKYBRIDGE.width;
+    const district = from.districtId;
+
+    this.addShapeWorld(district, centreX, deckTop - 0.14, centreZ, length, 0.28, width, 0x334155);
+    this.addWorldWalkable(
+      AURORA_HEIGHTS_SKYBRIDGE.id,
+      { minX, maxX, minZ: centreZ - width / 2, maxZ: centreZ + width / 2 },
+      deckTop
+    );
+    for (const side of [-1, 1]) {
+      const railZ = centreZ + side * (width / 2 - 0.09);
+      this.addShapeWorld(district, centreX, deckTop + 0.48, railZ, length, 0.78, 0.18, 0x0f172a);
+      this.addWorldBoxCollider(
+        `${AURORA_HEIGHTS_SKYBRIDGE.id}_rail_${side}`,
+        centreX,
+        deckTop + 0.48,
+        railZ,
+        length,
+        0.78,
+        0.18
+      );
+      this.addShapeWorld(
+        district,
+        centreX,
+        deckTop + 0.05,
+        centreZ + side * (width / 2 - 0.28),
+        length,
+        0.08,
+        0.16,
+        0x22d3ee,
+        { shape: 'glass', tier: 'detail' }
+      );
+    }
+
+    // Two slender pylons make the bridge read as structure from street level
+    // and are collidable props rather than visual-only blockers.
+    for (const offset of [-1.6, 1.6]) {
+      const x = centreX + offset;
+      const groundY = this.world.terrain.getTerrainHeight(x, centreZ);
+      const height = Math.max(1, deckTop - groundY);
+      this.addShapeWorld(district, x, groundY + height / 2, centreZ, 0.55, height, 0.55, 0x475569, {
+        shape: 'cylinder',
+      });
+      this.addWorldCylinderCollider(
+        `${AURORA_HEIGHTS_SKYBRIDGE.id}_pylon_${offset}`,
+        x,
+        centreZ,
+        0.34,
+        groundY,
+        deckTop
+      );
+    }
+  }
+
   private createBuilding(placement: ExpansionBuildingPlacement): void {
+    if (placement.kind === 'highrise') {
+      this.createHighRiseBuilding(placement);
+      return;
+    }
     const baseY = this.world.terrain.getTerrainHeight(placement.x, placement.z);
     const hw = placement.width / 2;
     const hd = placement.depth / 2;
@@ -1580,7 +2213,10 @@ export class MapExpansionBuilder {
     const parkingPadWidth = kind === 'shop' || kind === 'warehouse' ? placement.width * 0.82 : doorWidth + 2.2;
     box(0, 0.045, hd + 2.0, parkingPadWidth, 0.09, 3.4, 0x64748b);
     if (kind === 'shop') {
-      box(0, 3.52, hd + 0.18, placement.width * 0.72, 0.68, 0.2, placement.accentColor, { tier: 'detail' });
+      // A branded fascia must remain a real mounting surface on Low/adaptive tiers.
+      // Reclassify the existing five panels; no new geometry or colliders.
+      const brandedFascia = BUILDING_BRANDING.some(sign => sign.buildingId === placement.id && sign.support === 'shop-fascia');
+      box(0, 3.52, hd + 0.18, placement.width * 0.72, 0.68, 0.2, placement.accentColor, { tier: brandedFascia ? 'essential' : 'detail' });
       box(0, 3.08, hd + 0.58, placement.width * 0.7, 0.14, 1.15, placement.roofColor, { rotationX: 0.18 });
     } else if (kind === 'house' || kind === 'cabin') {
       box(0, 3.08, hd + 0.5, doorWidth + 1.4, 0.14, 1.0, placement.roofColor, { rotationX: 0.16, tier: 'detail' });
@@ -1603,6 +2239,18 @@ export class MapExpansionBuilder {
       if (kind === 'shop' && level === 0) {
         for (const side of [-1, 1]) {
           box(side * (doorWidth / 2 + 1.35), 1.85, hd + 0.035, 2.0, 1.45, 0.09, 0x7dd3fc, { shape: 'glass', tier: 'detail' });
+        }
+      } else {
+        // Front glazing beside the doorway gives older one/two-storey
+        // buildings the same inhabited read as their side/rear facades.
+        for (const side of [-1, 1]) {
+          const wx = side * (doorWidth / 2 + 1.3);
+          if (Math.abs(wx) + 0.75 < hw - 0.2) {
+            box(wx, windowY, hd + 0.035, 1.35, 1.1, 0.09, 0x7dd3fc, {
+              shape: 'glass',
+              tier: 'detail',
+            });
+          }
         }
       }
     }
@@ -1899,8 +2547,18 @@ export class MapExpansionBuilder {
       }
 
       for (const side of [-1, 1]) {
-        const bx = settlement.streetAxis === 'x' ? settlement.x + side * 7.5 : settlement.x + side * 6.4;
-        const bz = settlement.streetAxis === 'x' ? settlement.z - side * 6.4 : settlement.z + side * 7.5;
+        const bx =
+          settlement.id === 'aurora_heights'
+            ? settlement.x + side * 6
+            : settlement.streetAxis === 'x'
+              ? settlement.x + side * 7.5
+              : settlement.x + side * 6.4;
+        const bz =
+          settlement.id === 'aurora_heights'
+            ? settlement.z
+            : settlement.streetAxis === 'x'
+              ? settlement.z - side * 6.4
+              : settlement.z + side * 7.5;
         const by = this.world.terrain.getTerrainHeight(bx, bz);
         const sx = settlement.streetAxis === 'x' ? 2.6 : 0.75;
         const sz = settlement.streetAxis === 'x' ? 0.75 : 2.6;
@@ -1910,12 +2568,21 @@ export class MapExpansionBuilder {
 
       // A coloured district pylon is visible during the sky-drop and helps
       // each settlement read as a distinct destination.
-      const signCandidates: Array<[number, number]> = [
-        [0.5, -0.5],
-        [-0.5, -0.5],
-        [0.5, 0.5],
-        [-0.5, 0.5],
-      ];
+      const signCandidates: Array<[number, number]> =
+        settlement.id === 'aurora_heights'
+          ? [
+              [0, 0],
+              [0.5, -0.5],
+              [-0.5, -0.5],
+              [0.5, 0.5],
+              [-0.5, 0.5],
+            ]
+          : [
+              [0.5, -0.5],
+              [-0.5, -0.5],
+              [0.5, 0.5],
+              [-0.5, 0.5],
+            ];
       let signX = settlement.x + settlement.radius * 0.5;
       let signZ = settlement.z - settlement.radius * 0.5;
       for (const [ox, oz] of signCandidates) {
@@ -2349,13 +3016,15 @@ export class MapExpansionBuilder {
 
     const createInstances = (
       geometry: THREE.BufferGeometry,
-      material: THREE.Material,
+      material: THREE.MeshStandardMaterial,
       count: number,
       attempts: number,
       placer: (x: number, z: number, y: number) => boolean,
       applyTransform: (x: number, y: number, z: number) => void,
-      colors?: number[]
+      colors?: number[],
+      wind?: FoliageWindOptions
     ) => {
+      if (wind) applyFoliageWind(material, wind);
       const inst = new THREE.InstancedMesh(geometry, material, Math.max(1, count));
       inst.instanceMatrix.setUsage(THREE.StaticDrawUsage);
       inst.castShadow = false;
@@ -2392,7 +3061,8 @@ export class MapExpansionBuilder {
       4200,
       (x, z, y) => y > 1.7 && y < 12.5 && this.isDetailFoliageClear(x, z, 4.3),
       () => dummy.scale.setScalar(0.8 + rand() * 0.85),
-      [0x15803d, 0x16a34a, 0x22c55e, 0x65a30d]
+      [0x15803d, 0x16a34a, 0x22c55e, 0x65a30d],
+      { strength: 0.062, baseY: 0, height: 0.78 }
     );
 
     const undergrowthGeo = new THREE.DodecahedronGeometry(0.42, 0);
@@ -2405,7 +3075,8 @@ export class MapExpansionBuilder {
       1900,
       (x, z, y) => y > 1.8 && y < 13.5 && this.isDetailFoliageClear(x, z, 4.8),
       () => dummy.scale.setScalar(0.75 + rand() * 0.9),
-      [0x14532d, 0x166534, 0x15803d]
+      [0x14532d, 0x166534, 0x15803d],
+      { strength: 0.024, baseY: 0.02, height: 0.52 }
     );
 
     const bushGeo = new THREE.DodecahedronGeometry(0.66, 0);
@@ -2418,7 +3089,8 @@ export class MapExpansionBuilder {
       1300,
       (x, z, y) => y > 1.8 && y < 13.0 && this.isDetailFoliageClear(x, z, 5.0),
       () => dummy.scale.setScalar(0.8 + rand() * 0.85),
-      [0x15803d, 0x16a34a, 0x4d7c0f]
+      [0x15803d, 0x16a34a, 0x4d7c0f],
+      { strength: 0.026, baseY: -0.09, height: 1.06 }
     );
 
     const flowerGeo = new THREE.DodecahedronGeometry(0.2, 0);
@@ -2430,7 +3102,8 @@ export class MapExpansionBuilder {
       1500,
       (x, z, y) => y > 1.9 && y < 11.5 && this.isDetailFoliageClear(x, z, 4.4),
       () => dummy.scale.setScalar(0.75 + rand() * 0.65),
-      [0xf472b6, 0xfacc15, 0xc084fc, 0xfb7185, 0xffffff]
+      [0xf472b6, 0xfacc15, 0xc084fc, 0xfb7185, 0xffffff],
+      { strength: 0.032, baseY: 0.05, height: 0.4 }
     );
 
     const pebbleGeo = new THREE.DodecahedronGeometry(0.3, 0);
@@ -2468,7 +3141,9 @@ export class MapExpansionBuilder {
         dummy.rotation.x = (rand() - 0.5) * 0.18;
         dummy.rotation.z = (rand() - 0.5) * 0.18;
         dummy.scale.setScalar(0.8 + rand() * 0.6);
-      }
+      },
+      undefined,
+      { strength: 0.075, baseY: 0, height: 1.25 }
     );
 
     const logGeo = new THREE.CylinderGeometry(0.24, 0.3, 2.8, 6);
@@ -2484,34 +3159,67 @@ export class MapExpansionBuilder {
     );
   }
 
+  public disposeArchitecture(): void {
+    const geometries = new Set<THREE.BufferGeometry>();
+    const materials = new Set<THREE.Material>();
+    const textures = new Set<THREE.Texture>();
+    for (const group of [this.expansionGroup,this.expansionDetailGroup]) {
+      group.traverse(object => {
+        if (!(object instanceof THREE.Mesh)) return;
+        geometries.add(object.geometry);
+        for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
+          materials.add(material);
+          if (material.map) textures.add(material.map);
+          if (material.roughnessMap) textures.add(material.roughnessMap);
+        }
+      });
+      group.clear(); group.removeFromParent();
+    }
+    geometries.forEach(g=>g.dispose()); materials.forEach(m=>m.dispose()); textures.forEach(t=>t.dispose());
+  }
+
   public finalizeArchitecture(): void {
     if (this.architectureFinalized) return;
     this.architectureFinalized = true;
 
+    const textures = createArchitectureTextures();
+    const contactGeo = new THREE.PlaneGeometry(1,1);
+    contactGeo.rotateX(-Math.PI/2);
     const boxGeo = new THREE.BoxGeometry(1, 1, 1);
     const coneGeo = new THREE.ConeGeometry(0.5, 1, 8);
     const cylinderGeo = new THREE.CylinderGeometry(0.5, 0.5, 1, 8);
-    const glowGeo = new THREE.SphereGeometry(0.5, 8, 6);
+    const glowGeo = new THREE.IcosahedronGeometry(0.5, 0);
 
     const standardMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       flatShading: true,
-      roughness: 0.74,
+      roughness: 0.88,
       metalness: 0.03,
+      roughnessMap: textures.roughness,
     });
+    const metalMat = new THREE.MeshStandardMaterial({color:0xffffff, roughness:.42,
+      metalness:.78, envMapIntensity:1.15, roughnessMap:textures.roughness});
+    const paintMat = new THREE.MeshStandardMaterial({color:0xffffff, roughness:.6,
+      metalness:.18, roughnessMap:textures.roughness});
+    const contactMat = new THREE.MeshBasicMaterial({color:0x0b1220, map:textures.contact,
+      transparent:true, opacity:.32, depthWrite:false, polygonOffset:true, polygonOffsetFactor:-1});
     const glassMat = new THREE.MeshStandardMaterial({
-      color: 0x7dd3fc,
-      emissive: 0x0284c7,
-      emissiveIntensity: 0.32,
+      color: 0xe0f2fe,
+      emissive: 0xbad8ef,
+      emissiveIntensity: 0.12,
+      envMapIntensity: 1.25,
       flatShading: true,
-      roughness: 0.32,
+      roughness: 0.18,
+      metalness: 0.36,
       transparent: true,
-      opacity: 0.68,
+      opacity: 0.64,
     });
     const glowMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
 
     const geometryFor = (shape: ArchitectureShape): THREE.BufferGeometry => {
       switch (shape) {
+        case 'contact':
+        case 'decal': return contactGeo;
         case 'cone':
           return coneGeo;
         case 'cylinder':
@@ -2525,22 +3233,42 @@ export class MapExpansionBuilder {
       }
     };
     const materialFor = (shape: ArchitectureShape): THREE.Material => {
+      if (shape === 'metal') return metalMat;
+      if (shape === 'paint' || shape === 'decal') return paintMat;
+      if (shape === 'contact') return contactMat;
       if (shape === 'glass') return glassMat;
       if (shape === 'glow') return glowMat;
       return standardMat;
     };
 
-    for (const [key, specs] of this.instances.entries()) {
+    for (const [key, queuedSpecs] of this.instances.entries()) {
       const [, shapeName, tierName] = key.split('|') as [string, ArchitectureShape, ArchitectureTier];
+      // Later decks can cover an end tread. Omit that optional paint instead
+      // of leaving markings buried underneath the final walkable landing.
+      const specs = shapeName === 'decal' ? queuedSpecs.filter(spec => {
+        const e = spec.matrix.elements;
+        return Math.abs(e[13]-this.world.getGroundHeightAt(e[12],e[13]+.1,e[14])) < .15;
+      }) : queuedSpecs;
       if (!ARCHITECTURE_SHAPES.includes(shapeName) || specs.length === 0) continue;
       const inst = new THREE.InstancedMesh(geometryFor(shapeName), materialFor(shapeName), specs.length);
       inst.name = `Expansion_${key.replaceAll('|', '_')}`;
       inst.instanceMatrix.setUsage(THREE.StaticDrawUsage);
-      inst.castShadow = shapeName !== 'glass' && shapeName !== 'glow';
-      inst.receiveShadow = shapeName !== 'glow';
+      inst.castShadow = shapeName !== 'decal' && shapeName !== 'glass' && shapeName !== 'glow' && shapeName !== 'contact';
+      inst.receiveShadow = shapeName !== 'glow' && shapeName !== 'contact';
+      const displayColor = new THREE.Color();
       specs.forEach((spec, index) => {
         inst.setMatrixAt(index, spec.matrix);
-        inst.setColorAt(index, spec.color);
+        if (shapeName === 'glass' || shapeName === 'glow') {
+          inst.setColorAt(index, spec.color);
+        } else {
+          // A stable per-panel tonal shift gives large flat instanced walls
+          // and roofs a hand-finished read without unique textures/materials.
+          const e = spec.matrix.elements;
+          const hash = Math.sin(e[12] * 12.9898 + e[13] * 78.233 + e[14] * 37.719) * 43758.5453;
+          const variation = 0.945 + (hash - Math.floor(hash)) * 0.09;
+          displayColor.copy(spec.color).multiplyScalar(variation);
+          inst.setColorAt(index, displayColor);
+        }
       });
       if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
       inst.computeBoundingSphere();

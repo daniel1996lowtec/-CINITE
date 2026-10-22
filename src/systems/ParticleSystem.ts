@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { ImpactSurfaceType } from '../audio/SoundManager';
+import type { ImpactSurfaceType } from '../audio/SoundManager';
 
 interface ParticleItem {
   mesh: THREE.Mesh;
@@ -8,6 +8,7 @@ interface ParticleItem {
   maxLife: number;
   gravity: boolean;
   rotSpeed?: number;
+  baseScale?: THREE.Vector3;
 }
 
 interface TracerBeam {
@@ -24,6 +25,7 @@ interface ShockwaveRing {
 }
 
 export class ParticleSystem {
+  private disposed = false;
   private scene: THREE.Scene;
   private particles: ParticleItem[] = [];
   private tracers: TracerBeam[] = [];
@@ -34,7 +36,8 @@ export class ParticleSystem {
   private unitTracerCoreGeo: THREE.CylinderGeometry;
   private unitTracerGlowGeo: THREE.CylinderGeometry;
   private sharedRingGeo = new THREE.RingGeometry(0.18, 0.32, 16);
-  private readonly maxParticles = 160;
+  private maxParticles = 180;
+  private effectScale = 1;
 
   // Object pools for zero-allocation combat particles, tracers, and shockwave rings
   private particleMeshPool: THREE.Mesh[] = [];
@@ -51,6 +54,21 @@ export class ParticleSystem {
     this.unitTracerGlowGeo.rotateX(Math.PI / 2);
   }
 
+  /**
+   * Scales non-essential combat spark counts and the hard particle cap by
+   * graphics tier. Tracers and one-shot feedback rings remain intact because
+   * they carry gameplay information on smaller mobile screens.
+   */
+  public setQualityScale(scale: number): void {
+    this.effectScale = THREE.MathUtils.clamp(scale, 0.35, 1);
+    this.maxParticles = Math.round(180 * this.effectScale);
+    this.trimParticleBudget(0);
+  }
+
+  private scaledCount(count: number, minimum: number = 1): number {
+    return Math.min(this.maxParticles,Math.max(minimum,Math.round((Number.isFinite(count) ? count : 0) * this.effectScale)));
+  }
+
   private acquireParticleMesh(
     geo: THREE.BufferGeometry,
     colorHex: number,
@@ -64,12 +82,14 @@ export class ParticleSystem {
       const mat = pooled.material as THREE.MeshBasicMaterial;
       mat.color.setHex(colorHex);
       mat.opacity = opacity;
+      mat.depthWrite = false;
       return pooled;
     }
     const mat = new THREE.MeshBasicMaterial({
       color: colorHex,
       transparent: true,
       opacity,
+      depthWrite: false,
     });
     return new THREE.Mesh(geo, mat);
   }
@@ -94,12 +114,18 @@ export class ParticleSystem {
       const mat = pooled.material as THREE.MeshBasicMaterial;
       mat.color.setHex(colorHex);
       mat.opacity = opacity;
+      mat.blending = THREE.AdditiveBlending;
+      mat.depthWrite = false;
+      mat.fog = false;
       return pooled;
     }
     const mat = new THREE.MeshBasicMaterial({
       color: colorHex,
       transparent: true,
       opacity,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      fog: false,
     });
     return new THREE.Mesh(
       isCore ? this.unitTracerCoreGeo : this.unitTracerGlowGeo,
@@ -125,6 +151,9 @@ export class ParticleSystem {
       const mat = pooled.material as THREE.MeshBasicMaterial;
       mat.color.setHex(colorHex);
       mat.opacity = opacity;
+      mat.blending = THREE.AdditiveBlending;
+      mat.depthWrite = false;
+      mat.fog = false;
       return pooled;
     }
     const mat = new THREE.MeshBasicMaterial({
@@ -132,6 +161,9 @@ export class ParticleSystem {
       side: THREE.DoubleSide,
       transparent: true,
       opacity,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      fog: false,
     });
     return new THREE.Mesh(this.sharedRingGeo, mat);
   }
@@ -172,14 +204,27 @@ export class ParticleSystem {
     this.rings = [];
   }
 
+  /** Final teardown, unlike clear(), which deliberately retains bounded pools for the next match. */
+  public dispose(): void {
+    if (this.disposed) return;
+    this.clear(); this.disposed = true;
+    for (const pool of [this.particleMeshPool,this.tracerCorePool,this.tracerGlowPool,this.ringMeshPool]) {
+      for (const mesh of pool) (mesh.material as THREE.Material).dispose();
+      pool.length = 0;
+    }
+    for (const geometry of [this.boxGeo,this.chipGeo,this.casingGeo,this.unitTracerCoreGeo,this.unitTracerGlowGeo,this.sharedRingGeo]) geometry.dispose();
+  }
+
   public spawnImpactBurst(
     pos: THREE.Vector3,
     colorHex: number = 0xfacc15,
     count: number = 8,
     speed: number = 4.5
   ): void {
-    this.trimParticleBudget(count);
-    for (let i = 0; i < count; i++) {
+    if (this.disposed) return;
+    const scaledCount = this.scaledCount(count);
+    this.trimParticleBudget(scaledCount);
+    for (let i = 0; i < scaledCount; i++) {
       const mesh = this.acquireParticleMesh(this.boxGeo, colorHex, 1);
       mesh.position.copy(pos);
       this.scene.add(mesh);
@@ -206,13 +251,25 @@ export class ParticleSystem {
     direction: THREE.Vector3,
     category: string
   ): void {
-    const count = category === 'shotgun' ? 5 : category === 'sniper' ? 4 : 3;
+    if (this.disposed) return;
+    const count = this.scaledCount(
+      category === 'shotgun' || category === 'tactical_shotgun'
+        ? 5
+        : category === 'sniper' || category === 'dmr' || category === 'heavy_pistol'
+          ? 4
+          : 3,
+      2
+    );
     const sparkColor =
-      category === 'sniper'
+      category === 'sniper' || category === 'dmr'
         ? 0x38bdf8
-        : category === 'shotgun'
-        ? 0xf97316
-        : 0xfef08a;
+        : category === 'burst_rifle'
+          ? 0xa5f3fc
+          : category === 'heavy_pistol'
+            ? 0xfda4af
+            : category === 'shotgun' || category === 'tactical_shotgun'
+              ? 0xf97316
+              : 0xfef08a;
     this.trimParticleBudget(count);
     for (let i = 0; i < count; i++) {
       const mesh = this.acquireParticleMesh(this.chipGeo, sparkColor, 0.95);
@@ -242,8 +299,9 @@ export class ParticleSystem {
     pos: THREE.Vector3,
     rarityColorHex: number = 0xfacc15
   ): void {
+    if (this.disposed) return;
     const colors = [0xfacc15, 0xfef08a, rarityColorHex, 0x38bdf8];
-    const count = 24;
+    const count = this.scaledCount(24, 12);
     this.trimParticleBudget(count);
     for (let i = 0; i < count; i++) {
       const col = colors[i % colors.length];
@@ -287,6 +345,7 @@ export class ParticleSystem {
     pos: THREE.Vector3,
     colorHex: number = 0x38bdf8
   ): void {
+    if (this.disposed) return;
     this.spawnImpactBurst(
       new THREE.Vector3(pos.x, pos.y + 0.45, pos.z),
       colorHex,
@@ -306,6 +365,7 @@ export class ParticleSystem {
     colorHex: number = 0xfacc15,
     count: number = 8
   ): void {
+    if (this.disposed) return;
     this.spawnImpactBurst(pos, colorHex, count, 4.5);
     this.spawnShockwaveRing(pos, colorHex, 1.35, 0.22);
   }
@@ -320,6 +380,7 @@ export class ParticleSystem {
     isDestroyed: boolean = false,
     isHeadshot: boolean = false
   ): void {
+    if (this.disposed) return;
     let primaryColor = 0xfacc15;
     let secondaryColor = 0xffffff;
     let count = isDestroyed ? 16 : isHeadshot ? 13 : 8;
@@ -348,6 +409,7 @@ export class ParticleSystem {
       count = 7;
     }
 
+    count = this.scaledCount(count, isDestroyed ? 8 : 4);
     this.trimParticleBudget(count);
     for (let i = 0; i < count; i++) {
       const col = i % 3 === 0 ? secondaryColor : primaryColor;
@@ -387,6 +449,7 @@ export class ParticleSystem {
   }
 
   public spawnShellCasing(pos: THREE.Vector3, shooterYaw: number): void {
+    if (this.disposed) return;
     this.trimParticleBudget(1);
     const mesh = this.acquireParticleMesh(this.casingGeo, 0xfacc15, 0.95);
     mesh.position.copy(pos);
@@ -411,8 +474,9 @@ export class ParticleSystem {
   }
 
   public spawnEliminationEffect(pos: THREE.Vector3): void {
+    if (this.disposed) return;
     const colors = [0x38bdf8, 0xfacc15, 0xf43f5e, 0xa855f7, 0x4ade80];
-    const count = 32;
+    const count = this.scaledCount(32, 16);
     this.trimParticleBudget(count);
     for (let i = 0; i < count; i++) {
       const col = colors[i % colors.length];
@@ -451,6 +515,7 @@ export class ParticleSystem {
   }
 
   public spawnEliminationBurst(pos: THREE.Vector3): void {
+    if (this.disposed) return;
     this.spawnEliminationEffect(pos);
   }
 
@@ -459,6 +524,8 @@ export class ParticleSystem {
     end: THREE.Vector3,
     colorHex: number = 0xfef08a
   ): void {
+    if (this.disposed) return;
+    while (this.tracers.length > 46) this.releaseTracerMesh(this.tracers.shift()!.mesh);
     const dist = start.distanceTo(end);
     if (dist < 0.4) return;
 
@@ -485,6 +552,11 @@ export class ParticleSystem {
     targetScale: number = 2.0,
     duration: number = 0.28
   ): void {
+    if (this.disposed) return;
+    // Hard ceiling even during concurrent chest/shotgun bursts.
+    while (this.rings.length >= Math.round(24 * this.effectScale)) {
+      this.releaseRingMesh(this.rings.shift()!.mesh);
+    }
     const mesh = this.acquireRingMesh(colorHex, 0.85);
     mesh.position.copy(pos);
     mesh.rotation.x = Math.PI / 2 + (Math.random() - 0.5) * 0.4;
@@ -519,7 +591,8 @@ export class ParticleSystem {
       }
 
       const ratio = p.life / p.maxLife;
-      p.mesh.scale.setScalar(Math.max(0.1, ratio));
+      p.baseScale ??= p.mesh.scale.clone();
+      p.mesh.scale.copy(p.baseScale).multiplyScalar(Math.max(0.1, ratio));
       (p.mesh.material as THREE.MeshBasicMaterial).opacity = ratio;
     }
 

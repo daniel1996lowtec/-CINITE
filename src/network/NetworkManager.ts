@@ -1,7 +1,9 @@
+import { RoomTextChat } from './RoomTextChat';
 import {
   BackAccessoryType,
   BuildMaterialType,
   BuildPieceType,
+  CosmeticLoadout,
   InventorySlot,
   BotDifficulty,
   CreateLobbyRequest,
@@ -23,12 +25,16 @@ import {
   TeamMode,
   WeaponCategory,
   WeaponRarity,
+  getStarterLoadoutItems as resolveStarterLoadoutItems,
   isHumanOnlySessionMode,
   roomModeForSessionMode,
 } from './schemas';
+import { normalizeOutfitPresetId } from '../entities/CharacterCosmetics';
 import { createWeaponStats } from '../weapons/WeaponDefinitions';
+import { createInitialStormState } from '../systems/StormConfig';
 
 export interface ServerHitEvent {
+  attackerEliminations?: number;
   eventId?: string;
   attackerId: string;
   attackerName: string;
@@ -189,6 +195,7 @@ function normalizeRoomSnapshot(
           (player): RoomPlayerSummary => ({
             id: String(player.id || ''),
             name: String(player.name || 'Commander_CI'),
+            eliminations: Math.max(0, Math.floor(Number(player.eliminations) || 0)),
             participantType: 'human',
             isBot: false,
             isAuthenticated: Boolean(player.isAuthenticated),
@@ -199,6 +206,26 @@ function normalizeRoomSnapshot(
             teamId: String(player.teamId || ''),
             teamIndex: Number(player.teamIndex ?? -1),
             alive: Boolean(player.alive ?? true),
+            outfitId: normalizeOutfitPresetId(player.outfitId),
+            skinColor:
+              Number.isInteger(Number(player.skinColor)) &&
+              Number(player.skinColor) >= 0 &&
+              Number(player.skinColor) <= 0xffffff
+                ? Number(player.skinColor)
+                : 0x0284c7,
+            accentColor:
+              Number.isInteger(Number(player.accentColor)) &&
+              Number(player.accentColor) >= 0 &&
+              Number(player.accentColor) <= 0xffffff
+                ? Number(player.accentColor)
+                : 0x38bdf8,
+            backAccessory: (
+              ['jump_pack', 'energy_wings', 'tactical_shield', 'none'].includes(
+                String(player.backAccessory || '')
+              )
+                ? String(player.backAccessory)
+                : 'jump_pack'
+            ) as BackAccessoryType,
           })
         )
     : previousPlayers;
@@ -313,6 +340,7 @@ function normalizeRoomSnapshot(
 export class NetworkManager {
   public localPlayerId: string = 'player_local_1';
   public state: MatchState;
+  public readonly textChat = new RoomTextChat();
   public isOnlineRoom: boolean = false;
   public roomConnected: boolean = false;
   public connectionState: NetworkConnectionState = 'idle';
@@ -340,6 +368,16 @@ export class NetworkManager {
   private lastSentYaw: number = NaN;
   private lastSentPitch: number = NaN;
   private lastSentStateSignature: string = '';
+  private inventoryActionSeq = 0;
+  private inventoryShotSeq = 0;
+  private pendingInventoryShots = new Map<number, {slot: number; weaponId: string}>();
+  public onInventoryCompletion?: (kind: 'reload' | 'use') => void;
+
+  public sendInventoryAction(action: 'switch' | 'reload' | 'use', slot?: number): void {
+    if (!this.isOnlineRoom || !this.roomConnected) return;
+    this.sendPacket({type:'inventory_action', action, slot, seq:++this.inventoryActionSeq});
+  }
+
   private hitCounter: number = 0;
 
   private remoteTargets: Map<string, RemoteInterpolationTarget> = new Map();
@@ -360,6 +398,7 @@ export class NetworkManager {
     yaw: number,
     material: BuildMaterialType
   ) => void;
+  public onEnvironmentState?: (health: [string, number][], destroyed: string[]) => void;
   public onRemoteBuildDamaged?: (destructibleId: string, damage: number) => void;
   public onRemoteWeaponFired?: (
     shooterId: string,
@@ -377,7 +416,8 @@ export class NetworkManager {
   ) => void;
   public onAuthoritativeLootCollected?: (
     item: LootItemState,
-    swappedDrop?: LootItemState
+    swappedDrop?: LootItemState,
+    spawnedDrops?: LootItemState[]
   ) => void;
   public onRoomLootSync?: (
     collectedIds: string[],
@@ -596,18 +636,7 @@ export class NetworkManager {
       players: new Map(),
       lootItems: new Map(),
       buildables: new Map(),
-      storm: {
-        phase: 1,
-        currentCenterX: 0,
-        currentCenterZ: 0,
-        currentRadius: 255,
-        targetCenterX: 0,
-        targetCenterZ: 0,
-        targetRadius: 145,
-        phaseTimer: 40,
-        isShrinking: false,
-        damagePerSecond: 2,
-      },
+      storm: createInitialStormState(),
     };
   }
 
@@ -700,6 +729,7 @@ export class NetworkManager {
       reloadDuration: 0,
       isHealing: false,
       landingImpactTimer: 0,
+      outfitId: normalizeOutfitPresetId(config.cosmetics?.outfitId),
       skinColor: config.cosmetics?.skinColor ?? 0x0284c7,
       accentColor: config.cosmetics?.accentColor ?? 0x38bdf8,
       backAccessory: config.cosmetics?.backAccessory ?? 'jump_pack',
@@ -860,48 +890,8 @@ export class NetworkManager {
     return localPlayer;
   }
 
-  private getStarterLoadoutItems(loadout: StarterLoadoutType): {
-    primaryCat: WeaponCategory;
-    primaryRarity: 'common' | 'uncommon' | 'rare';
-    secondaryCat: WeaponCategory;
-    secondaryRarity: 'common' | 'uncommon' | 'rare';
-    materials: { wood: number; stone: number; metal: number };
-  } {
-    switch (loadout) {
-      case 'close_quarters':
-        return {
-          primaryCat: 'shotgun',
-          primaryRarity: 'uncommon',
-          secondaryCat: 'smg',
-          secondaryRarity: 'common',
-          materials: { wood: 120, stone: 60, metal: 30 },
-        };
-      case 'sharpshooter':
-        return {
-          primaryCat: 'sniper',
-          primaryRarity: 'rare',
-          secondaryCat: 'pistol',
-          secondaryRarity: 'uncommon',
-          materials: { wood: 80, stone: 60, metal: 30 },
-        };
-      case 'demolition':
-        return {
-          primaryCat: 'smg',
-          primaryRarity: 'uncommon',
-          secondaryCat: 'pistol',
-          secondaryRarity: 'rare',
-          materials: { wood: 200, stone: 150, metal: 100 },
-        };
-      case 'balanced':
-      default:
-        return {
-          primaryCat: 'assault_rifle',
-          primaryRarity: 'uncommon',
-          secondaryCat: 'pistol',
-          secondaryRarity: 'common',
-          materials: { wood: 100, stone: 50, metal: 25 },
-        };
-    }
+  private getStarterLoadoutItems(loadout: StarterLoadoutType) {
+    return resolveStarterLoadoutItems(loadout);
   }
 
   private sendJoinRoomPacket(): void {
@@ -923,7 +913,7 @@ export class NetworkManager {
       starterLoadout: config.starterLoadout,
       position: localPlayer.position,
       isGliding: localPlayer.isGliding,
-      outfitId: config.cosmetics?.outfitId,
+      outfitId: localPlayer.outfitId || config.cosmetics?.outfitId,
       skinColor: localPlayer.skinColor,
       accentColor: localPlayer.accentColor,
       backAccessory: localPlayer.backAccessory || 'jump_pack',
@@ -978,8 +968,10 @@ export class NetworkManager {
 
     try {
       this.ws = new WebSocket(wsUrl);
+      const socket = this.ws;
 
       this.ws.onopen = () => {
+        if (this.ws !== socket) return;
         this.roomConnected = true;
         this.connectionState = 'connected';
         this.onConnectionStatusChange?.(
@@ -993,6 +985,7 @@ export class NetworkManager {
       };
 
       this.ws.onmessage = (event) => {
+        if (this.ws !== socket) return;
         try {
           const rawStr = typeof event.data === 'string' ? event.data : '';
           this.packetsReceived++;
@@ -1015,6 +1008,10 @@ export class NetworkManager {
       };
 
       this.ws.onclose = () => {
+        if (this.ws !== socket) return;
+        this.textChat.reset();
+        socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null;
+        this.ws = null;
         this.roomConnected = false;
         const shouldReconnect =
           this.wantsRoomConnection &&
@@ -1043,6 +1040,8 @@ export class NetworkManager {
       };
 
       this.ws.onerror = () => {
+        if (this.ws !== socket) return;
+        this.textChat.reset();
         this.roomConnected = false;
         this.connectionState = 'error';
         this.onConnectionStatusChange?.(
@@ -1065,11 +1064,13 @@ export class NetworkManager {
   }
 
   private closeSocketOnly(): void {
+    this.textChat.reset();
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
     if (this.ws) {
+      this.ws.onopen = null;
       this.ws.onclose = null;
       this.ws.onerror = null;
       this.ws.onmessage = null;
@@ -1077,6 +1078,15 @@ export class NetworkManager {
       this.ws = null;
     }
     this.roomConnected = false;
+  }
+
+  public sendChat(text: string): boolean {
+    if (!this.textChat.roomCode || !this.isOnlineRoom || !this.roomConnected ||
+      !this.ws || this.ws.readyState !== WebSocket.OPEN || !text.trim() || text.length > 240) return false;
+    try {
+      this.ws.send(JSON.stringify({type:'chat_send',roomCode:this.textChat.roomCode,text}));
+      return true;
+    } catch { return false; } // Never queue/replay a message after reconnect.
   }
 
   public disconnectMultiplayerRoom(): void {
@@ -1087,6 +1097,7 @@ export class NetworkManager {
 
   /** Explicitly release the current room seat, unlike a temporary disconnect. */
   public leaveRoom(): void {
+    this.textChat.reset();
     const socketToClose = this.ws;
     if (socketToClose && socketToClose.readyState === WebSocket.OPEN) {
       try {
@@ -1103,11 +1114,14 @@ export class NetworkManager {
     this.roomSnapshot = null;
     this.serverPlayerId = '';
     this.activeLocalPlayer = null;
+    this.inventoryActionSeq = 0;
+    this.inventoryShotSeq = 0; this.pendingInventoryShots.clear();
     this.pendingCreateLobby = null;
     this.onRoomSnapshot?.(null);
     this.onConnectionStatusChange?.('🚪 LEFT ROOM', false, 'idle', 0);
 
     if (socketToClose) {
+      socketToClose.onopen = null;
       socketToClose.onclose = null;
       socketToClose.onerror = null;
       socketToClose.onmessage = null;
@@ -1126,6 +1140,29 @@ export class NetworkManager {
     const localPlayer = this.state.players.get(this.localPlayerId);
     if (localPlayer) localPlayer.isReady = ready;
     this.sendPacket({ type: 'set_ready', ready });
+  }
+
+  /** Visual-only locker sync for players already seated in a lobby. */
+  public sendCosmeticsUpdate(cosmetics: CosmeticLoadout): void {
+    const normalized = {
+      outfitId: normalizeOutfitPresetId(cosmetics.outfitId),
+      skinColor: cosmetics.skinColor,
+      accentColor: cosmetics.accentColor,
+      backAccessory: cosmetics.backAccessory,
+    };
+    if (this.activeLocalPlayer) {
+      Object.assign(this.activeLocalPlayer, normalized);
+    }
+    const localPlayer = this.state.players.get(this.localPlayerId);
+    if (localPlayer && localPlayer !== this.activeLocalPlayer) {
+      Object.assign(localPlayer, normalized);
+    }
+    if (!this.isOnlineRoom || !this.roomConnected) return;
+    this.sendPacket({
+      type: 'cosmetics_update',
+      sessionToken: this.sessionToken,
+      ...normalized,
+    });
   }
 
   public requestMatchStart(): void {
@@ -1261,6 +1298,11 @@ export class NetworkManager {
           this.state.storm.phaseTimer = Number(s.phaseTimer ?? 40);
           this.state.storm.isShrinking = Boolean(s.isShrinking);
           this.state.storm.damagePerSecond = Number(s.damagePerSecond ?? 2);
+          // Mark interpolation as server-owned. If this client later falls
+          // back to offline storm simulation, StormConfig reconstructs the
+          // remaining linear movement from this snapshot.
+          this.state.storm.shrinkDuration = 0;
+          this.state.storm.shrinkElapsed = 0;
         }
         if (typeof msg.matchTimer === 'number') {
           this.state.matchTimer = msg.matchTimer;
@@ -1295,6 +1337,7 @@ export class NetworkManager {
           if (id === this.localPlayerId || id === this.serverPlayerId) {
             const localPlayer = this.state.players.get(this.localPlayerId);
             if (localPlayer) {
+              localPlayer.eliminations = Math.max(0, Math.floor(Number(rp.eliminations) || 0));
               localPlayer.isReady = Boolean(rp.isReady);
               localPlayer.isParticipant = Boolean(rp.isParticipant);
               localPlayer.isConnected = Boolean(rp.isConnected ?? true);
@@ -1396,6 +1439,7 @@ export class NetworkManager {
               reloadDuration: 0,
               isHealing: false,
               landingImpactTimer: 0,
+              outfitId: normalizeOutfitPresetId(rp.outfitId),
               skinColor: Number(rp.skinColor ?? 0x22c55e),
               accentColor: Number(rp.accentColor ?? 0xfef08a),
               backAccessory:
@@ -1415,6 +1459,9 @@ export class NetworkManager {
               lastPacketPerfMs: performance.now(),
             });
           } else {
+            if (rp.outfitId !== undefined) {
+              existing.outfitId = normalizeOutfitPresetId(rp.outfitId);
+            }
             if (rp.skinColor !== undefined) {
               existing.skinColor = Number(rp.skinColor);
             }
@@ -1538,7 +1585,17 @@ export class NetworkManager {
         break;
       }
 
+      case 'chat_message':
+      case 'chat_rejected':
+        this.textChat.receive(msg);
+        break;
       case 'room_joined': {
+        // Unacknowledged commands on the old socket are never retransmitted.
+        // A fresh owner snapshot follows; discard predictions rather than
+        // subtracting lost shots or holding a reload forever after reconnect.
+        this.pendingInventoryShots.clear();
+        this.inventoryActionSeq = 0;
+        this.inventoryShotSeq = 0;
         const snapshot = normalizeRoomSnapshot(
           msg,
           this.roomCode,
@@ -1549,6 +1606,7 @@ export class NetworkManager {
         this.roomCode = snapshot.roomCode;
         if (snapshot.selfPlayerId) this.serverPlayerId = snapshot.selfPlayerId;
         this.lastJoinRejection = null;
+        this.textChat.joined(snapshot.roomCode);
         this.onRoomSnapshot?.(snapshot);
         break;
       }
@@ -1590,6 +1648,8 @@ export class NetworkManager {
       }
 
       case 'match_started': {
+        this.pendingInventoryShots.clear();
+        this.inventoryActionSeq = 0;
         const snapshot = normalizeRoomSnapshot(
           msg,
           this.roomCode,
@@ -1689,6 +1749,12 @@ export class NetworkManager {
         break;
       }
 
+      case 'environment_state': {
+        if (Array.isArray(msg.health) && Array.isArray(msg.destroyed)) {
+          this.onEnvironmentState?.(msg.health as [string,number][],msg.destroyed as string[]);
+        }
+        break;
+      }
       case 'build_damaged': {
         this.onRemoteBuildDamaged?.(
           String(msg.destructibleId),
@@ -1702,12 +1768,60 @@ export class NetworkManager {
         break;
       }
 
+      case 'position_corrected': {
+        const player = this.state.players.get(this.localPlayerId) || this.activeLocalPlayer;
+        const position = msg.position as PlayerState['position'];
+        if (player && position && [position.x,position.y,position.z].every(Number.isFinite)) {
+          Object.assign(player.position,position);
+          player.velocity = {x:0,y:0,z:0};
+        }
+        break;
+      }
+      case 'inventory_state': {
+        const player = this.state.players.get(this.localPlayerId) || this.activeLocalPlayer;
+        if (!player || !Array.isArray(msg.inventory) || msg.inventory.length !== 5) break;
+        const inventory = msg.inventory as (InventorySlot | null)[];
+        const completedReload = player.isReloading && !msg.isReloading &&
+          inventory[player.activeSlot]?.weaponId === player.inventory[player.activeSlot]?.weaponId &&
+          (inventory[player.activeSlot]?.clipAmmo || 0) > (player.inventory[player.activeSlot]?.clipAmmo || 0);
+        const completedUse = player.isHealing && !msg.isHealing &&
+          (Number(msg.health) > player.health || Number(msg.shield) > player.shield);
+        const processedShotSeq = Number(msg.processedShotSeq) || 0;
+        this.inventoryShotSeq = Math.max(this.inventoryShotSeq, processedShotSeq);
+        for (const seq of this.pendingInventoryShots.keys()) {
+          if (seq <= processedShotSeq) this.pendingInventoryShots.delete(seq);
+        }
+        for (const pending of this.pendingInventoryShots.values()) {
+          const pendingSlot = inventory[pending.slot];
+          if (pendingSlot?.weaponId === pending.weaponId && pendingSlot.ammoType !== 'none') pendingSlot.clipAmmo = Math.max(0,pendingSlot.clipAmmo-1);
+        }
+        player.inventory = inventory;
+        player.ammo = msg.ammo as PlayerState['ammo'];
+        player.materials = msg.materials as PlayerState['materials'];
+        player.health = Number(msg.health); player.shield = Number(msg.shield);
+        // A queued local switch/reload remains presentation-only until its ACK.
+        if (Number(msg.lastActionSeq) >= this.inventoryActionSeq) {
+          player.activeSlot = Number(msg.activeSlot);
+          player.isReloading = Boolean(msg.isReloading);
+          player.reloadTimer = Number(msg.reloadTimer);
+          player.reloadDuration = Number(msg.reloadDuration);
+          player.isHealing = Boolean(msg.isHealing);
+          player.consumeRemaining = Number(msg.consumeRemaining) || 0;
+          player.consumeDuration = Number(msg.consumeDuration) || 0;
+        }
+        this.inventoryActionSeq = Math.max(this.inventoryActionSeq, Number(msg.lastActionSeq) || 0);
+        if (completedReload) this.onInventoryCompletion?.('reload');
+        if (completedUse) this.onInventoryCompletion?.('use');
+        break;
+      }
+
       case 'loot_collected': {
         if (String(msg.collectorId || '') === this.serverPlayerId) {
           if (msg.authoritativeItem && typeof msg.authoritativeItem === 'object') {
             this.onAuthoritativeLootCollected?.(
               msg.authoritativeItem as LootItemState,
-              msg.swappedDrop ? (msg.swappedDrop as LootItemState) : undefined
+              msg.swappedDrop ? (msg.swappedDrop as LootItemState) : undefined,
+              Array.isArray(msg.spawnedDrops) ? msg.spawnedDrops as LootItemState[] : undefined
             );
           }
           break;
@@ -1898,13 +2012,18 @@ export class NetworkManager {
   public sendWeaponFired(
     category: string,
     muzzlePos: { x: number; y: number; z: number },
-    hitPoint: { x: number; y: number; z: number }
+    hitPoint: { x: number; y: number; z: number },
+    rarity?: WeaponRarity
   ): void {
     if (!this.isOnlineRoom || !this.roomConnected) return;
+    const shotSeq = ++this.inventoryShotSeq;
+    if (this.pendingInventoryShots.size < 64) this.pendingInventoryShots.set(shotSeq, {slot:this.activeLocalPlayer?.activeSlot || 0, weaponId:`${category}_${rarity}`});
     this.sendPacket({
       type: 'fire_weapon',
+      shotSeq,
       sessionToken: this.sessionToken,
       category,
+      rarity,
       muzzlePos,
       hitPoint,
     });
@@ -1915,7 +2034,9 @@ export class NetworkManager {
     damage: number,
     isHeadshot: boolean,
     weaponName: string,
-    hitPoint: { x: number; y: number; z: number }
+    hitPoint: { x: number; y: number; z: number },
+    weaponCategory?: WeaponCategory,
+    weaponRarity?: WeaponRarity
   ): void {
     if (!this.isOnlineRoom || !this.roomConnected) return;
     this.sendPacket({
@@ -1923,9 +2044,13 @@ export class NetworkManager {
       hitId: `hit_${++this.hitCounter}`,
       sessionToken: this.sessionToken,
       targetId,
+      // Retained for protocol compatibility; the server recomputes damage
+      // from its mirrored catalog and does not trust this value.
       damage,
       isHeadshot,
       weaponName,
+      weaponCategory,
+      weaponRarity,
       hitPoint,
     });
   }
@@ -1963,23 +2088,14 @@ export class NetworkManager {
     });
   }
 
-  public sendHealSync(health: number, shield: number): void {
-    if (!this.isOnlineRoom || !this.roomConnected) return;
-    this.sendPacket({
-      type: 'heal_sync',
-      sessionToken: this.sessionToken,
-      health,
-      shield,
-    });
-  }
-
   /**
-   * Requests (rather than optimistically performs) a Legendary Tower vault
+   * Requests (rather than optimistically performs) a server-registered
    * pickup. Returns false when no live room socket can carry the request.
    */
   public sendAuthoritativeLootCollectRequest(
     item: LootItemState,
-    predictedSwappedDrop?: LootItemState
+    predictedSwappedDrop?: LootItemState,
+    reservedSlot?: number
   ): boolean {
     if (
       !this.isOnlineRoom ||
@@ -1997,6 +2113,7 @@ export class NetworkManager {
       itemType: item.itemType,
       position: this.activeLocalPlayer?.position,
       swappedDrop: predictedSwappedDrop,
+      slot: reservedSlot ?? (this.activeLocalPlayer?.activeSlot === 0 ? 1 : this.activeLocalPlayer?.activeSlot),
     });
     return true;
   }
@@ -2017,6 +2134,7 @@ export class NetworkManager {
       position,
       spawnedDrops,
       swappedDrop,
+      slot: this.activeLocalPlayer?.activeSlot === 0 ? 1 : this.activeLocalPlayer?.activeSlot,
     });
   }
 

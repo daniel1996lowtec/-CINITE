@@ -88,6 +88,8 @@ test('main menu exposes Play Solo, Multiplayer, and the three lobby browser tabs
     'my-lobby-title',
     'my-lobby-status',
     'my-lobby-stats',
+    'my-lobby-ready-label',
+    'my-lobby-ready-fill',
     'my-lobby-code',
     'btn-copy-my-lobby-code',
     'my-lobby-invite',
@@ -102,6 +104,18 @@ test('main menu exposes Play Solo, Multiplayer, and the three lobby browser tabs
     'lobby-difficulty',
     'lobby-skydrop',
     'btn-launch-match',
+    'preview-outfit-name',
+    'preview-outfit-detail',
+    'preview-showcase',
+    'preview-weapon-icon',
+    'preview-weapon-name',
+    'preview-weapon-role',
+    'preview-weapon-damage',
+    'preview-weapon-rate',
+    'preview-weapon-range',
+    'preview-weapon-mag',
+    'preview-secondary-weapon',
+    'preview-squad-status',
   ];
   for (const id of requiredIds) {
     assert.ok(html.includes(`id="${id}"`), `missing #${id}`);
@@ -149,6 +163,11 @@ test('lobby UI renders only server summaries and includes every required card fi
     assert.ok(ui.includes(fieldLabel), `LobbyBrowser should render ${fieldLabel}`);
   }
   assert.match(html, /btn-my-lobby-leave[\s\S]*LEAVE LOBBY/);
+  assert.match(html, /WEAPON SHOWCASE/);
+  assert.match(html, /SQUAD READINESS/);
+  assert.match(ui, /my-lobby-player-avatar/);
+  assert.match(ui, /syncPreviewSquadStatus/);
+  assert.match(main, /syncOperatorShowcase/);
 });
 
 test('lobby browser CSS is touch-friendly, scrollable, and prevents fixed-width overflow', () => {
@@ -163,6 +182,9 @@ test('lobby browser CSS is touch-friendly, scrollable, and prevents fixed-width 
   assert.match(css, /@media \(max-width: 700px\)[\s\S]*\.lobby-browser-tab\s*\{[^}]*min-height:\s*50px/s);
   assert.match(css, /@media \(max-width: 390px\)[\s\S]*\.lobby-room-counts/s);
   assert.match(css, /\.multiplayer-browser\s*\{[^}]*overflow:\s*hidden/s);
+  assert.match(css, /\.preview-showcase\s*\{[^}]*width:\s*min\(340px,\s*92vw\)/s);
+  assert.match(css, /\.preview-stat-grid\s*\{[^}]*repeat\(4,\s*minmax\(0,\s*1fr\)\)/s);
+  assert.match(css, /\.my-lobby-player-avatar\s*\{[^}]*width:\s*36px/s);
 
   const browserCss = css.slice(
     css.indexOf('MULTIPLAYER LOBBY BROWSER 3.0'),

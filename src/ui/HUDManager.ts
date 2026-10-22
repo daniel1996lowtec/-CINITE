@@ -1,3 +1,5 @@
+import { relativeThreatAngle, confirmedHitKind, StormNoticeTracker, safeZoneBearing, countdownLabel } from './combatFeedback';
+import type { RoomSnapshot } from '../network/schemas';
 import * as THREE from 'three';
 import {
   AmmoType,
@@ -5,11 +7,14 @@ import {
   LootItemState,
   MatchState,
   PlayerState,
-  WeaponCategory,
 } from '../network/schemas';
-import { RARITY_COLORS } from '../weapons/WeaponDefinitions';
+import {
+  RARITY_COLORS,
+  getWeaponVisualProfile,
+} from '../weapons/WeaponDefinitions';
 import { ISLAND_POIS } from '../world/TerrainGenerator';
 import { ISLAND_SETTLEMENTS } from '../world/WorldLayout';
+import { getStormStatusLabel, isFinalStormPhase } from '../systems/StormConfig';
 
 interface FloatingDamageNumber {
   el: HTMLDivElement;
@@ -20,18 +25,18 @@ interface FloatingDamageNumber {
   vx: number;
 }
 
-const WEAPON_ICONS: Record<WeaponCategory, string> = {
-  harvester: '⛏️',
-  pistol: '🔫',
-  assault_rifle: '🎯',
-  shotgun: '💥',
-  smg: '⚡',
-  sniper: '🔭',
-  medkit: '🩹',
-  shield_potion: '🧪',
-};
-
 export class HUDManager {
+  public reducedMotion = false;
+  private readonly killFeedTimers = new Map<HTMLElement, ReturnType<typeof setTimeout>>();
+  private readonly zoneNotices = new StormNoticeTracker();
+  private zoneNotice = '';
+  private zoneNoticeTimer = 0;
+  private stormReadoutTimer = 1;
+  private combatCueTimer = 0;
+  private previousWeaponKey = '';
+  private weaponSwitchFlash = 0;
+  private threatTimer = 0;
+  private threatIndicator = document.getElementById('hud-threat-direction');
   private healthFill: HTMLElement;
   private healthText: HTMLElement;
   private shieldFill: HTMLElement;
@@ -155,6 +160,14 @@ export class HUDManager {
   }
 
   public resetHUD(): void {
+    for (const timer of this.killFeedTimers.values()) clearTimeout(timer);
+    this.killFeedTimers.clear();
+    this.zoneNotices.reset(); this.zoneNotice = ''; this.zoneNoticeTimer = 0; this.stormReadoutTimer = 1;
+    this.threatTimer = 0; this.threatIndicator?.classList.add('hidden');
+    this.combatCueTimer = 0;
+    this.previousWeaponKey = '';
+    this.weaponSwitchFlash = 0;
+    document.getElementById('hud-combat-cue')?.classList.add('hidden');
     this.hitmarkerTimer = 0;
     this.lootToastTimer = 0;
     this.reloadFlashTimer = 0;
@@ -176,6 +189,38 @@ export class HUDManager {
     this.floatingDamages = [];
   }
 
+  public showCombatCue(message: string, color: string): void {
+    const element = document.getElementById('hud-combat-cue');
+    if (!element) return;
+    element.textContent = message;
+    element.style.color = color;
+    element.classList.remove('hidden');
+    this.combatCueTimer = 1.1;
+  }
+
+  public clearFinalStandings(): void {
+    document.getElementById('end-standings')?.replaceChildren();
+    document.getElementById('end-winner')?.replaceChildren();
+  }
+
+  public showFinalStandings(snapshot: RoomSnapshot, placements: Record<string, number>): void {
+    const winner = document.getElementById('end-winner');
+    if (winner) winner.textContent = snapshot.winnerName ? `WINNER · ${snapshot.winnerName}` : 'MATCH COMPLETE';
+    const list = document.getElementById('end-standings');
+    if (!list) return;
+    list.replaceChildren();
+    const participants = snapshot.players.filter(p => p.isParticipant)
+      .sort((a,b) => (placements[a.id] || 999) - (placements[b.id] || 999));
+    for (const player of participants) {
+      const row = document.createElement('div');
+      row.className = 'end-standing-row';
+      row.classList.toggle('is-self',player.id === snapshot.selfPlayerId);
+      row.classList.toggle('is-winner',placements[player.id] === 1);
+      row.textContent = `#${placements[player.id] || '—'} · ${player.name} · ${player.eliminations ?? 0} ELIMS`;
+      list.appendChild(row);
+    }
+  }
+
   public updateConnectionBadge(statusText: string, connected: boolean): void {
     if (!this.netStatusPillEl) return;
     this.netStatusPillEl.textContent = statusText;
@@ -193,9 +238,9 @@ export class HUDManager {
   }
 
   public updateCountdown(countdownTimer: number): void {
-    const secs = Math.max(1, Math.ceil(countdownTimer));
+    const secs = countdownLabel(countdownTimer);
     this.stormPhaseEl.textContent = 'DROPPING IN';
-    this.stormTimerEl.textContent = `${secs}s`;
+    this.stormTimerEl.textContent = secs === 'DROP!' ? secs : `${secs}s`;
   }
 
   public updateCrosshairSpread(
@@ -221,22 +266,8 @@ export class HUDManager {
       : isShieldBreak || isHeadshot
       ? 0.22
       : 0.16;
-    this.hitmarkerEl.classList.remove(
-      'hidden',
-      'headshot',
-      'shield',
-      'shield-break',
-      'elim'
-    );
-    if (isElimination) {
-      this.hitmarkerEl.classList.add('elim');
-    } else if (isHeadshot) {
-      this.hitmarkerEl.classList.add('headshot');
-    } else if (isShieldBreak) {
-      this.hitmarkerEl.classList.add('shield-break');
-    } else if (isShield) {
-      this.hitmarkerEl.classList.add('shield');
-    }
+    const kind = confirmedHitKind(isHeadshot,isShield,isShieldBreak,isElimination);
+    this.hitmarkerEl.className = `hitmarker ${kind}`;
 
     if (this.hitBadgeEl) {
       if (isElimination) {
@@ -287,19 +318,12 @@ export class HUDManager {
       this.elimBumpTimer = 0.35;
     }
     if (!this.elimBannerEl) return;
-    const streakTag =
-      totalKills >= 5
-        ? ' • 🔥 UNSTOPPABLE!'
-        : totalKills === 4
-        ? ' • 💥 QUAD ELIM!'
-        : totalKills === 3
-        ? ' • ⚡ TRIPLE ELIM!'
-        : totalKills === 2
-        ? ' • ✨ DOUBLE ELIM!'
-        : '';
-    this.elimBannerEl.innerHTML = `<span class="elim-icon">${
-      isHeadshot ? '🎯' : '⚡'
-    }</span> ELIMINATED <strong>${victimName}</strong> <span class="elim-weap">[${weaponName}${streakTag}]</span>`;
+    // Match-total eliminations are not a timed multi-kill streak.
+    const streakTag = totalKills >= 2 ? ` • ${Math.floor(totalKills)} ELIMS` : '';
+    const name = document.createElement('strong'); name.textContent = victimName;
+    const weapon = document.createElement('span'); weapon.className = 'elim-weap';
+    weapon.textContent = ` [${weaponName}${streakTag}]`;
+    this.elimBannerEl.replaceChildren(`${isHeadshot ? '🎯' : '⚡'} ELIMINATED `,name,weapon);
     this.elimBannerEl.classList.remove('hidden');
     this.elimBannerTimer = 2.8;
   }
@@ -316,7 +340,7 @@ export class HUDManager {
     const confettiLayer = document.getElementById('victory-confetti-layer');
     if (!confettiLayer) return;
     confettiLayer.innerHTML = '';
-    if (!isVictory) return;
+    if (!isVictory || this.reducedMotion) return;
 
     const palette = ['#facc15', '#38bdf8', '#4ade80', '#f43f5e', '#a855f7'];
     for (let i = 0; i < 36; i++) {
@@ -330,8 +354,17 @@ export class HUDManager {
     }
   }
 
-  public triggerDamageTakenFlash(): void {
+  public showDamageDirection(player: PlayerState, source: {x:number; z:number}, shield: boolean): void {
+    const angle = relativeThreatAngle(player.position, source, player.yaw);
+    this.threatTimer = .85;
+    this.threatIndicator?.classList.remove('hidden');
+    this.threatIndicator?.style.setProperty('--threat-angle', `${angle}rad`);
+    this.threatIndicator?.style.setProperty('--threat-color', shield ? '#67e8f9' : '#fb7185');
+  }
+
+  public triggerDamageTakenFlash(shield = false, storm = false): void {
     this.damageFlashTimer = 0.22;
+    this.stormVignette.style.setProperty('--damage-flash-color',storm ? '192,132,252' : shield ? '56,189,248' : '239,68,68');
     this.stormVignette.classList.add('damage-flash');
   }
 
@@ -343,6 +376,10 @@ export class HUDManager {
     isShieldBreak: boolean = false
   ): void {
     if (!this.damageLayer) return;
+    // Bound transient DOM feedback even during shotgun/multi-player bursts.
+    while (this.floatingDamages.length >= (this.reducedMotion ? 12 : 24)) {
+      this.floatingDamages.shift()?.el.remove();
+    }
     const el = document.createElement('div');
     el.className = `floating-dmg ${isHeadshot ? 'crit' : ''} ${
       isShield ? 'shield' : ''
@@ -379,6 +416,10 @@ export class HUDManager {
     colorHex: string
   ): void {
     if (!this.damageLayer) return;
+    // Bound transient DOM feedback even during shotgun/multi-player bursts.
+    while (this.floatingDamages.length >= (this.reducedMotion ? 12 : 24)) {
+      this.floatingDamages.shift()?.el.remove();
+    }
     const el = document.createElement('div');
     el.className = 'floating-dmg';
     el.style.color = colorHex;
@@ -409,18 +450,18 @@ export class HUDManager {
     if (!this.killfeedContainer) return;
     const row = document.createElement('div');
     row.className = `killfeed-row ${isHeadshot ? 'kf-headshot' : ''}`;
-    row.innerHTML = `<span class="kf-killer">${killerName}</span> <span class="kf-weapon">[${weaponName}${
-      isHeadshot ? ' 🎯' : ''
-    }]</span> <span class="kf-victim">${victimName}</span>`;
+    for (const [className,text] of [['kf-killer',killerName],['kf-weapon',` [${weaponName}${isHeadshot ? ' 🎯' : ''}] `],['kf-victim',victimName]]) {
+      const span = document.createElement('span'); span.className = className; span.textContent = text; row.appendChild(span);
+    }
     this.killfeedContainer.prepend(row);
 
     while (this.killfeedContainer.children.length > 5) {
-      this.killfeedContainer.lastElementChild?.remove();
+      const oldest = this.killfeedContainer.lastElementChild as HTMLElement;
+      clearTimeout(this.killFeedTimers.get(oldest)); this.killFeedTimers.delete(oldest); oldest.remove();
     }
 
-    setTimeout(() => {
-      row.remove();
-    }, 6000);
+    const timer = setTimeout(() => { row.remove(); this.killFeedTimers.delete(row); },6000);
+    this.killFeedTimers.set(row,timer);
   }
 
   private projectDamageItem(
@@ -434,7 +475,7 @@ export class HUDManager {
       const x = (proj.x * 0.5 + 0.5) * w + d.offsetX;
       const y = (-(proj.y * 0.5) + 0.5) * h;
       const age = d.maxLife - d.life;
-      const popScale = age < 0.14 ? 1 + Math.sin((age / 0.14) * Math.PI) * 0.28 : 1;
+      const popScale = !this.reducedMotion && age < 0.14 ? 1 + Math.sin((age / 0.14) * Math.PI) * 0.28 : 1;
       d.el.style.left = `${x}px`;
       d.el.style.top = `${y}px`;
       d.el.style.transform = `translate(-50%, -50%) scale(${popScale.toFixed(2)})`;
@@ -445,6 +486,14 @@ export class HUDManager {
   }
 
   public updateBuildModeIndicator(activeBuild: BuildPieceType | null): void {
+    for (const piece of ['wall','ramp','floor','roof'] as const) {
+      const button = document.getElementById(`touch-${piece}-btn`);
+      button?.classList.toggle('active-build',activeBuild === piece);
+      button?.setAttribute('aria-pressed',String(activeBuild === piece));
+    }
+    const fire = document.getElementById('touch-fire-btn');
+    if (fire) fire.textContent = activeBuild ? '▧ PLACE' : '🔥 FIRE';
+
     this.buildBtnWall?.classList.toggle('active-build', activeBuild === 'wall');
     this.buildBtnRamp?.classList.toggle('active-build', activeBuild === 'ramp');
     this.buildBtnFloor?.classList.toggle(
@@ -536,6 +585,7 @@ export class HUDManager {
         this.currentPoiName = poi.name;
         if (this.poiToastEl) {
           this.poiToastEl.textContent = `📍 ENTERING ${poi.name.toUpperCase()}`;
+          this.poiToastEl.style.setProperty('--poi-accent', poi.color);
           this.poiToastEl.classList.remove('hidden');
           this.poiToastTimer = 2.8;
         }
@@ -561,10 +611,18 @@ export class HUDManager {
         this.floatingDamages.splice(i, 1);
         continue;
       }
-      d.worldPos.y += dt * 1.85;
-      d.offsetX += d.vx * dt;
+      if (!this.reducedMotion) {
+        d.worldPos.y += dt * 1.85;
+        d.offsetX += d.vx * dt;
+      }
       this.projectDamageItem(d, camera);
     }
+
+    if (this.threatTimer > 0) {
+      this.threatTimer = Math.max(0,this.threatTimer-dt);
+      if (!this.threatTimer) this.threatIndicator?.classList.add('hidden');
+    }
+    if (player.isHealing) player.consumeRemaining = Math.max(0,(player.consumeRemaining || 0)-dt);
 
     // Vitals
     const hpPct = Math.max(0, (player.health / player.maxHealth) * 100);
@@ -582,12 +640,35 @@ export class HUDManager {
     this.aliveCountEl.textContent = `${match.aliveCount}`;
     this.killCountEl.textContent = `${player.eliminations}`;
 
-    // Storm Status
-    this.stormPhaseEl.textContent = `STORM PHASE ${match.storm.phase}`;
-    const sec = Math.max(0, Math.ceil(match.storm.phaseTimer));
-    const m = Math.floor(sec / 60);
-    const s = sec % 60;
-    this.stormTimerEl.textContent = `${m}:${s < 10 ? '0' : ''}${s}`;
+    // Storm Status: phaseTimer is preparation time while waiting and
+    // remaining movement time while shrinking; label that distinction so
+    // players can plan rotations through tall districts.
+    if (this.combatCueTimer > 0) {
+      this.combatCueTimer = Math.max(0, this.combatCueTimer - dt);
+      if (this.combatCueTimer === 0) document.getElementById('hud-combat-cue')?.classList.add('hidden');
+    }
+    this.zoneNoticeTimer = Math.max(0,this.zoneNoticeTimer-dt);
+    this.stormReadoutTimer += dt;
+    if (this.stormReadoutTimer >= .2) {
+      this.stormReadoutTimer = 0;
+      const notice = this.zoneNotices.update(match.storm.phase,match.storm.isShrinking,isOutsideStorm);
+      if (notice) { this.zoneNotice = notice; this.zoneNoticeTimer = 1.6; }
+      const displayPhase = Math.min(8, Math.max(1, match.storm.phase));
+      const rawStatus = getStormStatusLabel(match.storm);
+      const status = this.zoneNoticeTimer > 0 ? this.zoneNotice
+        : rawStatus === 'SHRINKS IN' ? 'NEXT IN' : rawStatus === 'SHRINKING' ? 'CLOSING' : 'HOLD';
+      const label = `${match.storm.phase >= 6 ? 'FINAL' : 'PHASE'} ${displayPhase} · ${status}`;
+      if (this.stormPhaseEl.textContent !== label) this.stormPhaseEl.textContent = label;
+      this.stormPhaseEl.classList.toggle('final-zone',match.storm.phase >= 6);
+      const sec = Math.max(0,Math.ceil(match.storm.phaseTimer));
+      const distance = Math.max(0,Math.ceil(Math.hypot(player.position.x-match.storm.targetCenterX,
+        player.position.z-match.storm.targetCenterZ)-match.storm.targetRadius));
+      const direction = safeZoneBearing(player.position.x,player.position.z,match.storm.targetCenterX,match.storm.targetCenterZ);
+      const timer = isFinalStormPhase(match.storm) ? `FINAL · ${Math.round(match.storm.currentRadius)}m`
+        : `${Math.floor(sec/60)}:${String(sec%60).padStart(2,'0')}`;
+      const text = timer + (distance > 0 && (isOutsideStorm || match.storm.phase >= 6) ? ` · ${distance}m ${direction}` : '');
+      if (this.stormTimerEl.textContent !== text) this.stormTimerEl.textContent = text;
+    }
     this.stormVignette.classList.toggle('active', isOutsideStorm);
 
     // Materials & Selected Material Highlight
@@ -609,6 +690,19 @@ export class HUDManager {
 
     // Active Weapon & Hotbar Slots
     const activeItem = player.inventory[player.activeSlot];
+    const weaponKey = `${player.id}:${player.activeSlot}:${activeItem?.weaponId || ''}`;
+    if (weaponKey !== this.previousWeaponKey) {
+      if (this.previousWeaponKey) this.weaponSwitchFlash = 0.22;
+      this.previousWeaponKey = weaponKey;
+    }
+    this.weaponSwitchFlash = Math.max(0, this.weaponSwitchFlash - dt);
+    this.activeAmmoCardEl?.classList.toggle('weapon-switch-feedback', this.weaponSwitchFlash > 0);
+    this.activeAmmoCardEl?.classList.toggle('is-reloading', player.isReloading || player.isHealing);
+    const reloadProgress = player.isHealing && player.consumeDuration
+      ? Math.max(0,Math.min(1,1-(player.consumeRemaining || 0)/player.consumeDuration))
+      : player.isReloading && player.reloadDuration > 0
+        ? Math.max(0, Math.min(1, 1-player.reloadTimer/player.reloadDuration)) : 0;
+    this.activeAmmoCardEl?.style.setProperty('--reload-progress', `${Math.round(reloadProgress * 100)}%`);
     if (activeItem) {
       this.activeWeaponName.textContent = activeItem.name;
       this.activeWeaponName.style.color = RARITY_COLORS[activeItem.rarity].hex;
@@ -617,11 +711,11 @@ export class HUDManager {
         this.activeAmmoRes.textContent = '';
       } else if (activeItem.isConsumable) {
         this.activeAmmoClip.textContent = `x${activeItem.count}`;
-        this.activeAmmoRes.textContent = 'USE';
+        this.activeAmmoRes.textContent = player.isHealing ? `USING ${(player.consumeRemaining || 0).toFixed(1)}s` : 'USE';
       } else {
         const res = this.getReserveAmmo(player, activeItem.ammoType);
         this.activeAmmoClip.textContent = `${activeItem.clipAmmo}`;
-        this.activeAmmoRes.textContent = `/ ${res}`;
+        this.activeAmmoRes.textContent = player.isReloading ? `LOAD ${Math.max(0,player.reloadTimer).toFixed(1)}s` : `/ ${res}`;
       }
     }
 
@@ -637,7 +731,7 @@ export class HUDManager {
       const barEl = slotEl.querySelector('.slot-rarity-bar') as HTMLElement;
 
       if (item) {
-        iconEl.textContent = WEAPON_ICONS[item.category] || '🔫';
+        iconEl.textContent = getWeaponVisualProfile(item.category).icon;
         nameEl.textContent = item.name.replace(
           /^(Common|Uncommon|Rare|Epic|Legendary)\s+/i,
           ''

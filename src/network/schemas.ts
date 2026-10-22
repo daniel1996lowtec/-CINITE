@@ -7,8 +7,12 @@ export type WeaponRarity = 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary'
 export type WeaponCategory =
   | 'harvester'
   | 'pistol'
+  | 'heavy_pistol'
   | 'assault_rifle'
+  | 'burst_rifle'
+  | 'dmr'
   | 'shotgun'
+  | 'tactical_shotgun'
   | 'smg'
   | 'sniper'
   | 'medkit'
@@ -49,6 +53,52 @@ export interface CosmeticLoadout {
   skinColor: number;
   accentColor: number;
   backAccessory: BackAccessoryType;
+}
+
+export interface StarterLoadoutItems {
+  primaryCat: WeaponCategory;
+  primaryRarity: 'common' | 'uncommon' | 'rare';
+  secondaryCat: WeaponCategory;
+  secondaryRarity: 'common' | 'uncommon' | 'rare';
+  materials: { wood: number; stone: number; metal: number };
+}
+
+export const STARTER_LOADOUT_ITEMS: Record<StarterLoadoutType, StarterLoadoutItems> = {
+  balanced: {
+    primaryCat: 'assault_rifle',
+    primaryRarity: 'uncommon',
+    secondaryCat: 'pistol',
+    secondaryRarity: 'common',
+    materials: { wood: 100, stone: 50, metal: 25 },
+  },
+  close_quarters: {
+    primaryCat: 'tactical_shotgun',
+    primaryRarity: 'uncommon',
+    secondaryCat: 'smg',
+    secondaryRarity: 'common',
+    materials: { wood: 120, stone: 60, metal: 30 },
+  },
+  sharpshooter: {
+    primaryCat: 'dmr',
+    primaryRarity: 'rare',
+    secondaryCat: 'heavy_pistol',
+    secondaryRarity: 'uncommon',
+    materials: { wood: 80, stone: 60, metal: 30 },
+  },
+  demolition: {
+    primaryCat: 'burst_rifle',
+    primaryRarity: 'uncommon',
+    secondaryCat: 'tactical_shotgun',
+    secondaryRarity: 'rare',
+    materials: { wood: 200, stone: 150, metal: 100 },
+  },
+};
+
+export function getStarterLoadoutItems(
+  loadout: StarterLoadoutType
+): StarterLoadoutItems {
+  const items = STARTER_LOADOUT_ITEMS[loadout] || STARTER_LOADOUT_ITEMS.balanced;
+  return { ...items, materials: { ...items.materials } };
 }
 
 export interface AccountCredentialsState {
@@ -128,6 +178,7 @@ export interface PlayerState {
   teamId?: string;
   teamIndex?: number;
   aiState?: BotAIState;
+  outfitId?: OutfitPresetId;
   skinColor: number;
   accentColor: number;
   backAccessory?: BackAccessoryType;
@@ -149,6 +200,8 @@ export interface PlayerState {
   reloadTimer: number;
   reloadDuration: number;
   isHealing: boolean;
+  consumeRemaining?: number;
+  consumeDuration?: number;
   landingImpactTimer: number;
   activeSlot: number;
   selectedMaterial: BuildMaterialType;
@@ -201,6 +254,12 @@ export interface StormState {
   phaseTimer: number;
   isShrinking: boolean;
   damagePerSecond: number;
+  /** Offline interpolation bookkeeping; online clients receive authoritative current values. */
+  shrinkFromCenterX?: number;
+  shrinkFromCenterZ?: number;
+  shrinkFromRadius?: number;
+  shrinkElapsed?: number;
+  shrinkDuration?: number;
 }
 
 export interface MatchState {
@@ -340,6 +399,7 @@ export function effectiveBotCountForMode(
 }
 
 export interface RoomPlayerSummary {
+  eliminations?: number;
   id: string;
   name: string;
   participantType: 'human';
@@ -352,6 +412,10 @@ export interface RoomPlayerSummary {
   teamId: string;
   teamIndex: number;
   alive: boolean;
+  outfitId?: OutfitPresetId;
+  skinColor?: number;
+  accentColor?: number;
+  backAccessory?: BackAccessoryType;
 }
 
 export interface RoomSnapshot {
@@ -428,11 +492,13 @@ export interface LobbyConfig {
 }
 
 export interface GameSettings {
+  /** Presentation only: never scales aiming recoil or weapon spread. */
+  reducedMotion?: boolean;
   mouseSensitivity: number;
   touchSensitivity?: number;
   audioVolume: number;
   sfxVolume?: number;
-  graphicsQuality: 'low' | 'medium' | 'high';
+  graphicsQuality: 'auto' | 'low' | 'medium' | 'high';
   timeOfDay: TimeOfDayPreset;
   showFps: boolean;
 }

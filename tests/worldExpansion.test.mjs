@@ -15,44 +15,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-async function loadWorldModules() {
-  const tmpDir = fs.mkdtempSync(path.join(ROOT_DIR, '.world-expansion-test-'));
-  const emit = (source, output, replacements = []) => {
-    let code = stripTypeScriptTypes(fs.readFileSync(path.join(ROOT_DIR, source), 'utf8'));
-    for (const [pattern, replacement] of replacements) {
-      code = code.replace(pattern, replacement);
-    }
-    fs.writeFileSync(path.join(tmpDir, output), code);
-  };
-
-  try {
-    emit('src/world/WorldLayout.ts', 'WorldLayout.mjs');
-    emit('src/world/TerrainGenerator.ts', 'TerrainGenerator.mjs', [
-      [/import\s+\{\s*TimeOfDayPreset\s*\}\s+from\s+['"]\.\.\/network\/schemas['"];?\n?/, ''],
-      ["from './WorldLayout'", "from './WorldLayout.mjs'"],
-    ]);
-    emit('src/world/MapExpansionBuilder.ts', 'MapExpansionBuilder.mjs', [
-      ["from './TerrainGenerator'", "from './TerrainGenerator.mjs'"],
-      ["from './WorldLayout'", "from './WorldLayout.mjs'"],
-    ]);
-    emit('src/world/IslandWorld.ts', 'IslandWorld.mjs', [
-      ["from './TerrainGenerator'", "from './TerrainGenerator.mjs'"],
-      ["from './MapExpansionBuilder'", "from './MapExpansionBuilder.mjs'"],
-      ["from './WorldLayout'", "from './WorldLayout.mjs'"],
-      [/import\s+\{\s*BuildablePieceState,[\s\S]*?\}\s+from\s+['"]\.\.\/network\/schemas['"];?\n?/, ''],
-    ]);
-
-    const THREE = await import('three');
-    const layout = await import(pathToFileURL(path.join(tmpDir, 'WorldLayout.mjs')).href);
-    const terrainModule = await import(
-      pathToFileURL(path.join(tmpDir, 'TerrainGenerator.mjs')).href
-    );
-    const worldModule = await import(pathToFileURL(path.join(tmpDir, 'IslandWorld.mjs')).href);
-    return { THREE, layout, terrainModule, IslandWorld: worldModule.IslandWorld };
-  } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  }
-}
+import { loadWorldModules } from '../scripts/headlessWorld.mjs';
 
 function approx(actual, expected, epsilon, message) {
   assert.ok(
@@ -136,7 +99,7 @@ test('world layout: original POIs preserved, districts varied, and footprints do
   const kinds = new Set(EXPANSION_BUILDINGS.map((building) => building.kind));
   assert.deepEqual(
     [...kinds].sort(),
-    ['apartment', 'barn', 'cabin', 'garage', 'house', 'shop', 'warehouse']
+    ['apartment', 'barn', 'cabin', 'garage', 'highrise', 'house', 'shop', 'warehouse']
   );
   assert.ok(EXPANSION_BUILDINGS.some((building) => building.floors === 2));
   assert.ok(EXPANSION_BUILDINGS.some((building) => building.roof === 'gable'));
@@ -263,8 +226,26 @@ test('generated world: deterministic expansion, safe loot/props, and performance
   assert.ok(stats.triangles <= 300000, `triangle budget exceeded: ${stats.triangles}`);
   assert.ok(first.generationMs < 6000, `world generation too slow: ${first.generationMs}ms`);
   assert.ok(
-    world.boxColliders.length + world.cylinderColliders.length <= 1220,
+    world.boxColliders.length + world.cylinderColliders.length <= 1450,
     'collider budget exceeded'
+  );
+
+  const skyDome = first.scene.getObjectByName('AtmosphericSkyDome');
+  const skySun = first.scene.getObjectByName('AtmosphericSun');
+  assert.ok(skyDome, 'expected a generated atmospheric sky dome');
+  assert.ok(skySun, 'expected a generated atmospheric sun');
+  skyDome.geometry.computeBoundingSphere();
+  approx(skyDome.geometry.boundingSphere.radius, 285, 0.01, 'sky dome radius');
+  assert.equal(skyDome.material.fog, false);
+  const cameraPosition = new THREE.Vector3(12, 34, -56);
+  world.update(0.016, cameraPosition);
+  assert.deepEqual(
+    [
+      world.terrain.skyGroup.position.x,
+      world.terrain.skyGroup.position.y,
+      world.terrain.skyGroup.position.z,
+    ],
+    [cameraPosition.x, cameraPosition.y, cameraPosition.z]
   );
 
   const lootViolations = [];
@@ -435,6 +416,170 @@ test('generated world: doors, floors, roofs, watchtower and bridge are navigable
   const t = (bridgeZ - 38) / (215 - 38);
   const bridgeX = -46 + t * 52 + Math.sin(t * Math.PI * 2.2) * 12;
   approx(world.getGroundHeightAt(bridgeX, 3.1, bridgeZ), 2.12, 0.08, 'middle river bridge deck');
+});
+
+test('aurora heights: switchback floors, balconies, roofs and skybridge are navigable', async () => {
+  const { THREE, layout, IslandWorld } = await loadWorldModules();
+  const { world } = generateWorld(THREE, IslandWorld);
+  const highrises = layout.EXPANSION_BUILDINGS.filter(
+    (building) => building.kind === 'highrise'
+  );
+  assert.equal(highrises.length, 6);
+  assert.deepEqual(
+    highrises.map((building) => building.floors).sort((a, b) => a - b),
+    [4, 5, 5, 6, 6, 7]
+  );
+  assert.ok(
+    layout.ISLAND_SETTLEMENTS.some(
+      (settlement) => settlement.id === 'aurora_heights' && settlement.name === 'Aurora Heights'
+    )
+  );
+
+  const walkWorldPath = (points, initialY = null) => {
+    let x = points[0].x;
+    let z = points[0].z;
+    let y =
+      initialY ??
+      world.getGroundHeightAt(x, world.terrain.getTerrainHeight(x, z) + 2, z);
+    for (let i = 1; i < points.length; i++) {
+      const startX = x;
+      const startZ = z;
+      const target = points[i];
+      const distance = Math.hypot(target.x - startX, target.z - startZ);
+      const steps = Math.max(1, Math.ceil(distance / 0.28));
+      for (let step = 1; step <= steps; step++) {
+        const targetX = startX + ((target.x - startX) * step) / steps;
+        const targetZ = startZ + ((target.z - startZ) * step) / steps;
+        const resolved = world.resolveHorizontalCollision(targetX, y, targetZ, 0.48);
+        x = resolved.x;
+        z = resolved.z;
+        y = world.getGroundHeightAt(x, y + 1.25, z);
+      }
+    }
+    const last = points[points.length - 1];
+    return { x, y, z, error: Math.hypot(x - last.x, z - last.z) };
+  };
+
+  for (const building of highrises) {
+    const baseY = world.terrain.getTerrainHeight(building.x, building.z);
+    for (let level = 0; level < building.floors; level++) {
+      const expected = baseY + layout.getHighRiseFloorTop(level);
+      approx(
+        world.getGroundHeightAt(building.x, expected + 1.1, building.z),
+        expected,
+        0.08,
+        `${building.id} floor ${level}`
+      );
+    }
+
+    const localPoints = [
+      [0, building.depth / 2 + 4],
+      [0, building.depth / 2 - 2],
+    ];
+    const rampRun = building.depth - 3.4;
+    for (let level = 0; level < building.floors; level++) {
+      const laneCenter =
+        level % 2 === 0
+          ? -building.width / 2 + 1.705
+          : building.width / 2 - 1.705;
+      localPoints.push(
+        [laneCenter, rampRun / 2 - 0.2],
+        [laneCenter, -rampRun / 2 + 0.2],
+        [0, -building.depth / 2 + 1.6]
+      );
+      if (level < building.floors - 1) {
+        localPoints.push([0, building.depth / 2 - 1.6]);
+      } else {
+        localPoints.push([0, 0]);
+      }
+    }
+    const result = walkWorldPath(
+      localPoints.map(([lx, lz]) => layout.buildingLocalToWorld(building, lx, lz))
+    );
+    assert.ok(result.error < 0.95, `${building.id} roof route ended ${result.error}m short`);
+    approx(
+      result.y,
+      baseY + layout.getHighRiseRoofTop(building),
+      0.12,
+      `${building.id} roof route height`
+    );
+
+    if (['aurora_exchange', 'aurora_observatory'].includes(building.id)) {
+      const cacheY = baseY + layout.getHighRiseFloorTop(3);
+      const cacheRoute = [[0, 0], [0, -4.7], [3.3, -4.7]]
+        .map(([x,z]) => layout.buildingLocalToWorld(building,x,z));
+      const cacheArrival = walkWorldPath(cacheRoute, cacheY);
+      assert.ok(cacheArrival.error < 0.12, `${building.id} maintenance cache must be reachable`);
+      approx(cacheArrival.y, cacheY, 0.12, `${building.id} cache walkable floor`);
+      const escape = walkWorldPath(cacheRoute.toReversed(), cacheY);
+      assert.ok(escape.error < 0.12, `${building.id} cache must not be a trap`);
+    }
+
+    const balconyLevel = building.floors - 1;
+    const balconyPoint = layout.buildingLocalToWorld(
+      building,
+      0,
+      building.depth / 2 + 1.1
+    );
+    const balconyY = baseY + layout.getHighRiseFloorTop(balconyLevel);
+    approx(
+      world.getGroundHeightAt(balconyPoint.x, balconyY + 1.1, balconyPoint.z),
+      balconyY,
+      0.08,
+      `${building.id} balcony`
+    );
+  }
+
+  const from = highrises.find(
+    (building) => building.id === layout.AURORA_HEIGHTS_SKYBRIDGE.fromBuildingId
+  );
+  const to = highrises.find(
+    (building) => building.id === layout.AURORA_HEIGHTS_SKYBRIDGE.toBuildingId
+  );
+  assert.ok(from && to);
+  const bridgeSurface = world.walkableSurfaces.find(
+    (surface) => surface.id === layout.AURORA_HEIGHTS_SKYBRIDGE.id
+  );
+  assert.ok(bridgeSurface, 'expected the Aurora skybridge walkable surface');
+  const bridgeY =
+    world.terrain.getTerrainHeight(from.x, from.z) + layout.getHighRiseRoofTop(from);
+  const bridgeResult = walkWorldPath(
+    [
+      { x: from.x + 6, z: from.z },
+      { x: to.x - 6, z: to.z },
+    ],
+    bridgeY
+  );
+  assert.ok(bridgeResult.error < 0.95, `skybridge walk ended ${bridgeResult.error}m short`);
+  approx(bridgeResult.y, bridgeY, 0.08, 'Aurora skybridge walk height');
+  approx(
+    world.getGroundHeightAt((from.x + to.x) / 2, bridgeY + 1.1, from.z),
+    bridgeY,
+    0.08,
+    'Aurora skybridge midpoint'
+  );
+
+  const auroraInfrastructure = [
+    ...world.boxColliders.filter((collider) => collider.id.includes('aurora_heights_barrier')),
+    ...world.cylinderColliders.filter((collider) => collider.id.includes('aurora_heights_sign')),
+  ];
+  assert.equal(auroraInfrastructure.length, 3);
+  for (const collider of auroraInfrastructure) {
+    const cx = collider.x ?? (collider.minX + collider.maxX) / 2;
+    const cz = collider.z ?? (collider.minZ + collider.maxZ) / 2;
+    for (const building of highrises) {
+      assert.equal(
+        layout.isPointInFootprint(cx, cz, layout.getBuildingFootprint(building), 0.2),
+        false,
+        `${collider.id} must stay in the Aurora plaza, not inside ${building.id}`
+      );
+    }
+  }
+
+  const wallBaseY = world.terrain.getTerrainHeight(from.x, from.z);
+  const rayOrigin = new THREE.Vector3(from.x - from.width / 2 - 4, wallBaseY + 12, from.z);
+  const wallHit = world.raycastWorld(rayOrigin, new THREE.Vector3(1, 0, 0), 8);
+  assert.ok(wallHit && wallHit.distance < 4.4, 'high-rise side wall should block a weapon ray');
 });
 
 test('legendary tower: exact centre, climbable floors/decks, solid walls, and safe fixed loot', async () => {

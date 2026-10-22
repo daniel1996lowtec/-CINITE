@@ -5,6 +5,7 @@ import {
   InventorySlot,
   LootItemState,
   MatchState,
+  OutfitPresetId,
   PlayerState,
   WeaponCategory,
   WeaponRarity,
@@ -39,14 +40,18 @@ const BOT_NAMES = [
   'PrettierFormat',
 ];
 
-const SKIN_PALETTE = [
-  { skin: 0xf97316, accent: 0xfef08a },
-  { skin: 0xa855f7, accent: 0x38bdf8 },
-  { skin: 0xec4899, accent: 0xfde047 },
-  { skin: 0x10b981, accent: 0xa7f3d0 },
-  { skin: 0xef4444, accent: 0xfca5a5 },
-  { skin: 0x6366f1, accent: 0xc7d2fe },
-  { skin: 0x14b8a6, accent: 0x99f6e4 },
+const SKIN_PALETTE: Array<{
+  outfitId: OutfitPresetId;
+  skin: number;
+  accent: number;
+}> = [
+  { outfitId: 'solar_phoenix', skin: 0xf97316, accent: 0xfef08a },
+  { outfitId: 'neon_phantom', skin: 0xa855f7, accent: 0x38bdf8 },
+  { outfitId: 'crimson_striker', skin: 0xec4899, accent: 0xfde047 },
+  { outfitId: 'emerald_ranger', skin: 0x10b981, accent: 0xa7f3d0 },
+  { outfitId: 'crimson_striker', skin: 0xef4444, accent: 0xfca5a5 },
+  { outfitId: 'vanguard_blue', skin: 0x6366f1, accent: 0xc7d2fe },
+  { outfitId: 'arctic_sentinel', skin: 0x14b8a6, accent: 0x99f6e4 },
 ];
 
 interface BotMemory {
@@ -157,9 +162,13 @@ export class BotAIController {
       const harvesterStats = createWeaponStats('harvester', 'rare');
       const starterWeapons: WeaponCategory[] = [
         'pistol',
+        'heavy_pistol',
         'assault_rifle',
+        'burst_rifle',
+        'dmr',
         'smg',
         'shotgun',
+        'tactical_shotgun',
       ];
       const starterCat = starterWeapons[i % starterWeapons.length];
       const starterStats = createWeaponStats(starterCat, 'common');
@@ -227,6 +236,7 @@ export class BotAIController {
         reloadDuration: 0,
         isHealing: false,
         landingImpactTimer: 0,
+        outfitId: palette.outfitId,
         skinColor: palette.skin,
         accentColor: palette.accent,
         aiState: 'PATROLLING',
@@ -737,10 +747,29 @@ export class BotAIController {
       const slot = bot.inventory[i];
       if (!slot || slot.isConsumable) continue;
       let score = RARITY_COLORS[slot.rarity as WeaponRarity].damageMult * 10;
-      if (dist < 13 && slot.category === 'shotgun') score += 18;
-      else if (dist < 25 && (slot.category === 'smg' || slot.category === 'pistol')) score += 12;
-      else if (dist >= 22 && dist <= 65 && slot.category === 'assault_rifle') score += 15;
-      else if (dist > 55 && slot.category === 'sniper') score += 20;
+      if (
+        dist < 13 &&
+        (slot.category === 'shotgun' || slot.category === 'tactical_shotgun')
+      ) {
+        score += 18;
+      } else if (
+        dist < 25 &&
+        (slot.category === 'smg' ||
+          slot.category === 'pistol' ||
+          slot.category === 'heavy_pistol')
+      ) {
+        score += 12;
+      } else if (
+        dist >= 22 &&
+        dist <= 65 &&
+        (slot.category === 'assault_rifle' || slot.category === 'burst_rifle')
+      ) {
+        score += 15;
+      } else if (dist > 42 && slot.category === 'dmr') {
+        score += 18;
+      } else if (dist > 55 && slot.category === 'sniper') {
+        score += 20;
+      }
 
       if (score > bestScore) {
         bestScore = score;

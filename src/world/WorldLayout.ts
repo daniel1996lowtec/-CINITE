@@ -18,7 +18,8 @@ export type ExpansionBuildingKind =
   | 'warehouse'
   | 'garage'
   | 'barn'
-  | 'cabin';
+  | 'cabin'
+  | 'highrise';
 export type ExpansionRoofStyle = 'flat' | 'gable' | 'shed';
 export type LootTier = 'none' | 'low' | 'standard' | 'high';
 
@@ -57,7 +58,8 @@ export interface ExpansionBuildingPlacement {
   roofColor: number;
   accentColor: number;
   roof: ExpansionRoofStyle;
-  floors: 1 | 2;
+  /** Occupied levels, including the ground floor. High-rises use 4–6. */
+  floors: number;
   lootTier: LootTier;
   rearDoor: boolean;
 }
@@ -149,6 +151,25 @@ export function getLegendaryTowerFloorHeight(baseY: number, level: number): numb
   return baseY + LEGENDARY_TOWER.baseFloorOffset + level * LEGENDARY_TOWER.floorHeight;
 }
 
+export const HIGHRISE_FLOOR_TOP = 0.36;
+export const HIGHRISE_FLOOR_HEIGHT = 5;
+
+export function getHighRiseFloorTop(level: number): number {
+  return HIGHRISE_FLOOR_TOP + level * HIGHRISE_FLOOR_HEIGHT;
+}
+
+export function getHighRiseRoofTop(placement: ExpansionBuildingPlacement): number {
+  return HIGHRISE_FLOOR_TOP + placement.floors * HIGHRISE_FLOOR_HEIGHT;
+}
+
+export const AURORA_HEIGHTS_SKYBRIDGE = {
+  id: 'aurora_heights_skybridge',
+  fromBuildingId: 'aurora_northwest_tower',
+  toBuildingId: 'aurora_northeast_tower',
+  localZ: 0,
+  width: 3.2,
+} as const;
+
 export function getLegendaryTowerAscentSide(fromLevel: number): LegendaryTowerSide {
   return LEGENDARY_TOWER_ASCENT_SIDES[
     ((fromLevel % LEGENDARY_TOWER_ASCENT_SIDES.length) +
@@ -220,6 +241,7 @@ export const ISLAND_SETTLEMENTS: SettlementDefinition[] = [
   { id: 'southeast_coast', name: 'Southeast Coast', x: 155, z: 95, radius: 23, baseHeight: 3.8, ground: 'sand', color: '#22d3ee', streetAxis: 'z' },
   { id: 'northeast_coast', name: 'Northeast Coast', x: 155, z: -105, radius: 23, baseHeight: 7.0, ground: 'paved', color: '#f87171', streetAxis: 'z' },
   { id: 'inner_east_suburb', name: 'Inner East Suburb', x: 55, z: 35, radius: 21, baseHeight: 7.0, ground: 'paved', color: '#a78bfa', streetAxis: 'x' },
+  { id: 'aurora_heights', name: 'Aurora Heights', x: 97, z: 2, radius: 30, baseHeight: 6.6, ground: 'paved', color: '#22d3ee', streetAxis: 'x' },
 ];
 
 /**
@@ -254,6 +276,10 @@ export const ISLAND_ROAD_SEGMENTS: RoadSegmentDefinition[] = [
   { id: 'east_crag_to_harbor', fromX: 145, fromZ: -55, toX: 145, toZ: 35, kind: 'secondary' },
   { id: 'harbor_to_silos', fromX: 145, fromZ: 35, toX: 95, toZ: 90, kind: 'secondary' },
   { id: 'centre_to_inner_east', fromX: 0, fromZ: 0, toX: 55, toZ: 35, kind: 'secondary' },
+  { id: 'centre_to_aurora_west', fromX: 0, fromZ: 0, toX: 45, toZ: -17, kind: 'secondary' },
+  { id: 'aurora_west_link', fromX: 45, fromZ: -17, toX: 68, toZ: 2, kind: 'secondary' },
+  { id: 'aurora_annex_avenue', fromX: 97, fromZ: 3.5, toX: 97, toZ: -64, kind: 'secondary' },
+  { id: 'aurora_east_link', fromX: 68, fromZ: 2, toX: 97, toZ: 3.5, kind: 'secondary' },
   { id: 'inner_east_to_silos', fromX: 55, fromZ: 35, toX: 95, toZ: 90, kind: 'secondary' },
   { id: 'silos_to_southeast', fromX: 95, fromZ: 90, toX: 155, toZ: 95, kind: 'secondary' },
   { id: 'southeast_to_ruins', fromX: 155, fromZ: 95, toX: 32, toZ: 122, kind: 'secondary' },
@@ -264,7 +290,7 @@ export const ISLAND_ROAD_SEGMENTS: RoadSegmentDefinition[] = [
 interface BuildingOptions {
   accentColor?: number;
   roof?: ExpansionRoofStyle;
-  floors?: 1 | 2;
+  floors?: number;
   lootTier?: LootTier;
   rearDoor?: boolean;
 }
@@ -303,7 +329,7 @@ function building(
   };
 }
 
-/** 46 handcrafted, cardinal-facing modular buildings: 18 in/around the original POIs and 28 in secondary settlements. */
+/** 50 handcrafted, cardinal-facing modular buildings: 18 in/around the original POIs and 32 in secondary settlements. */
 export const EXPANSION_BUILDINGS: ExpansionBuildingPlacement[] = [
   // Pipeline Plaza — denser civic/commercial centre around the original four houses.
   building('plaza_apartments', 'pipeline_plaza', 'apartment', -34, -1, 12, 10, 7.2, 'east', 0xe0f2fe, 0x0369a1, { accentColor: 0x38bdf8, lootTier: 'high', rearDoor: true }),
@@ -379,6 +405,16 @@ export const EXPANSION_BUILDINGS: ExpansionBuildingPlacement[] = [
 
   building('inner_east_house', 'inner_east_suburb', 'house', 52, 20, 10, 9, 4.8, 'south', 0xede9fe, 0x6d28d9, { roof: 'gable' }),
   building('inner_east_shop', 'inner_east_suburb', 'shop', 72, 35, 11, 8, 4.8, 'west', 0xfef3c7, 0x7c3aed),
+
+  // Aurora Heights — four enterable towers with switchback floors, front
+  // balconies, rooftop cover and a same-height northern skybridge.
+  // Northern annex: unequal crowns and two street-level entrances each.
+  building('aurora_exchange', 'aurora_heights', 'highrise', 110, -64, 18, 16, 25, 'south', 0xfef3c7, 0xb45309, { accentColor: 0xfbbf24, floors: 5, lootTier: 'high', rearDoor: true }),
+  building('aurora_observatory', 'aurora_heights', 'highrise', 110, -43, 18, 16, 35, 'south', 0xe0e7ff, 0x3730a3, { accentColor: 0x818cf8, floors: 7, lootTier: 'high', rearDoor: true }),
+  building('aurora_northwest_tower', 'aurora_heights', 'highrise', 84, -13, 18, 16, 30, 'south', 0xdbeafe, 0x0369a1, { accentColor: 0x22d3ee, floors: 6, lootTier: 'high', rearDoor: true }),
+  building('aurora_northeast_tower', 'aurora_heights', 'highrise', 110, -13, 18, 16, 30, 'south', 0xfee2e2, 0x9a3412, { accentColor: 0xfb923c, floors: 6, lootTier: 'high', rearDoor: true }),
+  building('aurora_southwest_tower', 'aurora_heights', 'highrise', 84, 18, 16, 15, 20, 'north', 0xccfbf1, 0x0f766e, { accentColor: 0x2dd4bf, floors: 4, lootTier: 'high', rearDoor: true }),
+  building('aurora_southeast_tower', 'aurora_heights', 'highrise', 110, 18, 17, 15, 25, 'north', 0xede9fe, 0x6d28d9, { accentColor: 0xa78bfa, floors: 5, lootTier: 'high', rearDoor: true }),
 ];
 
 export const EXPANSION_LANDMARKS: LandmarkPlacement[] = [
@@ -511,7 +547,8 @@ export function hasExteriorRoofAccess(placement: ExpansionBuildingPlacement): bo
     placement.roof !== 'gable' &&
     placement.kind !== 'apartment' &&
     placement.kind !== 'barn' &&
-    placement.kind !== 'cabin'
+    placement.kind !== 'cabin' &&
+    placement.kind !== 'highrise'
   );
 }
 
@@ -552,6 +589,17 @@ export function getBuildingBodyFootprint(
 export function getBuildingFootprint(
   placement: ExpansionBuildingPlacement
 ): AxisAlignedFootprint {
+  if (placement.kind === 'highrise') {
+    // Front balconies project 2.15 m; side skybridge decks are elevated and
+    // do not reserve ground space beyond the tower body.
+    return footprintFromLocalRect(
+      placement,
+      -placement.width / 2 - 0.35,
+      placement.width / 2 + 0.35,
+      -placement.depth / 2 - 0.35,
+      placement.depth / 2 + 2.55
+    );
+  }
   const maxLocalX = placement.width / 2 + (hasExteriorRoofAccess(placement) ? 3.1 : 0.35);
   return footprintFromLocalRect(
     placement,

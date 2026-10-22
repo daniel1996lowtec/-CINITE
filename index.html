@@ -94,9 +94,8 @@
         </div>
         <h1 class="game-title">CI <span>CRAFT</span></h1>
         <p class="game-subtitle">
-          Drop onto the CI Pipeline Island across 8 Named POIs, scavenge 5 rarity tiers of
-          weapons &amp; chests, build tactical fortifications (Wall, Ramp, Floor, Roof), and
-          outlast the shrinking storm!
+          Drop onto the CI Pipeline Island across 8 Named POIs and Aurora Heights, scavenge
+          nine weapon archetypes in 5 rarity tiers, build fortifications, and outlast the storm!
         </p>
 
         <!-- Quick Mode & Menu Navigation Tabs -->
@@ -208,9 +207,9 @@
               <label for="lobby-starter-loadout">Starter Loadout</label>
               <select id="lobby-starter-loadout">
                 <option value="balanced" selected>Balanced (Pulse Rifle + Cyber Pistol)</option>
-                <option value="close_quarters">Breacher (Scatter Pump + Hyper SMG)</option>
-                <option value="sharpshooter">Recon (Rail Sniper + Cyber Pistol)</option>
-                <option value="demolition">Architect (Hyper SMG + 450 Build Mats)</option>
+                <option value="close_quarters">Breacher (Tactical Shotgun + Hyper SMG)</option>
+                <option value="sharpshooter">Recon (Longbow DMR + Hand Cannon)</option>
+                <option value="demolition">Architect (Burst Rifle + Tactical Shotgun + Mats)</option>
               </select>
             </div>
           </div>
@@ -569,10 +568,21 @@
                 <div class="my-lobby-header">
                   <span>MY CURRENT LOBBY</span>
                   <h3 id="my-lobby-title">CI Island Lobby</h3>
+                  <p id="my-lobby-event" role="status" aria-live="polite"></p>
                   <p id="my-lobby-status" class="my-lobby-status">Waiting for players…</p>
                 </div>
 
                 <div id="my-lobby-stats" class="my-lobby-stats"></div>
+
+                <div class="my-lobby-ready-progress" aria-label="Squad readiness">
+                  <div class="my-lobby-ready-progress-head">
+                    <span>SQUAD READINESS</span>
+                    <strong id="my-lobby-ready-label">0/0 READY</strong>
+                  </div>
+                  <div class="my-lobby-ready-track">
+                    <span id="my-lobby-ready-fill" class="my-lobby-ready-fill"></span>
+                  </div>
+                </div>
 
                 <div class="my-lobby-invite-grid">
                   <div class="form-group">
@@ -677,7 +687,32 @@
         <div class="preview-dock-header">
           <span class="preview-tag">LIVE 3D OPERATOR PREVIEW</span>
           <strong id="preview-outfit-name">CI Vanguard</strong>
+          <small id="preview-outfit-detail">Satin cobalt alloy</small>
+          <small id="preview-asset-status" role="status">Preparing operator preview…</small>
         </div>
+        <section id="preview-showcase" class="preview-showcase" aria-label="Operator weapon showcase">
+          <div class="preview-showcase-head">
+            <span id="preview-weapon-icon" class="preview-weapon-icon" aria-hidden="true">▰</span>
+            <div class="preview-showcase-copy">
+              <span>WEAPON SHOWCASE</span>
+              <strong id="preview-weapon-name">Uncommon Pulse Rifle</strong>
+              <small id="preview-weapon-role">Versatile automatic rifle</small>
+            </div>
+            <span id="preview-outfit-finish" class="preview-finish-chip">SATIN</span>
+          </div>
+          <div class="preview-stat-grid" aria-label="Showcase weapon statistics">
+            <span>DMG <b id="preview-weapon-damage">26</b></span>
+            <span>RATE <b id="preview-weapon-rate">5.8/s</b></span>
+            <span>RANGE <b id="preview-weapon-range">190m</b></span>
+            <span>MAG <b id="preview-weapon-mag">30</b></span>
+          </div>
+          <p id="preview-secondary-weapon" class="preview-secondary-weapon">
+            Sidearm · Common Cyber Pistol
+          </p>
+          <p id="preview-squad-status" class="preview-squad-status">
+            SQUAD · Create or join a lobby
+          </p>
+        </section>
         <div class="preview-dock-controls">
           <button id="btn-rot-left" class="preview-ctrl-btn" type="button" title="Rotate Left">
             ⟲ Rotate
@@ -693,8 +728,25 @@
     </div>
 
     <!-- In-Match HUD Overlay -->
+    <!-- Text-only lobby chat. Independent of match HUD so it also works pre-match. -->
+    <section id="text-chat" hidden aria-label="Lobby text chat" data-allow-game-keyboard="true">
+      <button id="chat-toggle" type="button" aria-expanded="false" aria-controls="chat-panel" title="Lobby text chat (T during a match)">
+        CHAT <span id="chat-unread" hidden aria-live="polite">0</span>
+      </button>
+      <div id="chat-panel" hidden>
+        <ol id="chat-log" role="log" aria-label="Lobby messages" aria-live="polite" aria-relevant="additions" tabindex="0"></ol>
+        <form id="chat-form" autocomplete="off">
+          <input id="chat-input" type="text" maxlength="240" aria-label="Message to this lobby" placeholder="Message…" enterkeyhint="send" autocomplete="off" />
+          <button id="chat-send" type="button">Send</button>
+        </form>
+        <p id="chat-status" role="status"></p>
+      </div>
+    </section>
+
     <div id="hud-overlay" class="hidden">
-      <div id="storm-vignette"></div>
+      <div id="hud-threat-direction" class="hidden" aria-hidden="true"></div>
+      <div id="hud-combat-cue" class="hidden" role="status" aria-live="polite"></div>
+    <div id="storm-vignette"></div>
       <div id="damage-numbers-layer"></div>
 
       <!-- FPS Counter -->
@@ -724,8 +776,8 @@
           <canvas id="minimap-canvas" width="176" height="176"></canvas>
         </div>
         <div class="storm-banner">
-          <span id="hud-storm-phase">STORM PHASE 1</span>
-          <span id="hud-storm-timer">0:40</span>
+          <span id="hud-storm-phase" aria-live="polite" aria-atomic="true">PHASE 1 · SHRINKS IN</span>
+          <span id="hud-storm-timer">1:30</span>
         </div>
       </div>
 
@@ -896,13 +948,18 @@
           <div id="touch-joystick-knob" class="joystick-knob"></div>
         </div>
 
+        <button id="touch-build-toggle-btn" class="touch-btn touch-build-toggle" type="button"
+          aria-controls="touch-build-panel" aria-expanded="false">BUILD ▸</button>
         <div class="touch-action-buttons" aria-label="Touch action controls">
+          <div class="touch-primary-actions">
           <button id="touch-fire-btn" class="touch-btn fire" type="button" aria-label="Fire or place selected build piece">
             🔥 FIRE
           </button>
           <button id="touch-aim-btn" class="touch-btn" type="button" aria-label="Toggle aim down sights">
             🎯 ADS
           </button>
+          </div>
+          <div id="touch-secondary-actions" class="touch-secondary-actions">
           <button id="touch-jump-btn" class="touch-btn" type="button" aria-label="Jump or glide">
             ⤴️ JUMP
           </button>
@@ -915,6 +972,8 @@
           <button id="touch-weapon-btn" class="touch-btn" type="button" aria-label="Switch weapon">
             🔫 SWAP
           </button>
+          </div>
+          <div id="touch-build-panel" class="touch-build-panel" role="group" aria-label="Build pieces and material" hidden>
           <button id="touch-material-btn" class="touch-btn" type="button" aria-label="Cycle building material">
             🧱 MAT
           </button>
@@ -930,6 +989,8 @@
           <button id="touch-roof-btn" class="touch-btn build" type="button" aria-label="Select roof build preview">
             ROOF
           </button>
+          <button id="touch-build-close-btn" class="touch-btn" type="button">BACK</button>
+          </div>
         </div>
       </div>
     </div>
@@ -1132,6 +1193,19 @@
             />
           </div>
 
+          <fieldset class="mobile-hud-settings">
+            <legend>Mobile HUD</legend>
+            <label for="setting-mobile-button-size">Button size <output id="val-mobile-button-size">100%</output></label>
+            <input id="setting-mobile-button-size" type="range" min="0.85" max="1.15" step="0.05" value="1">
+            <label for="setting-mobile-hud-scale">Information scale <output id="val-mobile-hud-scale">100%</output></label>
+            <input id="setting-mobile-hud-scale" type="range" min="0.9" max="1.1" step="0.05" value="1">
+            <label><input id="setting-reduced-motion" type="checkbox"> Reduced motion (all devices)</label>
+            <small>Reduces camera FOV pulses, shake and animated feedback; aiming recoil is unchanged. Defaults to your device preference.</small>
+            <label><input id="setting-mobile-advanced-build" type="checkbox"> Open advanced build controls by default</label>
+            <small>BUILD opens all four pieces and materials. FIRE places the selected piece. Tap the selected piece again to place it and exit build mode. BACK returns to combat buttons.</small>
+            <button id="btn-reset-mobile-hud" class="secondary-action-btn" type="button">Reset mobile HUD &amp; camera</button>
+          </fieldset>
+
           <div class="form-row">
             <div class="form-group">
               <label for="setting-volume">
@@ -1166,9 +1240,10 @@
             <div class="form-group">
               <label for="setting-graphics">Graphics Quality</label>
               <select id="setting-graphics">
+                <option value="auto" selected>Auto (Recommended)</option>
                 <option value="low">Low (Fastest)</option>
                 <option value="medium">Medium (Balanced)</option>
-                <option value="high" selected>High (Shadows + Foliage)</option>
+                <option value="high">High (Shadows + Foliage)</option>
               </select>
             </div>
 
@@ -1223,6 +1298,8 @@
       <div id="victory-confetti-layer" class="victory-confetti-layer"></div>
       <div class="end-card victory-end-card">
         <div id="end-crown-badge" class="end-crown-badge">🏆 #1 ISLAND CHAMPION</div>
+        <p id="end-winner" class="end-winner"></p>
+        <div id="end-standings" aria-label="Server-confirmed standings"></div>
         <h1 id="end-banner-title" class="end-title victory">👑 VICTORY ROYALE!</h1>
         <p id="end-banner-subtitle" class="end-subtitle">
           You conquered the CI Craft Island!

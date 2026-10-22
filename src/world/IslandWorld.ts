@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { TerrainGenerator, ISLAND_POIS } from './TerrainGenerator';
 import { MapExpansionBuilder } from './MapExpansionBuilder';
+import { WorldBranding } from './WorldBranding';
+import { applyFoliageWind, setFoliageWindTime } from './VisualAtmosphere';
 import {
   ISLAND_SETTLEMENTS,
   LEGENDARY_TOWER,
@@ -60,8 +62,12 @@ export interface DestructibleProp {
 }
 
 export class IslandWorld {
+  private landmarkDetail = true;
+  private vaultLight: THREE.PointLight | null = null;
+  public setLandmarkDetail(enabled: boolean): void { this.landmarkDetail = enabled; }
   public scene: THREE.Scene;
   public terrain: TerrainGenerator;
+  public branding: WorldBranding | null = null;
   public boxColliders: BoxCollider[] = [];
   public cylinderColliders: CylinderCollider[] = [];
   public walkableSurfaces: WalkableSurface[] = [];
@@ -180,6 +186,7 @@ export class IslandWorld {
     tex.wrapS = THREE.RepeatWrapping;
     tex.wrapT = THREE.RepeatWrapping;
     tex.repeat.set(2, 2);
+    tex.colorSpace = THREE.SRGBColorSpace;
     this.patternTextures.set(kind, tex);
     return tex;
   }
@@ -307,6 +314,9 @@ export class IslandWorld {
     this.buildInstancedFoliage();
     this.mapExpansion.buildDetailFoliage();
     this.mapExpansion.finalizeArchitecture();
+    this.branding?.dispose();
+    this.branding = new WorldBranding(this.scene, this.terrain.terrainMesh.geometry,
+      (x, z) => this.terrain.getTerrainHeight(x, z));
   }
 
   private disposeObject3D(obj: THREE.Object3D): void {
@@ -487,6 +497,7 @@ export class IslandWorld {
     for (const [radius, y, tilt] of [
       [4.6, 5.9, 0.18],
       [3.1, 8.2, -0.24],
+      [6.2, 14.0, 0.1],
     ] as const) {
       const ring = new THREE.Mesh(new THREE.TorusGeometry(radius, 0.055, 6, 40), ringMat);
       ring.name = 'LegendaryTowerBeaconRing';
@@ -546,6 +557,7 @@ export class IslandWorld {
 
     const vaultLight = new THREE.PointLight(0xfacc15, 85, 34, 2);
     vaultLight.name = 'LegendaryTowerVaultLight';
+    this.vaultLight = vaultLight;
     vaultLight.position.y = 4.2;
     group.add(vaultLight);
 
@@ -1741,11 +1753,14 @@ export class IslandWorld {
 
     const grassGeo = new THREE.ConeGeometry(0.22, 0.68, 4);
     grassGeo.translate(0, 0.34, 0);
-    const grassMat = new THREE.MeshStandardMaterial({
-      color: 0x16a34a,
-      flatShading: true,
-      roughness: 0.85,
-    });
+    const grassMat = applyFoliageWind(
+      new THREE.MeshStandardMaterial({
+        color: 0x16a34a,
+        flatShading: true,
+        roughness: 0.85,
+      }),
+      { strength: 0.06, baseY: 0, height: 0.68 }
+    );
     const grassCount = 520;
     const grassInst = new THREE.InstancedMesh(grassGeo, grassMat, grassCount);
     const dummy = new THREE.Object3D();
@@ -1771,12 +1786,15 @@ export class IslandWorld {
 
     const flowerGeo = new THREE.DodecahedronGeometry(0.2, 0);
     flowerGeo.translate(0, 0.25, 0);
-    const flowerMat = new THREE.MeshStandardMaterial({
-      color: 0xf472b6,
-      emissive: 0xdb2777,
-      emissiveIntensity: 0.15,
-      flatShading: true,
-    });
+    const flowerMat = applyFoliageWind(
+      new THREE.MeshStandardMaterial({
+        color: 0xf472b6,
+        emissive: 0xdb2777,
+        emissiveIntensity: 0.15,
+        flatShading: true,
+      }),
+      { strength: 0.032, baseY: 0.05, height: 0.4 }
+    );
     const flowerCount = 180;
     const flowerInst = new THREE.InstancedMesh(flowerGeo, flowerMat, flowerCount);
     let placedF = 0;
@@ -1829,11 +1847,14 @@ export class IslandWorld {
     const bushGeo = new THREE.DodecahedronGeometry(0.62, 1);
     bushGeo.scale(1.15, 0.78, 1.15);
     bushGeo.translate(0, 0.42, 0);
-    const bushMat = new THREE.MeshStandardMaterial({
-      color: 0x15803d,
-      flatShading: true,
-      roughness: 0.82,
-    });
+    const bushMat = applyFoliageWind(
+      new THREE.MeshStandardMaterial({
+        color: 0x15803d,
+        flatShading: true,
+        roughness: 0.82,
+      }),
+      { strength: 0.026, baseY: -0.06, height: 0.96 }
+    );
     const bushCount = 160;
     const bushInst = new THREE.InstancedMesh(bushGeo, bushMat, bushCount);
     let placedB = 0;
@@ -1857,12 +1878,15 @@ export class IslandWorld {
     this.foliageGroup.add(bushInst);
 
     // Instanced Golden Wildflowers (140 instances in 1 draw call)
-    const goldFlowerMat = new THREE.MeshStandardMaterial({
-      color: 0xfacc15,
-      emissive: 0xeab308,
-      emissiveIntensity: 0.18,
-      flatShading: true,
-    });
+    const goldFlowerMat = applyFoliageWind(
+      new THREE.MeshStandardMaterial({
+        color: 0xfacc15,
+        emissive: 0xeab308,
+        emissiveIntensity: 0.18,
+        flatShading: true,
+      }),
+      { strength: 0.032, baseY: 0.05, height: 0.4 }
+    );
     const goldFlowerCount = 140;
     const goldFlowerInst = new THREE.InstancedMesh(
       flowerGeo,
@@ -1889,11 +1913,14 @@ export class IslandWorld {
     // Instanced Shoreline & Riverbank Reeds / Cattails (120 instances in 1 draw call)
     const reedGeo = new THREE.CylinderGeometry(0.05, 0.08, 1.15, 5);
     reedGeo.translate(0, 0.55, 0);
-    const reedMat = new THREE.MeshStandardMaterial({
-      color: 0x65a30d,
-      flatShading: true,
-      roughness: 0.85,
-    });
+    const reedMat = applyFoliageWind(
+      new THREE.MeshStandardMaterial({
+        color: 0x65a30d,
+        flatShading: true,
+        roughness: 0.85,
+      }),
+      { strength: 0.072, baseY: 0, height: 1.15 }
+    );
     const reedCount = 120;
     const reedInst = new THREE.InstancedMesh(reedGeo, reedMat, reedCount);
     let placedR = 0;
@@ -2164,11 +2191,14 @@ export class IslandWorld {
     trunkInst.receiveShadow = true;
 
     const coneGeo = new THREE.ConeGeometry(1.0, 1.0, 6);
-    const leafMat = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      flatShading: true,
-      roughness: 0.75,
-    });
+    const leafMat = applyFoliageWind(
+      new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        flatShading: true,
+        roughness: 0.75,
+      }),
+      { strength: 0.032, baseY: -1, height: 2 }
+    );
     const pineConeInst = new THREE.InstancedMesh(
       coneGeo,
       leafMat,
@@ -2826,6 +2856,21 @@ export class IslandWorld {
     };
   }
 
+  /** Sample only on a footstep event, not every frame; reuse existing surfaces. */
+  public getFootstepSurface(x: number, y: number, z: number): 'ground' | 'hard' | 'wood' | 'metal' {
+    let highest = -Infinity;
+    let material: 'ground' | 'hard' | 'wood' | 'metal' = 'ground';
+    for (const surface of this.walkableSurfaces) {
+      if (x < surface.minX || x > surface.maxX || z < surface.minZ || z > surface.maxZ) continue;
+      const height = surface.getHeight(x,z);
+      if (Math.abs(height-y) > .45 || height <= highest) continue;
+      highest = height;
+      const propMaterial = surface.id ? this.destructibles.get(surface.id)?.materialType : undefined;
+      material = propMaterial === 'wood' || propMaterial === 'metal' ? propMaterial : 'hard';
+    }
+    return material;
+  }
+
   public getGroundHeightAt(x: number, currentY: number, z: number): number {
     let highest = Math.max(-0.85, this.terrain.getTerrainHeight(x, z));
 
@@ -3176,9 +3221,10 @@ export class IslandWorld {
     };
   }
 
-  public update(dt: number, _cameraPos?: THREE.Vector3): void {
+  public update(dt: number, cameraPos?: THREE.Vector3): void {
     this.animTime += dt;
-    this.terrain.update(dt);
+    setFoliageWindTime(this.animTime);
+    this.terrain.update(dt, cameraPos);
 
     if (this.monumentCrystal) {
       this.monumentCrystal.rotation.y += dt * 1.1;
@@ -3190,7 +3236,14 @@ export class IslandWorld {
       const pulse = 1 + Math.sin(this.animTime * 2.6) * 0.035;
       this.legendaryTowerBeaconGroup.scale.set(pulse, 1, pulse);
     }
+    const towerDistanceSq = cameraPos
+      ? (cameraPos.x-LEGENDARY_TOWER.x)**2+(cameraPos.y-this.legendaryTowerRoofY)**2+(cameraPos.z-LEGENDARY_TOWER.z)**2 : 0;
+    if (this.vaultLight) {
+      this.vaultLight.visible = this.landmarkDetail && towerDistanceSq < 10000;
+      this.vaultLight.intensity = 78 + Math.sin(this.animTime * .9) * 7;
+    }
     if (this.legendaryTowerParticles) {
+      this.legendaryTowerParticles.visible = this.landmarkDetail && towerDistanceSq < 8100;
       this.legendaryTowerParticles.rotation.y -= dt * 0.55;
       this.legendaryTowerParticles.position.y = Math.sin(this.animTime * 1.4) * 0.18;
     }

@@ -10,6 +10,7 @@ export class ThirdPersonCamera {
   public pitch: number = 0.08;
   public sensitivity: number = 1.0;
   public touchSensitivity: number = 1.0;
+  public reducedMotion = false;
 
   private currentPos = new THREE.Vector3(0, 12, 12);
   private currentLookAt = new THREE.Vector3(0, 2, 0);
@@ -94,10 +95,13 @@ export class ThirdPersonCamera {
     const adsScale = isAiming ? 0.72 : 1.0;
     let patternYaw = (Math.random() - 0.5) * 2 * yawKick;
 
-    if (category === 'assault_rifle') {
+    if (category === 'assault_rifle' || category === 'burst_rifle') {
       const wave = Math.sin(this.shotStreak * 0.85) * yawKick * 0.9;
       patternYaw = wave + (Math.random() - 0.5) * yawKick * 0.45;
-      this.recoilFovOffset = Math.min(2.2, this.recoilFovOffset + 0.45);
+      this.recoilFovOffset = Math.min(
+        2.2,
+        this.recoilFovOffset + (category === 'burst_rifle' ? 0.32 : 0.45)
+      );
     } else if (category === 'smg') {
       const jitter = (this.shotStreak % 2 === 0 ? 1 : -1) * yawKick * 0.65;
       patternYaw = jitter + (Math.random() - 0.5) * yawKick * 0.85;
@@ -105,9 +109,18 @@ export class ThirdPersonCamera {
     } else if (category === 'shotgun') {
       this.recoilFovOffset = Math.min(4.5, this.recoilFovOffset + 2.4);
       this.addScreenShake(0.14);
+    } else if (category === 'tactical_shotgun') {
+      this.recoilFovOffset = Math.min(3.8, this.recoilFovOffset + 1.7);
+      this.addScreenShake(0.1);
     } else if (category === 'sniper') {
       this.recoilFovOffset = Math.min(5.0, this.recoilFovOffset + 3.0);
       this.addScreenShake(0.16);
+    } else if (category === 'dmr') {
+      this.recoilFovOffset = Math.min(3.6, this.recoilFovOffset + 1.8);
+      this.addScreenShake(0.09);
+    } else if (category === 'heavy_pistol') {
+      this.recoilFovOffset = Math.min(2.8, this.recoilFovOffset + 1.25);
+      this.addScreenShake(0.07);
     } else if (category === 'pistol') {
       this.recoilFovOffset = Math.min(1.5, this.recoilFovOffset + 0.5);
     }
@@ -142,6 +155,7 @@ export class ThirdPersonCamera {
     isHeadshot: boolean = false,
     isElimination: boolean = false
   ): void {
+    if (this.reducedMotion) return;
     const pulse = isElimination ? -1.15 : isHeadshot ? -0.75 : -0.42;
     this.hitConfirmFovPulse = Math.max(-1.4, Math.min(this.hitConfirmFovPulse, pulse));
   }
@@ -210,7 +224,7 @@ export class ThirdPersonCamera {
       : isSprinting
       ? 74
       : 68;
-    const targetFov = baseTargetFov + this.recoilFovOffset + this.hitConfirmFovPulse;
+    const targetFov = baseTargetFov + (this.reducedMotion ? 0 : this.recoilFovOffset + this.hitConfirmFovPulse);
     if (Math.abs(this.camera.fov - targetFov) > 0.04) {
       this.camera.fov = THREE.MathUtils.lerp(
         this.camera.fov,
@@ -221,9 +235,9 @@ export class ThirdPersonCamera {
     }
 
     const subtleBreathPitch =
-      Math.sin(this.swayPhase) * 0.0011 * (1 - this.aimBlend * 0.68);
+      (this.reducedMotion ? 0 : Math.sin(this.swayPhase)) * 0.0011 * (1 - this.aimBlend * 0.68);
     const subtleBreathYaw =
-      Math.cos(this.swayPhase * 0.5) * 0.0008 * (1 - this.aimBlend * 0.68);
+      (this.reducedMotion ? 0 : Math.cos(this.swayPhase * 0.5)) * 0.0008 * (1 - this.aimBlend * 0.68);
 
     const effectiveYaw = this.yaw + this.recoilYawOffset + subtleBreathYaw;
     const effectivePitch = THREE.MathUtils.clamp(
@@ -299,7 +313,7 @@ export class ThirdPersonCamera {
       }
     }
 
-    if (this.screenShakeIntensity > 0.005) {
+    if (!this.reducedMotion && this.screenShakeIntensity > 0.005) {
       desiredPos.x += (Math.random() - 0.5) * this.screenShakeIntensity;
       desiredPos.y += (Math.random() - 0.5) * this.screenShakeIntensity;
     }

@@ -116,6 +116,8 @@ test('legendary tower client loot: pickup waits for server confirmation and swap
   assert.ok(state.lootItems.has(sniper.id), 'vault item should remain until confirmation');
   assert.equal(localCollections, 0);
 
+  // Emulate the private owner snapshot that precedes the public receipt.
+  player.inventory[1] = inventorySlot('sniper','legendary'); player.activeSlot = 1;
   loot.applyAuthoritativeLootCollected(state, player, sniper, particles, sound);
   assert.equal(player.inventory[1].category, 'sniper');
   assert.equal(player.inventory[1].rarity, 'legendary');
@@ -144,7 +146,11 @@ test('legendary tower client loot: pickup waits for server confirmation and swap
   assert.equal(player.inventory[1].category, 'pistol');
   assert.ok(!state.lootItems.has(predictedSwap.id));
 
+  const untouchedSlot = player.inventory[2];
+  player.activeSlot = 2;
+  player.inventory[1] = inventorySlot('shotgun','legendary');
   loot.applyAuthoritativeLootCollected(state, player, shotgun, particles, sound, predictedSwap);
+  assert.equal(player.inventory[2], untouchedSlot, 'ACK must use reserved swap slot');
   assert.equal(player.inventory[1].category, 'shotgun');
   assert.equal(player.inventory[1].rarity, 'legendary');
   assert.equal(state.lootItems.get(predictedSwap.id).weaponCategory, 'pistol');
@@ -161,6 +167,7 @@ test('legendary tower client loot: pickup waits for server confirmation and swap
   });
   loot.spawnFromItemState(state, assaultRifle, false);
   assert.equal(state.lootItems.size, 2);
+  player.inventory[1] = inventorySlot('assault_rifle','legendary');
   loot.applyAuthoritativeLootCollected(state, player, assaultRifle, particles, sound);
   assert.equal(player.inventory[1].category, 'assault_rifle');
   assert.equal(state.lootItems.size, 1, 'server-omitted swap must not spawn locally');
@@ -204,8 +211,11 @@ test('legendary tower client loot: authoritative ammo auto-pickup, pending timeo
   assert.deepEqual(requests, ['legendary_tower_medium_ammo']);
   assert.equal(player.ammo.medium, 0, 'authoritative ammo must wait for server confirmation');
 
+  player.ammo.medium = 120; // private owner snapshot
   loot.applyAuthoritativeLootCollected(state, player, ammo, particles, sound);
   assert.equal(player.ammo.medium, 120);
+  loot.applyAuthoritativeLootCollected(state, player, ammo, particles, sound);
+  assert.equal(player.ammo.medium, 120, "receipt replay never adds ammo");
   assert.ok(!state.lootItems.has(ammo.id));
 
   // If a response is lost, the pending marker expires so the player can
@@ -238,4 +248,22 @@ test('legendary tower client loot: authoritative ammo auto-pickup, pending timeo
   assert.equal(requests.length, requestCountBeforeBot);
   assert.equal(bot.materials.metal, 0);
   assert.ok(state.lootItems.has(metal.id));
+});
+
+test('3.2 ordinary chests wait for server rewards; duplicate ACKs never mint local rolls', async()=>{
+  const {THREE,LootSystem}=await loadLootModules();const loot=new LootSystem(new THREE.Scene());
+  const state={lootItems:new Map()};const player=makePlayer('human');let requests=0;
+  loot.onServerAuthoritativeLootRequested=()=>{requests++;return true;};
+  const chest={id:'chest_0',itemType:'chest',name:'Supply Chest',rarity:'legendary',amount:1,
+    position:{x:0,y:0,z:0},opened:false,serverAuthoritative:true};
+  const fx={...particles,spawnChestOpenCelebration(){}};const audio={...sound,playChestOpen(){}};
+  loot.spawnFromItemState(state,chest,false);
+  loot.interactWithLoot(state,player,chest,fx,audio);
+  assert.equal(requests,1);assert.equal(chest.opened,false);assert.equal(state.lootItems.size,1);
+  const reward={...towerItem(),id:'chest_0_server_w',rarity:'rare',isLegendaryTowerLoot:false};
+  loot.applyAuthoritativeLootCollected(state,player,chest,fx,audio,undefined,[reward]);
+  assert.equal(state.lootItems.size,1);assert.ok(state.lootItems.has(reward.id));
+  assert.equal(chest.opened,true);
+  loot.applyAuthoritativeLootCollected(state,player,chest,fx,audio,undefined,[{...reward,id:'injected_second_roll'}]);
+  assert.equal(state.lootItems.size,1);
 });

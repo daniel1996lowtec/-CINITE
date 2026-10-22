@@ -1,3 +1,4 @@
+import { equipRegistered, delay, send as sendGameplay, action, claim, receive, resumeActions, resumeShots } from './gameplayHelpers.mjs';
 /**
  * CI Craft — Multiplayer Lobby Browser 3.0 integration tests.
  *
@@ -68,7 +69,7 @@ async function connectClient(port) {
 }
 
 function sendJson(ws, payload) {
-  ws.send(JSON.stringify(payload));
+  sendGameplay(ws,payload);
 }
 
 async function postJson(base, route, payload = {}) {
@@ -163,7 +164,7 @@ function joinPayload({ roomCode, roomMode, sessionToken, account, playerName, pa
     sessionToken,
     ...accountFields(account),
     playerName,
-    position: { x: 0, y: 10, z: 0 },
+    position: { x: 0, y: 80, z: 0 },
   };
 }
 
@@ -825,19 +826,36 @@ test('lobby browser: authoritative create/discover/join/start, passwords, host t
     );
     assert.ok(teammate);
     assert.equal(opponents.length, 2);
+    await equipRegistered(wsA,'sniper','legendary');
 
+    sendJson(wsA, {
+      type: 'fire_weapon',
+      category: 'sniper',
+      rarity: 'legendary',
+      muzzlePos: { x: 0, y: 81, z: 0 },
+      hitPoint: { x: 0, y: 81.7, z: 0 },
+    });
     sendJson(wsA, {
       type: 'combat_hit',
       hitId: 'duo-friendly-fire',
       targetId: teammate.id,
       damage: 240,
-      isHeadshot: false,
-      weaponName: 'Test Rifle',
-      hitPoint: { x: 0, y: 10, z: 0 },
+      isHeadshot: true,
+      weaponName: 'Legendary Rail Sniper',
+      weaponCategory: 'sniper',
+      weaponRarity: 'legendary',
+      hitPoint: { x: 0, y: 81.7, z: 0 },
     });
     await expectNoMessage(wsA, (msg) => msg.type === 'server_hit', 300);
 
+    const duoEndedPromise = waitForMessage(
+      wsA,
+      (msg) => msg.type === 'match_ended',
+      7000,
+      'duo team match_ended'
+    );
     for (const [index, opponent] of opponents.entries()) {
+      await delay(1400);
       const hitPromise = waitForMessage(
         wsA,
         (msg) => msg.type === 'server_hit' && msg.victimId === opponent.id && msg.eliminated,
@@ -845,23 +863,27 @@ test('lobby browser: authoritative create/discover/join/start, passwords, host t
         'duo opponent elimination'
       );
       sendJson(wsA, {
+        type: 'fire_weapon',
+        category: 'sniper',
+        rarity: 'legendary',
+        muzzlePos: { x: 0, y: 81, z: 0 },
+        hitPoint: { x: 0, y: 81.7, z: 0 },
+      });
+      sendJson(wsA, {
         type: 'combat_hit',
         hitId: `duo-kill-${index}`,
         targetId: opponent.id,
         damage: 240,
-        isHeadshot: false,
-        weaponName: 'Test Rifle',
-        hitPoint: { x: 0, y: 10, z: 0 },
+        isHeadshot: true,
+        weaponName: 'Legendary Rail Sniper',
+        weaponCategory: 'sniper',
+        weaponRarity: 'legendary',
+        hitPoint: { x: 0, y: 81.7, z: 0 },
       });
       await hitPromise;
     }
 
-    const duoEnded = await waitForMessage(
-      wsA,
-      (msg) => msg.type === 'match_ended',
-      7000,
-      'duo team match_ended'
-    );
+    const duoEnded = await duoEndedPromise;
     assert.equal(duoEnded.winnerTeamId, alphaSummary.teamId);
     assert.ok(duoEnded.winnerIds.includes(alphaSummary.id));
     assert.ok(duoEnded.winnerIds.includes(teammate.id));

@@ -1,3 +1,4 @@
+import { equipRegistered, delay } from './gameplayHelpers.mjs';
 /**
  * CI Craft — Multiplayer server integration tests.
  *
@@ -156,7 +157,7 @@ test('production server: HTTP APIs + authoritative two-client multiplayer over i
         accountId: restored.accountId,
         accountToken: restored.accountToken,
         playerName: 'Alpha_One',
-        position: { x: 0, y: 10, z: 0 },
+        position: { x: 0, y: 80, z: 0 },
       })
     );
     const progA = await progressionA;
@@ -172,34 +173,89 @@ test('production server: HTTP APIs + authoritative two-client multiplayer over i
         roomCode: room.roomCode,
         sessionToken: 'sess_bravo',
         playerName: 'Bravo_Two',
-        position: { x: 5, y: 10, z: 5 },
+        position: { x: 5, y: 80, z: 5 },
+        outfitId: 'crimson_striker',
+        skinColor: 0xbe123c,
+        accentColor: 0xfb7185,
+        backAccessory: 'jump_pack',
       })
     );
     const roomState = await stateWithTwo;
     assert.equal(roomState.roomCode, room.roomCode);
-    // Storm mechanics are part of every authoritative room snapshot.
-    assert.equal(typeof roomState.storm.phase, 'number');
-    assert.equal(typeof roomState.storm.currentRadius, 'number');
-    assert.equal(typeof roomState.storm.damagePerSecond, 'number');
+    // Storm mechanics are part of every authoritative room snapshot. The
+    // strategic schedule starts with a 90-second preparation phase.
+    assert.equal(roomState.storm.phase, 1);
+    assert.equal(roomState.storm.currentRadius, 255);
+    assert.equal(roomState.storm.targetRadius, 150);
+    assert.ok(roomState.storm.phaseTimer > 80 && roomState.storm.phaseTimer <= 90);
+    assert.equal(roomState.storm.isShrinking, false);
+    assert.equal(roomState.storm.damagePerSecond, 1);
     const names = roomState.players.map((p) => p.name).sort();
     assert.deepEqual(names, ['Alpha_One', 'Bravo_Two']);
     const bravoPublicId = roomState.players.find((p) => p.name === 'Bravo_Two')?.id;
+    const bravoSummary = roomState.players.find((p) => p.name === 'Bravo_Two');
+    assert.equal(bravoSummary.outfitId, 'crimson_striker');
+    assert.equal(bravoSummary.skinColor, 0xbe123c);
+    assert.equal(bravoSummary.accentColor, 0xfb7185);
+    assert.equal(bravoSummary.backAccessory, 'jump_pack');
     assert.ok(bravoPublicId, 'Bravo_Two should have an opaque public player id');
     assert.doesNotMatch(bravoPublicId, /sess_bravo/);
 
-    // Authoritative combat: A hits B for 30 -> shield 50 absorbs, health stays 100.
+    const cosmeticSync = waitForMessage(
+      wsA,
+      (m) =>
+        m.type === 'room_state' &&
+        m.players?.some(
+          (player) => player.id === bravoPublicId && player.outfitId === 'arctic_sentinel'
+        )
+    );
+    wsB.send(
+      JSON.stringify({
+        type: 'cosmetics_update',
+        sessionToken: 'sess_bravo',
+        outfitId: 'arctic_sentinel',
+        skinColor: 0xcbd5e1,
+        accentColor: 0x22d3ee,
+        backAccessory: 'tactical_shield',
+      })
+    );
+    const cosmeticState = await cosmeticSync;
+    const updatedBravo = cosmeticState.players.find((p) => p.id === bravoPublicId);
+    assert.equal(updatedBravo.skinColor, 0xcbd5e1);
+    assert.equal(updatedBravo.accentColor, 0x22d3ee);
+    assert.equal(updatedBravo.backAccessory, 'tactical_shield');
+
+    // Authoritative combat: the client claims 999 damage, but an Epic
+    // Triad Burst Rifle is catalogued at 30 body damage. The fire event
+    // creates exactly one server pellet credit for this shot.
+    let shotSeq = 0;
+    await equipRegistered(wsA,'burst_rifle','epic');
     const hitEvent = waitForMessage(wsB, (m) => m.type === 'server_hit');
+    wsA.send(
+      JSON.stringify({
+        type: 'fire_weapon',
+        shotSeq: ++shotSeq,
+        category: 'burst_rifle',
+        rarity: 'epic',
+        muzzlePos: { x: 0, y: 81, z: 0 },
+        hitPoint: { x: 5, y: 81, z: 5 },
+      })
+    );
     wsA.send(
       JSON.stringify({
         type: 'combat_hit',
         hitId: 'hit_test_1',
         targetId: bravoPublicId,
-        damage: 30,
-        weaponName: 'Pulse Rifle',
-        hitPoint: { x: 5, y: 11, z: 5 },
+        damage: 999,
+        weaponName: 'Forged Weapon',
+        weaponCategory: 'burst_rifle',
+        weaponRarity: 'epic',
+        hitPoint: { x: 5, y: 81, z: 5 },
       })
     );
     const hit = await hitEvent;
+    assert.equal(hit.damage, 30);
+    assert.equal(hit.weaponName, 'Epic Triad Burst Rifle');
     assert.equal(hit.victimShield, 20);
     assert.equal(hit.victimHealth, 100);
     assert.equal(hit.eliminated, false);
@@ -217,40 +273,166 @@ test('production server: HTTP APIs + authoritative two-client multiplayer over i
         hitId: 'hit_test_1',
         targetId: bravoPublicId,
         damage: 30,
-        weaponName: 'Pulse Rifle',
-        hitPoint: { x: 5, y: 11, z: 5 },
+        weaponName: 'Epic Triad Burst Rifle',
+        weaponCategory: 'burst_rifle',
+        weaponRarity: 'epic',
+        hitPoint: { x: 5, y: 81, z: 5 },
       })
     );
     await dupWatcher;
     assert.equal(duplicateSeen, false);
 
-    // Loot: first collector wins, second is rejected server-side.
+    // A new hitId is still rejected when no cadence-valid shot supplied a
+    // pellet credit.
+    let forgedSeen = false;
+    const forgedWatcher = waitForMessage(wsB, (m) => m.type === 'server_hit', 400)
+      .then(() => {
+        forgedSeen = true;
+      })
+      .catch(() => {});
+    wsA.send(
+      JSON.stringify({
+        type: 'combat_hit',
+        hitId: 'hit_test_forged_without_fire',
+        targetId: bravoPublicId,
+        damage: 240,
+        weaponName: 'Forged Weapon',
+        weaponCategory: 'sniper',
+        weaponRarity: 'legendary',
+        hitPoint: { x: 5, y: 81, z: 5 },
+      })
+    );
+    await forgedWatcher;
+    assert.equal(forgedSeen, false);
+
+    await equipRegistered(wsA,'tactical_shotgun','epic');
+    // One tactical-shotgun fire event authorizes exactly eight pellet
+    // credits; each Epic pellet is recomputed as 10 damage server-side.
+    wsA.send(
+      JSON.stringify({
+        type: 'fire_weapon',
+        shotSeq: ++shotSeq,
+        category: 'tactical_shotgun',
+        rarity: 'epic',
+        muzzlePos: { x: 0, y: 81, z: 0 },
+        hitPoint: { x: 5, y: 81, z: 5 },
+      })
+    );
+    let lastPelletHit = null;
+    for (let pellet = 0; pellet < 8; pellet++) {
+      const pelletEvent = waitForMessage(
+        wsB,
+        (m) => m.type === 'server_hit' && m.weaponCategory === 'tactical_shotgun'
+      );
+      wsA.send(
+        JSON.stringify({
+          type: 'combat_hit',
+          hitId: `hit_test_tac_pellet_${pellet}`,
+          targetId: bravoPublicId,
+          damage: 240,
+          weaponName: 'Forged Shotgun',
+          weaponCategory: 'tactical_shotgun',
+          weaponRarity: 'epic',
+          hitPoint: { x: 5, y: 81, z: 5 },
+        })
+      );
+      lastPelletHit = await pelletEvent;
+      assert.equal(lastPelletHit.damage, 10);
+    }
+    assert.equal(lastPelletHit.victimShield, 0);
+    assert.equal(lastPelletHit.victimHealth, 40);
+
+    let ninthPelletSeen = false;
+    const ninthPelletWatcher = waitForMessage(wsB, (m) => m.type === 'server_hit', 400)
+      .then(() => {
+        ninthPelletSeen = true;
+      })
+      .catch(() => {});
+    wsA.send(
+      JSON.stringify({
+        type: 'combat_hit',
+        hitId: 'hit_test_tac_pellet_9',
+        targetId: bravoPublicId,
+        damage: 240,
+        weaponName: 'Forged Shotgun',
+        weaponCategory: 'tactical_shotgun',
+        weaponRarity: 'epic',
+        hitPoint: { x: 5, y: 81, z: 5 },
+      })
+    );
+    await ninthPelletWatcher;
+    assert.equal(ninthPelletSeen, false);
+
+    // Burst cadence is server-gated as three shots at burst spacing,
+    // followed by a post-burst delay.
+    await equipRegistered(wsA,'burst_rifle','common');
+    const sendBurstFire = () =>
+      wsA.send(
+        JSON.stringify({
+          type: 'fire_weapon',
+        shotSeq: ++shotSeq,
+          category: 'burst_rifle',
+          rarity: 'common',
+          muzzlePos: { x: 0, y: 81, z: 0 },
+          hitPoint: { x: 5, y: 81, z: 5 },
+        })
+      );
+    for (let shot = 0; shot < 3; shot++) {
+      const burstEvent = waitForMessage(
+        wsB,
+        (m) => m.type === 'remote_weapon_fired' && m.category === 'burst_rifle'
+      );
+      sendBurstFire();
+      await burstEvent;
+      if (shot < 2) await new Promise((resolve) => setTimeout(resolve, 85));
+    }
+    let fourthBurstSeen = false;
+    const fourthBurstWatcher = waitForMessage(
+      wsB,
+      (m) => m.type === 'remote_weapon_fired' && m.category === 'burst_rifle',
+      300
+    )
+      .then(() => {
+        fourthBurstSeen = true;
+      })
+      .catch(() => {});
+    sendBurstFire();
+    await fourthBurstWatcher;
+    assert.equal(fourthBurstSeen, false);
+
+    // Registered map loot: first collector wins, second is rejected server-side.
+    const lootTemplate = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'server/worldLootManifest.json'), 'utf8'))
+      .items.find(item => item.id === 'loot_init_0');
+    wsA.send(JSON.stringify({ type: 'player_sync', position: lootTemplate.position,
+      velocity: { x:0, y:0, z:0 }, isGrounded:true }));
+    await new Promise(resolve => setTimeout(resolve, 100));
     const lootBroadcast = waitForMessage(wsB, (m) => m.type === 'loot_collected');
     wsA.send(
       JSON.stringify({
         type: 'collect_loot',
-        lootId: 'chest_test_1',
+        lootId: 'loot_init_0',
         itemType: 'weapon',
-        position: { x: 1, y: 10, z: 1 },
+        position: { x: 1, y: 80, z: 1 },
       })
     );
     const loot = await lootBroadcast;
-    assert.equal(loot.lootId, 'chest_test_1');
+    assert.equal(loot.lootId, 'loot_init_0');
 
     const lootRejected = waitForMessage(
       wsB,
-      (m) => m.type === 'loot_collect_rejected' && m.lootId === 'chest_test_1'
+      (m) => m.type === 'loot_collect_rejected' && m.lootId === 'loot_init_0'
     );
     wsB.send(
       JSON.stringify({
         type: 'collect_loot',
-        lootId: 'chest_test_1',
+        lootId: 'loot_init_0',
         itemType: 'weapon',
-        position: { x: 5, y: 10, z: 5 },
+        position: { x: 5, y: 80, z: 5 },
       })
     );
     await lootRejected;
 
+    wsA.send(JSON.stringify({type:'player_sync',position:{x:0,y:80,z:0}}));
     // Building: A's placement is broadcast to B.
     const buildBroadcast = waitForMessage(
       wsB,
@@ -263,7 +445,7 @@ test('production server: HTTP APIs + authoritative two-client multiplayer over i
         pieceType: 'wall',
         material: 'stone',
         x: 2,
-        y: 10,
+        y: 80,
         z: 2,
         yaw: 0,
       })

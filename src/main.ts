@@ -1,3 +1,5 @@
+import { TextChat } from './ui/TextChat';
+import { MobileHud } from './ui/MobileHud';
 import './styles/main.css';
 import { GameEngine } from './core/GameEngine';
 import {
@@ -13,6 +15,7 @@ import {
   StarterLoadoutType,
   TimeOfDayPreset,
   effectiveBotCountForMode,
+  getStarterLoadoutItems,
   isHumanOnlySessionMode,
 } from './network/schemas';
 import {
@@ -21,14 +24,28 @@ import {
   OUTFIT_PRESETS,
 } from './systems/ProgressionSystem';
 import { MobileTouchControls } from './input/MobileTouchControls';
-import { MobileLandscapeManager } from './input/MobileLandscapeManager';
+import { MobileLandscapeManager, isTextEntryElement } from './input/MobileLandscapeManager';
 import { LobbyBrowserClient } from './network/LobbyBrowserClient';
 import { getLobbyJoinBlock, parseLobbyInviteCode } from './network/lobbyBrowserUtils';
 import { LobbyBrowserUI } from './ui/LobbyBrowser';
+import {
+  RARITY_COLORS,
+  createWeaponStats,
+  getWeaponVisualProfile,
+} from './weapons/WeaponDefinitions';
+import { getOutfitVisualProfile } from './entities/CharacterCosmetics';
 
 window.addEventListener('DOMContentLoaded', () => {
   const container = document.getElementById('game-canvas-container')!;
   const engine = new GameEngine(container);
+  const textChat = new TextChat(document, engine.network.textChat,
+    text => engine.network.sendChat(text), () => {
+      engine.keys.clear(); engine.clearTransientInput();
+      if (document.pointerLockElement) document.exitPointerLock();
+    });
+  window.addEventListener('pagehide', event => {
+    if (!event.persisted) textChat.destroy();
+  });
 
   // =========================================================================
   // 1. CAREER PROGRESSION & STORAGE BADGE RENDERING
@@ -169,6 +186,48 @@ window.addEventListener('DOMContentLoaded', () => {
   // =========================================================================
   // 2. COSMETIC LOCKER & 3D OPERATOR PREVIEW CONTROLS
   // =========================================================================
+  const syncOperatorShowcase = () => {
+    const cosmetics = engine.progression.cosmetics;
+    const outfitPreset =
+      OUTFIT_PRESETS.find((o) => o.id === cosmetics.outfitId) || OUTFIT_PRESETS[0];
+    const visual = getOutfitVisualProfile(cosmetics.outfitId);
+    const loadoutSelect = document.getElementById(
+      'lobby-starter-loadout'
+    ) as HTMLSelectElement | null;
+    const loadout = getStarterLoadoutItems(
+      (loadoutSelect?.value as StarterLoadoutType) || 'balanced'
+    );
+    const primary = createWeaponStats(loadout.primaryCat, loadout.primaryRarity);
+    const secondary = createWeaponStats(loadout.secondaryCat, loadout.secondaryRarity);
+    const primaryProfile = getWeaponVisualProfile(primary.category);
+    const setText = (id: string, value: string) => {
+      const element = document.getElementById(id);
+      if (element) element.textContent = value;
+    };
+
+    setText('preview-outfit-detail', `${visual.finishLabel} · ${visual.silhouetteLabel}`);
+    setText('preview-outfit-finish', `${visual.rarityStyle.toUpperCase()} STYLE`);
+    const finishChip = document.getElementById('preview-outfit-finish');
+    finishChip?.style.setProperty('color', RARITY_COLORS[visual.rarityStyle].hex);
+    if (finishChip) finishChip.title = 'Cosmetic style only — all outfits have identical gameplay hitboxes';
+    setText('preview-weapon-icon', primaryProfile.icon);
+    setText('preview-weapon-name', primary.name);
+    setText('preview-weapon-role', `${RARITY_COLORS[loadout.primaryRarity].label} · ${primaryProfile.role}`);
+    setText(
+      'preview-weapon-damage',
+      primary.pellets > 1 ? `${primary.baseDamage}×${primary.pellets}` : `${primary.baseDamage}`
+    );
+    setText(
+      'preview-weapon-rate',
+      primary.fireMode === 'burst'
+        ? `${primary.burstCount}× burst`
+        : `${primary.fireRate.toFixed(1)}/s`
+    );
+    setText('preview-weapon-range', `${primary.range}m`);
+    setText('preview-weapon-mag', `${primary.clipSize}`);
+    setText('preview-secondary-weapon', `Sidearm · ${secondary.name} · ${outfitPreset.tagline}`);
+  };
+
   const syncLockerUI = () => {
     const c = engine.progression.cosmetics;
     const presetObj =
@@ -177,7 +236,15 @@ window.addEventListener('DOMContentLoaded', () => {
     if (previewNameEl) previewNameEl.textContent = presetObj.name;
 
     document.querySelectorAll<HTMLButtonElement>('.outfit-btn').forEach((btn) => {
+      const preset = OUTFIT_PRESETS.find((o) => o.id === btn.dataset.outfit);
+      const profile = preset ? getOutfitVisualProfile(preset.id) : null;
+      if (preset && profile) {
+        btn.dataset.rarityStyle = profile.rarityStyle;
+        btn.style.setProperty('--outfit-rarity', RARITY_COLORS[profile.rarityStyle].hex);
+        btn.title = `${profile.rarityStyle} style · ${preset.tagline} · ${profile.finishLabel} · ${profile.silhouetteLabel}`;
+      }
       btn.classList.toggle('active', btn.dataset.outfit === c.outfitId);
+      btn.setAttribute('aria-pressed', String(btn.dataset.outfit === c.outfitId));
     });
     document.querySelectorAll<HTMLButtonElement>('.back-acc-btn').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.back === c.backAccessory);
@@ -198,6 +265,7 @@ window.addEventListener('DOMContentLoaded', () => {
           Number(btn.dataset.color) === c.accentColor
         );
       });
+    syncOperatorShowcase();
   };
 
   const armorSwatchContainer = document.getElementById('locker-armor-swatches');
@@ -750,6 +818,7 @@ window.addEventListener('DOMContentLoaded', () => {
       undefined,
       (loadoutSelectEl.value as StarterLoadoutType) || 'balanced'
     );
+    syncOperatorShowcase();
   });
 
   document.addEventListener('visibilitychange', () => {
@@ -1049,15 +1118,8 @@ window.addEventListener('DOMContentLoaded', () => {
     engine.applySettings({ mouseSensitivity: v });
   });
 
-  const touchSensInput = document.getElementById(
-    'setting-touch-sensitivity'
-  ) as HTMLInputElement | null;
-  const touchSensVal = document.getElementById('val-touch-sensitivity');
-  touchSensInput?.addEventListener('input', () => {
-    const v = parseFloat(touchSensInput.value);
-    if (touchSensVal) touchSensVal.textContent = `${v.toFixed(1)}x`;
-    engine.applySettings({ touchSensitivity: v });
-  });
+  const mobileHud = new MobileHud(document, value => engine.applySettings({touchSensitivity:value}),
+    reducedMotion => engine.applySettings({reducedMotion}));
 
   const volInput = document.getElementById('setting-volume') as HTMLInputElement;
   const volVal = document.getElementById('val-volume')!;
@@ -1080,7 +1142,7 @@ window.addEventListener('DOMContentLoaded', () => {
   const gfxSelect = document.getElementById('setting-graphics') as HTMLSelectElement;
   gfxSelect?.addEventListener('change', () => {
     engine.applySettings({
-      graphicsQuality: gfxSelect.value as 'low' | 'medium' | 'high',
+      graphicsQuality: gfxSelect.value as 'auto' | 'low' | 'medium' | 'high',
     });
   });
 
@@ -1147,6 +1209,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // Mouse Wheel Slot Cycling
   window.addEventListener('wheel', (e) => {
+    if (textChat.ownsTarget(e.target) || textChat.isTyping()) return;
     if (!engine.isRunningMatch || engine.isPaused) return;
     engine.pendingSlotSelect = e.deltaY > 0 ? -2 : -3;
   });
@@ -1164,6 +1227,10 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // Keyboard Controls
   window.addEventListener('keydown', (e) => {
+    if (isTextEntryElement(e.target) || textChat.ownsTarget(e.target)) return;
+    if (e.code === 'KeyT' && engine.isRunningMatch && !engine.isPaused && engine.network.textChat.roomCode) {
+      e.preventDefault(); textChat.open(true); return;
+    }
     if (e.code === 'F3') {
       e.preventDefault();
       engine.togglePerfMonitor();
@@ -1209,7 +1276,7 @@ window.addEventListener('DOMContentLoaded', () => {
   // by WASD/mouse, so solo, legacy online, and human-only multiplayer all
   // receive identical movement/combat/build behaviour.
   const mobileTouchControls = MobileTouchControls.fromDocument(document, {
-    isGameplayActive: () => engine.isRunningMatch && !engine.isPaused,
+    isGameplayActive: () => engine.isRunningMatch && !engine.isPaused && !textChat.isTyping(),
     onMove: (moveX, moveZ, sprint) => {
       engine.mobileMoveX = moveX;
       engine.mobileMoveZ = moveZ;
@@ -1279,6 +1346,7 @@ window.addEventListener('DOMContentLoaded', () => {
   // blurred, guaranteeing no virtual keyboard during normal gameplay.
   engine.onTransientInputCleared = () => {
     mobileTouchControls?.resetAll();
+    mobileHud.resetPanel();
     mobileLandscape?.blurActiveTextEntry();
     mobileLandscape?.refresh();
     // startMatch clears transient input just before isRunningMatch flips

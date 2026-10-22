@@ -16,6 +16,7 @@ export type ImpactSurfaceType =
  */
 export class SoundManager {
   private ctx: AudioContext | null = null;
+  private readonly firearmNoise = new Map<WeaponCategory, AudioBuffer>();
   public enabled: boolean = true;
   public muted: boolean = false;
   public masterGainScale: number = 0.8;
@@ -155,7 +156,8 @@ export class SoundManager {
 
   public playFootstep(
     isSprinting: boolean = false,
-    distanceFactor: number = 1.0
+    distanceFactor: number = 1.0,
+    surface: 'ground' | 'hard' | 'wood' | 'metal' = 'ground'
   ): void {
     if (distanceFactor <= 0.03) return;
     if (!this.canPlay('footstep', isSprinting ? 95 : 140)) return;
@@ -169,34 +171,37 @@ export class SoundManager {
 
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
-    osc.type = 'triangle';
-    osc.frequency.setValueAtTime(isSprinting ? 116 : 92, now);
+    const pitch = surface === 'metal' ? 210 : surface === 'hard' ? 155 : surface === 'wood' ? 115 : 92;
+    osc.type = surface === 'hard' ? 'sine' : 'triangle';
+    osc.frequency.setValueAtTime(pitch * (isSprinting ? 1.25 : 1), now);
     osc.frequency.exponentialRampToValueAtTime(36, now + 0.058);
     gain.gain.setValueAtTime(vol, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.062);
     osc.connect(gain);
     gain.connect(ctx.destination);
     osc.start(now);
+    osc.onended = () => { osc.disconnect(); gain.disconnect(); };
     osc.stop(now + 0.068);
     this.trackVoice(0.07);
   }
 
-  public playDamageTaken(): void {
+  public playDamageTaken(shield = false): void {
     if (!this.canPlay('damage_taken', 75)) return;
     const ctx = this.ensureContext();
     if (!ctx) return;
     const now = ctx.currentTime;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
-    osc.type = 'sawtooth';
-    osc.frequency.setValueAtTime(155, now);
-    osc.frequency.exponentialRampToValueAtTime(52, now + 0.13);
+    osc.type = shield ? 'sine' : 'triangle';
+    osc.frequency.setValueAtTime(shield ? 740 : 155, now);
+    osc.frequency.exponentialRampToValueAtTime(shield ? 310 : 52, now + 0.13);
     gain.gain.setValueAtTime(this.masterVolume * 0.36, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
     osc.connect(gain);
     gain.connect(ctx.destination);
     osc.start(now);
     osc.stop(now + 0.15);
+    osc.onended = () => { osc.disconnect(); gain.disconnect(); };
     this.trackVoice(0.15);
   }
 
@@ -220,6 +225,7 @@ export class SoundManager {
       gain.connect(ctx.destination);
       osc.start(t);
       osc.stop(t + 0.1);
+      osc.onended = () => { osc.disconnect(); gain.disconnect(); };
     });
     this.trackVoice(0.2);
   }
@@ -263,12 +269,26 @@ export class SoundManager {
     gain.connect(ctx.destination);
     osc.start(now);
     osc.stop(now + 0.075);
+    osc.onended = () => { osc.disconnect(); gain.disconnect(); };
     this.trackVoice(0.08);
   }
 
   public playWeaponFire(category: WeaponCategory, distanceFactor: number = 1.0): void {
     if (distanceFactor <= 0.02) return;
-    const minGap = category === 'smg' ? 38 : category === 'assault_rifle' ? 55 : 70;
+    const minGap =
+      category === 'smg'
+        ? 38
+        : category === 'burst_rifle'
+          ? 34
+          : category === 'assault_rifle'
+            ? 55
+            : category === 'tactical_shotgun'
+              ? 85
+              : category === 'dmr'
+                ? 95
+                : category === 'heavy_pistol'
+                  ? 105
+                  : 70;
     if (!this.canPlay(`fire_${category}`, minGap)) return;
 
     const ctx = this.ensureContext();
@@ -296,19 +316,32 @@ export class SoundManager {
     const duration =
       category === 'shotgun'
         ? 0.26
-        : category === 'sniper'
-        ? 0.38
-        : category === 'smg'
-        ? 0.075
-        : category === 'pistol'
-        ? 0.105
-        : 0.135;
+        : category === 'tactical_shotgun'
+          ? 0.21
+          : category === 'sniper'
+            ? 0.38
+            : category === 'dmr'
+              ? 0.24
+              : category === 'heavy_pistol'
+                ? 0.2
+                : category === 'burst_rifle'
+                  ? 0.095
+                  : category === 'smg'
+                    ? 0.075
+                    : category === 'pistol'
+                      ? 0.105
+                      : 0.135;
 
-    const bufferSize = Math.floor(ctx.sampleRate * duration);
-    const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-    const data = noiseBuffer.getChannelData(0);
-    for (let i = 0; i < bufferSize; i++) {
-      data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufferSize * 0.34));
+    // One small immutable noise buffer per firearm, not a new typed array
+    // and exponential loop on every automatic shot. Sources remain per voice.
+    let noiseBuffer = this.firearmNoise.get(category);
+    if (!noiseBuffer) {
+      const bufferSize = Math.floor(ctx.sampleRate * duration);
+      noiseBuffer = ctx.createBuffer(1,bufferSize,ctx.sampleRate);
+      const data = noiseBuffer.getChannelData(0);
+      for (let i=0;i<bufferSize;i++) data[i]=(Math.random()*2-1)*Math.exp(-i/(bufferSize*.34));
+      if (this.firearmNoise.size >= 9) this.firearmNoise.clear();
+      this.firearmNoise.set(category,noiseBuffer);
     }
 
     const noise = ctx.createBufferSource();
@@ -319,13 +352,21 @@ export class SoundManager {
     filter.frequency.setValueAtTime(
       category === 'shotgun'
         ? 580
-        : category === 'sniper'
-        ? 1350
-        : category === 'smg'
-        ? 1950
-        : category === 'pistol'
-        ? 1520
-        : 1080,
+        : category === 'tactical_shotgun'
+          ? 760
+          : category === 'sniper'
+            ? 1350
+            : category === 'dmr'
+              ? 1180
+              : category === 'burst_rifle'
+                ? 1650
+                : category === 'heavy_pistol'
+                  ? 920
+                  : category === 'smg'
+                    ? 1950
+                    : category === 'pistol'
+                      ? 1520
+                      : 1080,
       now
     );
 
@@ -336,26 +377,35 @@ export class SoundManager {
     noise.connect(filter);
     filter.connect(noiseGain);
     noiseGain.connect(ctx.destination);
+    noise.onended = () => { noise.disconnect(); filter.disconnect(); noiseGain.disconnect(); };
     noise.start(now);
 
     const osc = ctx.createOscillator();
     const oscGain = ctx.createGain();
     osc.type =
-      category === 'sniper'
+      category === 'sniper' || category === 'dmr'
         ? 'sawtooth'
-        : category === 'shotgun'
-        ? 'square'
-        : 'triangle';
+        : category === 'shotgun' || category === 'tactical_shotgun' || category === 'heavy_pistol'
+          ? 'square'
+          : 'triangle';
     const startFreq =
       category === 'shotgun'
         ? 138
-        : category === 'sniper'
-        ? 295
-        : category === 'smg'
-        ? 340
-        : category === 'pistol'
-        ? 285
-        : 215;
+        : category === 'tactical_shotgun'
+          ? 168
+          : category === 'heavy_pistol'
+            ? 185
+            : category === 'sniper'
+              ? 295
+              : category === 'dmr'
+                ? 255
+                : category === 'burst_rifle'
+                  ? 310
+                  : category === 'smg'
+                    ? 340
+                    : category === 'pistol'
+                      ? 285
+                      : 215;
     osc.frequency.setValueAtTime(startFreq, now);
     osc.frequency.exponentialRampToValueAtTime(38, now + duration * 0.85);
 
@@ -366,6 +416,7 @@ export class SoundManager {
     oscGain.connect(ctx.destination);
     osc.start(now);
     osc.stop(now + duration);
+    osc.onended = () => { osc.disconnect(); oscGain.disconnect(); };
     this.trackVoice(duration);
   }
 
@@ -393,6 +444,7 @@ export class SoundManager {
       gain.connect(ctx.destination);
       osc.start(now);
       osc.stop(now + 0.15);
+      osc.onended = () => { osc.disconnect(); gain.disconnect(); };
 
       const subOsc = ctx.createOscillator();
       const subGain = ctx.createGain();
@@ -405,6 +457,7 @@ export class SoundManager {
       subGain.connect(ctx.destination);
       subOsc.start(now);
       subOsc.stop(now + 0.085);
+      subOsc.onended = () => { subOsc.disconnect(); subGain.disconnect(); };
       this.trackVoice(0.16);
     } else {
       osc.frequency.setValueAtTime(isShield ? 1120 : 840, now);
@@ -415,6 +468,7 @@ export class SoundManager {
       gain.connect(ctx.destination);
       osc.start(now);
       osc.stop(now + 0.072);
+      osc.onended = () => { osc.disconnect(); gain.disconnect(); };
       this.trackVoice(0.075);
     }
   }
@@ -426,11 +480,17 @@ export class SoundManager {
     const now = ctx.currentTime;
 
     const freqs =
-      category === 'shotgun'
+      category === 'shotgun' || category === 'tactical_shotgun'
         ? [340, 480, 620]
-        : category === 'sniper'
-        ? [310, 520, 740]
-        : [420, 620, 510];
+        : category === 'sniper' || category === 'dmr'
+          ? [310, 520, 740]
+          : category === 'heavy_pistol'
+            ? [280, 390, 560]
+            : category === 'burst_rifle'
+              ? [460, 680, 540]
+              : category === 'smg' ? [560, 820, 690]
+              : category === 'pistol' ? [490, 720, 610]
+              : [420, 620, 510];
 
     freqs.forEach((freq, idx) => {
       const osc = ctx.createOscillator();
@@ -438,12 +498,13 @@ export class SoundManager {
       osc.type = 'square';
       const t = now + idx * 0.11;
       osc.frequency.setValueAtTime(freq, t);
-      gain.gain.setValueAtTime(this.masterVolume * 0.22, t);
+      gain.gain.setValueAtTime(this.masterVolume * 0.16, t);
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.055);
       osc.connect(gain);
       gain.connect(ctx.destination);
       osc.start(t);
       osc.stop(t + 0.06);
+      osc.onended = () => { osc.disconnect(); gain.disconnect(); };
     });
     this.trackVoice(0.32);
   }
@@ -489,6 +550,24 @@ export class SoundManager {
     this.trackVoice(0.06);
   }
 
+  /** Original, brief endgame ambience; never a loop or a fabricated countdown. */
+  public playFinalZoneCue(): void {
+    if (!this.canPlay('final_zone',1500)) return;
+    const ctx = this.ensureContext(); if (!ctx) return;
+    const now = ctx.currentTime;
+    for (const frequency of [146.83,220]) {
+      const osc = ctx.createOscillator(), gain = ctx.createGain();
+      osc.type = 'sine'; osc.frequency.setValueAtTime(frequency,now);
+      gain.gain.setValueAtTime(.001,now);
+      gain.gain.linearRampToValueAtTime(this.masterVolume*.09,now+.08);
+      gain.gain.exponentialRampToValueAtTime(.001,now+.6);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.onended = () => { osc.disconnect(); gain.disconnect(); };
+      osc.start(now); osc.stop(now+.62);
+    }
+    this.trackVoice(.65);
+  }
+
   public playStormWarning(): void {
     if (!this.canPlay('storm_warn', 1500)) return;
     const ctx = this.ensureContext();
@@ -505,6 +584,7 @@ export class SoundManager {
     gain.connect(ctx.destination);
     osc.start(now);
     osc.stop(now + 0.36);
+    osc.onended = () => { osc.disconnect(); gain.disconnect(); };
     this.trackVoice(0.36);
   }
 
