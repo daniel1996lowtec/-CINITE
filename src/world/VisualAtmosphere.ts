@@ -46,14 +46,14 @@ const SUN_OFFSETS: Record<AtmospherePreset, SunVector> = {
 
 const ENVIRONMENT_PRESETS: Record<AtmospherePreset, EnvironmentPreset> = {
   day: {
-    zenith: 0x0284c7,
-    horizon: 0xbae6fd,
-    ground: 0x365314,
+    zenith: 0x4387a8,
+    horizon: 0xcbdde5,
+    ground: 0x626a4e,
     sun: 0xfff7cc,
     sunU: 0.68,
     sunV: 0.27,
-    intensity: 0.34,
-    exposure: 1.1,
+    intensity: 0.42,
+    exposure: 1.06,
   },
   sunset: {
     zenith: 0x312e81,
@@ -262,4 +262,30 @@ ${shader.vertexShader}`.replace(
   };
   material.customProgramCacheKey = () => cacheKey;
   return material;
+}
+
+/** Small deterministic, world-owned textures: no downloads or frame-time painting. */
+export function createArchitectureTextures(): { roughness: THREE.DataTexture; contact: THREE.DataTexture } {
+  const size = 32;
+  const grain = new Uint8Array(size * size * 4);
+  const shadow = new Uint8Array(size * size * 4);
+  let seed = 734;
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+    const i = (y * size + x) * 4;
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    grain[i] = grain[i + 1] = grain[i + 2] = 205 + (seed % 51);
+    grain[i + 3] = 255;
+    const radius = Math.hypot((x + .5) / size * 2 - 1, (y + .5) / size * 2 - 1);
+    shadow[i] = shadow[i + 1] = shadow[i + 2] = 255;
+    shadow[i + 3] = Math.round(Math.max(0, 1 - radius) ** 1.5 * 255);
+  }
+  const roughness = new THREE.DataTexture(grain,size,size);
+  roughness.wrapS = roughness.wrapT = THREE.RepeatWrapping;
+  roughness.repeat.set(6,6);
+  roughness.magFilter = roughness.minFilter = THREE.LinearFilter;
+  roughness.needsUpdate = true;
+  const contact = new THREE.DataTexture(shadow,size,size);
+  contact.magFilter = contact.minFilter = THREE.LinearFilter;
+  contact.needsUpdate = true;
+  return {roughness,contact};
 }

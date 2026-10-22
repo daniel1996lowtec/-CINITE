@@ -933,13 +933,18 @@
           <div id="touch-joystick-knob" class="joystick-knob"></div>
         </div>
 
+        <button id="touch-build-toggle-btn" class="touch-btn touch-build-toggle" type="button"
+          aria-controls="touch-build-panel" aria-expanded="false">BUILD ▸</button>
         <div class="touch-action-buttons" aria-label="Touch action controls">
+          <div class="touch-primary-actions">
           <button id="touch-fire-btn" class="touch-btn fire" type="button" aria-label="Fire or place selected build piece">
             🔥 FIRE
           </button>
           <button id="touch-aim-btn" class="touch-btn" type="button" aria-label="Toggle aim down sights">
             🎯 ADS
           </button>
+          </div>
+          <div id="touch-secondary-actions" class="touch-secondary-actions">
           <button id="touch-jump-btn" class="touch-btn" type="button" aria-label="Jump or glide">
             ⤴️ JUMP
           </button>
@@ -952,6 +957,8 @@
           <button id="touch-weapon-btn" class="touch-btn" type="button" aria-label="Switch weapon">
             🔫 SWAP
           </button>
+          </div>
+          <div id="touch-build-panel" class="touch-build-panel" role="group" aria-label="Build pieces and material" hidden>
           <button id="touch-material-btn" class="touch-btn" type="button" aria-label="Cycle building material">
             🧱 MAT
           </button>
@@ -967,6 +974,8 @@
           <button id="touch-roof-btn" class="touch-btn build" type="button" aria-label="Select roof build preview">
             ROOF
           </button>
+          <button id="touch-build-close-btn" class="touch-btn" type="button">BACK</button>
+          </div>
         </div>
       </div>
     </div>
@@ -1168,6 +1177,17 @@
               value="1.0"
             />
           </div>
+
+          <fieldset class="mobile-hud-settings">
+            <legend>Mobile HUD</legend>
+            <label for="setting-mobile-button-size">Button size <output id="val-mobile-button-size">100%</output></label>
+            <input id="setting-mobile-button-size" type="range" min="0.85" max="1.15" step="0.05" value="1">
+            <label for="setting-mobile-hud-scale">Information scale <output id="val-mobile-hud-scale">100%</output></label>
+            <input id="setting-mobile-hud-scale" type="range" min="0.9" max="1.1" step="0.05" value="1">
+            <label><input id="setting-mobile-advanced-build" type="checkbox"> Open advanced build controls by default</label>
+            <small>BUILD opens all four pieces and materials. FIRE places the selected piece. Tap the selected piece again to place it and exit build mode. BACK returns to combat buttons.</small>
+            <button id="btn-reset-mobile-hud" class="secondary-action-btn" type="button">Reset mobile HUD &amp; camera</button>
+          </fieldset>
 
           <div class="form-row">
             <div class="form-group">

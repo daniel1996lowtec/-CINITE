@@ -124,34 +124,20 @@ export function getLocomotionBlend(
   isGrounded: boolean,
   isGliding: boolean
 ): LocomotionBlend {
-  if (!isGrounded || isGliding || horizontalSpeed <= 0.45) {
+  if (!isGrounded || isGliding) {
     return { idle: 1, walk: 0, run: 0, walkTimeScale: 1, runTimeScale: 1 };
   }
-  if (isSprinting || horizontalSpeed > 8.2) {
-    return {
-      idle: 0,
-      walk: 0,
-      run: 1,
-      walkTimeScale: 1.2,
-      runTimeScale: clamp((horizontalSpeed / 10) * 1.38, 1.18, 1.52),
-    };
-  }
-  if (horizontalSpeed > 4.6) {
-    const run = clamp((horizontalSpeed - 4.2) / 2.2, 0.25, 1);
-    return {
-      idle: 0,
-      walk: 1 - run,
-      run,
-      walkTimeScale: 1.2,
-      runTimeScale: clamp(horizontalSpeed / 6.7, 0.82, 1.18),
-    };
-  }
+  const speed = Math.max(0, horizontalSpeed);
+  const movingT = clamp01((speed - .1) / 1.1);
+  const moving = movingT * movingT * (3 - 2 * movingT);
+  const runT = clamp01((speed - 3.4) / 3.2);
+  const running = runT * runT * (3 - 2 * runT);
   return {
-    idle: 0,
-    walk: 1,
-    run: 0,
-    walkTimeScale: clamp(horizontalSpeed / 3.4, 0.72, 1.35),
-    runTimeScale: 1,
+    idle: 1 - moving,
+    walk: moving * (1 - running),
+    run: moving * running,
+    walkTimeScale: clamp(speed / 3.4, .55, 1.35),
+    runTimeScale: clamp(speed / 6.7, .65, isSprinting ? 1.52 : 1.45),
   };
 }
 
@@ -194,4 +180,17 @@ export function selectPresentationState(state: {
   if (speed <= 0.45) return 'ready';
   if (state.isSprinting || speed > 8.2) return 'sprint';
   return speed > 4.6 ? 'run' : 'walk';
+}
+
+/** One normalized gait clock keeps Walk/Run/Sprint feet in phase during blends. */
+export function advanceLocomotionPhase(phase: number, dt: number, cycleSeconds: number): number {
+  const elapsed = clamp(dt, 0, .2);
+  return ((Math.max(0, phase) + elapsed / Math.max(.12, cycleSeconds)) % 1);
+}
+
+export function getCharacterAnimationInterval(distance: number, reduced: boolean, interacting: boolean): number {
+  if (distance > 190 && !interacting) return .2;
+  if (distance > 145) return .1;
+  if (distance > 85) return 1 / 15;
+  return distance > (reduced ? 24 : 42) ? 1 / 30 : 0;
 }

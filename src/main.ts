@@ -1,3 +1,4 @@
+import { MobileHud } from './ui/MobileHud';
 import './styles/main.css';
 import { GameEngine } from './core/GameEngine';
 import {
@@ -1108,15 +1109,7 @@ window.addEventListener('DOMContentLoaded', () => {
     engine.applySettings({ mouseSensitivity: v });
   });
 
-  const touchSensInput = document.getElementById(
-    'setting-touch-sensitivity'
-  ) as HTMLInputElement | null;
-  const touchSensVal = document.getElementById('val-touch-sensitivity');
-  touchSensInput?.addEventListener('input', () => {
-    const v = parseFloat(touchSensInput.value);
-    if (touchSensVal) touchSensVal.textContent = `${v.toFixed(1)}x`;
-    engine.applySettings({ touchSensitivity: v });
-  });
+  const mobileHud = new MobileHud(document, value => engine.applySettings({touchSensitivity:value}));
 
   const volInput = document.getElementById('setting-volume') as HTMLInputElement;
   const volVal = document.getElementById('val-volume')!;
@@ -1338,6 +1331,7 @@ window.addEventListener('DOMContentLoaded', () => {
   // blurred, guaranteeing no virtual keyboard during normal gameplay.
   engine.onTransientInputCleared = () => {
     mobileTouchControls?.resetAll();
+    mobileHud.resetPanel();
     mobileLandscape?.blurActiveTextEntry();
     mobileLandscape?.refresh();
     // startMatch clears transient input just before isRunningMatch flips

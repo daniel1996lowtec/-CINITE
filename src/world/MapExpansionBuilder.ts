@@ -8,6 +8,7 @@ import type {
 import { ISLAND_POIS } from './TerrainGenerator';
 import {
   applyFoliageWind,
+  createArchitectureTextures,
   type FoliageWindOptions,
 } from './VisualAtmosphere';
 import type {
@@ -44,7 +45,7 @@ import {
   isPointInFootprint,
 } from './WorldLayout';
 
-type ArchitectureShape = 'box' | 'glass' | 'cone' | 'cylinder' | 'glow';
+type ArchitectureShape = 'box' | 'glass' | 'cone' | 'cylinder' | 'glow' | 'metal' | 'paint' | 'contact';
 type ArchitectureTier = 'essential' | 'detail';
 
 interface InstanceSpec {
@@ -66,7 +67,7 @@ interface ShapeOptions {
   rotationZ?: number;
 }
 
-const ARCHITECTURE_SHAPES: ArchitectureShape[] = ['box', 'glass', 'cone', 'cylinder', 'glow'];
+const ARCHITECTURE_SHAPES: ArchitectureShape[] = ['box', 'glass', 'cone', 'cylinder', 'glow', 'metal', 'paint', 'contact'];
 
 /**
  * Builds the additive island districts around the original IslandWorld.
@@ -1854,7 +1855,13 @@ export class MapExpansionBuilder {
         box(side * 3.1, top + 0.45, -5.6, 1.8, 0.9, 0.7, level === 0 ? 0x92400e : 0x475569);
         collider(`suite_${level}_desk`, side * 3.1, top + 0.45, -5.6, 1.8, 0.9, 0.7);
         box(side * 3.1, top + 1.05, -5.6, 0.7, 0.32, 0.08, placement.accentColor, { shape: 'glass', tier: 'detail' });
+        // Service labels and desk plinth contact shading use the same batches.
+        box(side * 3.1, top + .018, -5.6, 2.6, 1, 1.5, 0xffffff, {shape:'contact',tier:'detail'});
+        box(side * 3.1, top + .71, -5.23, .8, .1, .025, placement.accentColor, {shape:'glass',tier:'detail'});
       }
+      box(-3.8, floorTop(0)+.42, -3.2, 2, .18, .62, 0x475569, {shape:'paint'});
+      box(-3.8, floorTop(0)+.78, -3.43, 2, .65, .14, placement.accentColor, {shape:'paint'});
+      collider('service_bench', -3.8, floorTop(0)+.55, -3.2, 2, 1.1, .62);
       const cache = buildingLocalToWorld(placement, 3.3, -4.7);
       this.world.chestSpawnPoints.push(new THREE.Vector3(cache.x, baseY + floorTop(3) + 0.18, cache.z));
       // Offset rooftop shelter identifies the crown and offers actual cover.
@@ -1910,10 +1917,10 @@ export class MapExpansionBuilder {
     }
 
     const hvacA = { x: -hw * 0.42, z: -hd * 0.35 };
-    box(hvacA.x, roofTop + 0.5, hvacA.z, 2.4, 1.0, 1.6, 0x64748b);
+    box(hvacA.x, roofTop + 0.5, hvacA.z, 2.4, 1.0, 1.6, 0x64748b, {shape:'metal'});
     collider('roof_hvac_a', hvacA.x, roofTop + 0.5, hvacA.z, 2.4, 1.0, 1.6);
     const hvacB = { x: hw * 0.38, z: hd * 0.3 };
-    box(hvacB.x, roofTop + 0.42, hvacB.z, 1.8, 0.84, 1.3, placement.roofColor);
+    box(hvacB.x, roofTop + 0.42, hvacB.z, 1.8, 0.84, 1.3, placement.roofColor, {shape:'paint'});
     collider('roof_hvac_b', hvacB.x, roofTop + 0.42, hvacB.z, 1.8, 0.84, 1.3);
     box(hw * 0.18, roofTop + 0.22, -hd * 0.42, 2.8, 0.14, 1.15, placement.accentColor, {
       shape: 'glass',
@@ -1955,6 +1962,8 @@ export class MapExpansionBuilder {
         { shape: 'glass', tier: 'detail' });
     }
     for (const unit of [hvacA, hvacB]) {
+      box(unit.x, roofTop + .018, unit.z, 3.4, 1, 2.6, 0xffffff,
+        {shape:'contact',tier:'detail'});
       for (const offset of [-.45, 0, .45]) {
         box(unit.x + offset, roofTop + (unit === hvacA ? 1.02 : .86), unit.z, .12, .035, .9, darkTrim,
           { tier: 'detail' });
@@ -3135,10 +3144,32 @@ export class MapExpansionBuilder {
     );
   }
 
+  public disposeArchitecture(): void {
+    const geometries = new Set<THREE.BufferGeometry>();
+    const materials = new Set<THREE.Material>();
+    const textures = new Set<THREE.Texture>();
+    for (const group of [this.expansionGroup,this.expansionDetailGroup]) {
+      group.traverse(object => {
+        if (!(object instanceof THREE.Mesh)) return;
+        geometries.add(object.geometry);
+        for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
+          materials.add(material);
+          if (material.map) textures.add(material.map);
+          if (material.roughnessMap) textures.add(material.roughnessMap);
+        }
+      });
+      group.clear(); group.removeFromParent();
+    }
+    geometries.forEach(g=>g.dispose()); materials.forEach(m=>m.dispose()); textures.forEach(t=>t.dispose());
+  }
+
   public finalizeArchitecture(): void {
     if (this.architectureFinalized) return;
     this.architectureFinalized = true;
 
+    const textures = createArchitectureTextures();
+    const contactGeo = new THREE.PlaneGeometry(1,1);
+    contactGeo.rotateX(-Math.PI/2);
     const boxGeo = new THREE.BoxGeometry(1, 1, 1);
     const coneGeo = new THREE.ConeGeometry(0.5, 1, 8);
     const cylinderGeo = new THREE.CylinderGeometry(0.5, 0.5, 1, 8);
@@ -3147,17 +3178,24 @@ export class MapExpansionBuilder {
     const standardMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       flatShading: true,
-      roughness: 0.67,
-      metalness: 0.08,
+      roughness: 0.88,
+      metalness: 0.03,
+      roughnessMap: textures.roughness,
     });
+    const metalMat = new THREE.MeshStandardMaterial({color:0xffffff, roughness:.42,
+      metalness:.78, envMapIntensity:1.15, roughnessMap:textures.roughness});
+    const paintMat = new THREE.MeshStandardMaterial({color:0xffffff, roughness:.6,
+      metalness:.18, roughnessMap:textures.roughness});
+    const contactMat = new THREE.MeshBasicMaterial({color:0x0b1220, map:textures.contact,
+      transparent:true, opacity:.32, depthWrite:false, polygonOffset:true, polygonOffsetFactor:-1});
     const glassMat = new THREE.MeshStandardMaterial({
-      color: 0x7dd3fc,
-      emissive: 0x0284c7,
-      emissiveIntensity: 0.28,
+      color: 0xe0f2fe,
+      emissive: 0xbad8ef,
+      emissiveIntensity: 0.12,
       envMapIntensity: 1.25,
       flatShading: true,
-      roughness: 0.1,
-      metalness: 0.22,
+      roughness: 0.18,
+      metalness: 0.36,
       transparent: true,
       opacity: 0.64,
     });
@@ -3165,6 +3203,7 @@ export class MapExpansionBuilder {
 
     const geometryFor = (shape: ArchitectureShape): THREE.BufferGeometry => {
       switch (shape) {
+        case 'contact': return contactGeo;
         case 'cone':
           return coneGeo;
         case 'cylinder':
@@ -3178,6 +3217,9 @@ export class MapExpansionBuilder {
       }
     };
     const materialFor = (shape: ArchitectureShape): THREE.Material => {
+      if (shape === 'metal') return metalMat;
+      if (shape === 'paint') return paintMat;
+      if (shape === 'contact') return contactMat;
       if (shape === 'glass') return glassMat;
       if (shape === 'glow') return glowMat;
       return standardMat;
@@ -3189,8 +3231,8 @@ export class MapExpansionBuilder {
       const inst = new THREE.InstancedMesh(geometryFor(shapeName), materialFor(shapeName), specs.length);
       inst.name = `Expansion_${key.replaceAll('|', '_')}`;
       inst.instanceMatrix.setUsage(THREE.StaticDrawUsage);
-      inst.castShadow = shapeName !== 'glass' && shapeName !== 'glow';
-      inst.receiveShadow = shapeName !== 'glow';
+      inst.castShadow = shapeName !== 'glass' && shapeName !== 'glow' && shapeName !== 'contact';
+      inst.receiveShadow = shapeName !== 'glow' && shapeName !== 'contact';
       const displayColor = new THREE.Color();
       specs.forEach((spec, index) => {
         inst.setMatrixAt(index, spec.matrix);

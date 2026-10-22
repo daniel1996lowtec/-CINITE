@@ -18,8 +18,21 @@ export class StormSystem {
     this.terrainHeight = terrainHeight;
 
     const wallGeo = new THREE.CylinderGeometry(1, 1, 140, 48, 3, true);
+    // RGBA vertex colours fade the upper wall without custom shaders, textures,
+    // extra passes or a second wall. The collision/radius is still server-owned.
+    const positions = wallGeo.getAttribute('position');
+    const colors = new Float32Array(positions.count * 4);
+    const base = new THREE.Color(0xe879f9), top = new THREE.Color(0x7c3aed);
+    const tint = new THREE.Color();
+    for (let i=0;i<positions.count;i++) {
+      const height = THREE.MathUtils.clamp((positions.getY(i)+70)/140,0,1);
+      tint.copy(base).lerp(top,height);
+      colors.set([tint.r,tint.g,tint.b,.95-height*.8],i*4);
+    }
+    wallGeo.setAttribute('color',new THREE.BufferAttribute(colors,4));
     const wallMat = new THREE.MeshBasicMaterial({
-      color: 0xa855f7,
+      color: 0xffffff,
+      vertexColors: true,
       transparent: true,
       opacity: 0.24,
       side: THREE.DoubleSide,
@@ -101,7 +114,7 @@ export class StormSystem {
     const r = Math.max(1, storm.currentRadius);
     const intensity = THREE.MathUtils.clamp((storm.phase - 5) / 3, 0, 1);
     this.finalZoneBeacon.visible = state.phase === 'ACTIVE' && storm.phase >= 6;
-    this.finalZoneBeacon.position.set(storm.targetCenterX, 44, storm.targetCenterZ);
+    this.finalZoneBeacon.position.set(storm.targetCenterX, this.finalZoneBeacon.position.y, storm.targetCenterZ);
     (this.finalZoneBeacon.material as THREE.MeshBasicMaterial).opacity =
       0.12 + intensity * 0.07 + Math.sin(this.animTime * 1.4) * 0.025;
     (this.safeZoneRingMesh.material as THREE.MeshBasicMaterial).color.setHex(
@@ -130,6 +143,7 @@ export class StormSystem {
     this.terrainSampleTimer += dt;
     if (this.terrainSampleTimer >= 0.2) {
       this.terrainSampleTimer = 0;
+      this.finalZoneBeacon.position.y = this.terrainHeight(storm.targetCenterX,storm.targetCenterZ) + 45;
       for (const ring of [this.safeZoneRingMesh, this.currentZoneRingMesh]) {
         const points = ring.geometry.getAttribute('position');
         for (let i = 0; i < points.count; i++) {
@@ -142,6 +156,11 @@ export class StormSystem {
     }
     (this.currentZoneRingMesh.material as THREE.MeshBasicMaterial).opacity =
       0.8 + Math.sin(this.animTime * 3.1) * 0.12;
+  }
+
+  /** Lattice is decoration; the wall, both boundaries and final beacon stay visible. */
+  public setDetailEnabled(enabled: boolean): void {
+    this.stormLatticeMesh.visible = enabled;
   }
 
   public resetPresentation(): void {

@@ -16,6 +16,7 @@ export type ImpactSurfaceType =
  */
 export class SoundManager {
   private ctx: AudioContext | null = null;
+  private readonly firearmNoise = new Map<WeaponCategory, AudioBuffer>();
   public enabled: boolean = true;
   public muted: boolean = false;
   public masterGainScale: number = 0.8;
@@ -328,11 +329,16 @@ export class SoundManager {
                       ? 0.105
                       : 0.135;
 
-    const bufferSize = Math.floor(ctx.sampleRate * duration);
-    const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-    const data = noiseBuffer.getChannelData(0);
-    for (let i = 0; i < bufferSize; i++) {
-      data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufferSize * 0.34));
+    // One small immutable noise buffer per firearm, not a new typed array
+    // and exponential loop on every automatic shot. Sources remain per voice.
+    let noiseBuffer = this.firearmNoise.get(category);
+    if (!noiseBuffer) {
+      const bufferSize = Math.floor(ctx.sampleRate * duration);
+      noiseBuffer = ctx.createBuffer(1,bufferSize,ctx.sampleRate);
+      const data = noiseBuffer.getChannelData(0);
+      for (let i=0;i<bufferSize;i++) data[i]=(Math.random()*2-1)*Math.exp(-i/(bufferSize*.34));
+      if (this.firearmNoise.size >= 9) this.firearmNoise.clear();
+      this.firearmNoise.set(category,noiseBuffer);
     }
 
     const noise = ctx.createBufferSource();
@@ -368,6 +374,7 @@ export class SoundManager {
     noise.connect(filter);
     filter.connect(noiseGain);
     noiseGain.connect(ctx.destination);
+    noise.onended = () => { noise.disconnect(); filter.disconnect(); noiseGain.disconnect(); };
     noise.start(now);
 
     const osc = ctx.createOscillator();
@@ -406,6 +413,7 @@ export class SoundManager {
     oscGain.connect(ctx.destination);
     osc.start(now);
     osc.stop(now + duration);
+    osc.onended = () => { osc.disconnect(); oscGain.disconnect(); };
     this.trackVoice(duration);
   }
 
@@ -474,6 +482,8 @@ export class SoundManager {
             ? [280, 390, 560]
             : category === 'burst_rifle'
               ? [460, 680, 540]
+              : category === 'smg' ? [560, 820, 690]
+              : category === 'pistol' ? [490, 720, 610]
               : [420, 620, 510];
 
     freqs.forEach((freq, idx) => {
@@ -482,12 +492,13 @@ export class SoundManager {
       osc.type = 'square';
       const t = now + idx * 0.11;
       osc.frequency.setValueAtTime(freq, t);
-      gain.gain.setValueAtTime(this.masterVolume * 0.22, t);
+      gain.gain.setValueAtTime(this.masterVolume * 0.16, t);
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.055);
       osc.connect(gain);
       gain.connect(ctx.destination);
       osc.start(t);
       osc.stop(t + 0.06);
+      osc.onended = () => { osc.disconnect(); gain.disconnect(); };
     });
     this.trackVoice(0.32);
   }

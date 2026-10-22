@@ -961,6 +961,7 @@ export class GameEngine {
     if (this.adaptiveDetailReduced === reduced) return;
     this.adaptiveDetailReduced = reduced;
     const quality = this.getResolvedGraphicsQuality();
+    this.stormSystem.setDetailEnabled(quality !== 'low' && !reduced);
 
     if (quality === 'high') {
       this.world.detailFoliageGroup.visible = !reduced;
@@ -1083,6 +1084,7 @@ export class GameEngine {
     }
     this.renderer.shadowMap.needsUpdate = true;
 
+    this.stormSystem.setDetailEnabled(quality !== 'low' && !this.adaptiveDetailReduced);
     this.applyTimeOfDay(this.settings.timeOfDay);
 
     const fpsEl = document.getElementById('hud-fps-counter');
@@ -1133,17 +1135,17 @@ export class GameEngine {
       }
     } else {
       this.scene.background = new THREE.Color(0x38bdf8);
-      fog.color.setHex(0xbae6fd);
+      fog.color.setHex(0xcbdde5);
       fog.density = 0.0018;
       this.hemiLight.color.setHex(0xe0f2fe);
-      this.hemiLight.groundColor.setHex(0x16a34a);
+      this.hemiLight.groundColor.setHex(0x6b7256);
       this.hemiLight.intensity = 0.96;
       this.dirLight.color.setHex(0xfffbeb);
       this.dirLight.intensity = 1.54;
       this.dirLight.position.copy(this.dirLightTarget.position).add(this.sunOffset);
       if (this.fillLight) {
         this.fillLight.color.setHex(0x7dd3fc);
-        this.fillLight.intensity = 0.42;
+        this.fillLight.intensity = 0.34;
       }
     }
   }

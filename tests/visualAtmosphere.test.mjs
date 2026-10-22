@@ -207,3 +207,17 @@ test('Phase 1 presentation integration stays wired without replacing gameplay sy
   assert.match(css, /@keyframes hud-banner-in/);
   assert.match(css, /prefers-reduced-motion: reduce/);
 });
+
+test('3.4 architecture texture grain is deterministic, tiny and explicitly disposable',async()=>{
+  const {createArchitectureTextures}=await loadVisualAtmosphere();
+  const a=createArchitectureTextures(),b=createArchitectureTextures();
+  assert.equal(a.roughness.image.width,32);assert.equal(a.contact.image.height,32);
+  assert.equal(a.roughness.image.data.byteLength+a.contact.image.data.byteLength,8192);
+  assert.deepEqual(a.roughness.image.data,b.roughness.image.data);
+  assert.equal(a.roughness.repeat.x,6);
+  assert.equal(a.contact.image.data[3],0);
+  assert.ok(a.contact.image.data[(16*32+16)*4+3]>230);
+  for(const texture of [a.roughness,a.contact,b.roughness,b.contact]){
+    let disposed=0;texture.addEventListener('dispose',()=>disposed++);texture.dispose();assert.equal(disposed,1);
+  }
+});

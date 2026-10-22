@@ -159,6 +159,15 @@ export function getWeaponVisualProfile(
   return WEAPON_VISUAL_PROFILES[category];
 }
 
+const SUPPORT_GRIPS: Partial<Record<WeaponCategory, readonly [number,number,number]>> = {
+  assault_rifle:[0,.015,-.32], burst_rifle:[0,.015,-.34], dmr:[0,.015,-.4],
+  shotgun:[0,.015,-.42], tactical_shotgun:[0,-.045,-.5], smg:[0,-.05,-.36], sniper:[0,.015,-.42],
+};
+const SIDEARM_GRIP: readonly [number,number,number] = [0,-.035,.015];
+export function getSupportGrip(category: WeaponCategory): readonly [number,number,number] {
+  return SUPPORT_GRIPS[category] || SIDEARM_GRIP;
+}
+
 export const FIREARM_CATEGORIES = [
   'pistol',
   'heavy_pistol',
@@ -497,14 +506,15 @@ export function createWeaponStats(
 const weaponTemplateCache = new Map<string, THREE.Group>();
 const SHARED_WEAPON_DARK_MAT = new THREE.MeshStandardMaterial({
   color: 0x1e293b,
-  roughness: 0.38,
-  metalness: 0.55,
+  roughness: 0.72,
+  metalness: 0.12,
   flatShading: true,
 });
 const SHARED_WEAPON_GUNMETAL_MAT = new THREE.MeshStandardMaterial({
   color: 0x475569,
-  roughness: 0.27,
-  metalness: 0.72,
+  roughness: 0.32,
+  metalness: 0.82,
+  envMapIntensity: 1.15,
   flatShading: true,
 });
 
@@ -513,7 +523,7 @@ function makeRarityAccentMaterial(rarity: WeaponRarity): THREE.MeshStandardMater
   return new THREE.MeshStandardMaterial({
     color,
     emissive: color,
-    emissiveIntensity: rarity === 'legendary' ? 0.42 : rarity === 'epic' ? 0.36 : 0.3,
+    emissiveIntensity: rarity === 'legendary' ? 0.26 : rarity === 'epic' ? 0.2 : 0.12,
     roughness: rarity === 'legendary' ? 0.16 : 0.22,
     metalness: rarity === 'legendary' ? 0.46 : 0.28,
     envMapIntensity: rarity === 'legendary' ? 1.15 : 0.85,
@@ -556,6 +566,21 @@ function sharedCylinderMesh(
   mesh.scale.set(radius * 2, length, radius * 2);
   if (name) mesh.name = name;
   return mesh;
+}
+
+function addFirearmFinish(group: THREE.Group, category: WeaponCategory): void {
+  const muzzle = group.getObjectByName('muzzle_tip');
+  if (!muzzle) return;
+  const details = new THREE.Group(); details.name = 'weapon_micro_details';
+  // An inset bore and receiver pin sharpen the silhouette without more lights,
+  // transparent layers or per-weapon unique geometry. Hide these at distance.
+  const bore = sharedCylinderMesh(SHARED_WEAPON_DARK_MAT,
+    category === 'shotgun' || category === 'tactical_shotgun' ? .033 : .019, .016, 'muzzle_bore');
+  bore.rotation.x = Math.PI/2;
+  bore.position.copy(muzzle.position); bore.position.z -= .005;
+  const pin = sharedCylinderMesh(SHARED_WEAPON_GUNMETAL_MAT,.014,.018,'receiver_pin');
+  pin.rotation.z = Math.PI/2; pin.position.set(.065,.06,-.17);
+  details.add(bore,pin); group.add(details);
 }
 
 export function createWeaponMesh(
@@ -697,6 +722,7 @@ export function createWeaponMesh(
       group.add(heavyBarrel, cylinder, topRib);
     }
     group.add(slide, stripe, grip, pistolMag, muzzleAnchor);
+    addFirearmFinish(group,category);
     weaponTemplateCache.set(cacheKey, group);
     return group.clone(true);
   }
@@ -916,6 +942,7 @@ export function createWeaponMesh(
   muzzleAnchor.name = 'muzzle_tip';
   muzzleAnchor.position.set(0, 0.065, -length * 0.96);
   group.add(muzzleAnchor);
+  addFirearmFinish(group,category);
 
   weaponTemplateCache.set(cacheKey, group);
   return group.clone(true);

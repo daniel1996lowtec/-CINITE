@@ -4095,3 +4095,147 @@ input:disabled {
   }
   .touch-action-buttons button:active { filter: brightness(1.18); }
 }
+
+/* 3.4 mobile HUD: edge rails, not a wall of buttons across the sightline.
+ * Keep all overrides coarse-pointer only: desktop geometry is unchanged. */
+.touch-primary-actions, .touch-secondary-actions, .touch-build-panel { display: contents; }
+.touch-build-panel[hidden], .touch-secondary-actions[hidden] { display: none !important; }
+.touch-build-toggle { display: none; }
+.mobile-hud-settings { display: grid; gap: 10px; border: 1px solid #334155; border-radius: 12px; padding: 12px; }
+.mobile-hud-settings label { font-size: .85rem; }
+.mobile-hud-settings input[type=range] { width: 100%; min-height: 32px; }
+.mobile-hud-settings small { color: #b5c3d5; line-height: 1.5; }
+
+@media (pointer: coarse) {
+  :root {
+    --mh-left: calc(8px + env(safe-area-inset-left, 0px));
+    --mh-right: calc(8px + env(safe-area-inset-right, 0px));
+    --mh-top: calc(8px + env(safe-area-inset-top, 0px));
+    --mh-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+    --mh-button: clamp(44px, calc(46px * var(--mobile-button-scale, 1)), 52px);
+    --mh-slot: clamp(44px, calc(44px * var(--mobile-info-scale, 1)), 50px);
+    --mh-health: calc(44px * var(--mobile-info-scale, 1));
+    --mh-rail: calc(var(--mh-button) * 2 + 20px);
+    --mh-joystick: clamp(84px, 25dvh, 96px);
+    --mh-glass: rgba(8, 18, 32, .64);
+  }
+  .mobile-controls { display: block; }
+  .touch-look-surface { top: 56px; bottom: 0; right: 0; width: 72dvw; touch-action: none; }
+  .touch-look-hint { display: none; }
+  .hud-top-left { top: var(--mh-top); left: var(--mh-left); gap: 4px; }
+  .minimap-wrapper { width: 64px; height: 64px; border-radius: 10px; }
+  .storm-banner { width: 104px; max-width: none; min-height: 24px; padding: 3px 5px; font-size: 9px; white-space: normal; border-radius: 6px; }
+  .hud-top-right { top: var(--mh-top); right: calc(var(--mh-right) + var(--mh-rail) + 12px); max-width: none; gap: 4px; }
+  .match-counters { flex-wrap: nowrap; gap: 4px; }
+  .counter-pill { min-height: 36px; padding: 3px 6px; gap: 3px; border-radius: 8px; background: var(--mh-glass); }
+  .counter-label { font-size: 8px; }
+  .counter-val { font-size: 13px; }
+  .hud-icon-btn { width: 44px; height: 44px; border-radius: 10px; font-size: 15px; background: var(--mh-glass); }
+  .net-status-pill { display: none; }
+  .killfeed-list { max-width: 180px; max-height: 24px; overflow: hidden; font-size: 9px; }
+  .killfeed-row { padding: 2px 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hud-compass-pill { top: var(--mh-top); left: calc(var(--mh-left) + 112px); transform: none; padding: 3px 5px; font-size: 9px; }
+  .hud-poi-toast, .hud-elim-banner { top: calc(var(--mh-top) + 76px); max-width: 44dvw; padding: 4px 8px; font-size: 10px; letter-spacing: .02em; }
+  .hud-elim-banner { top: calc(var(--mh-top) + 102px); }
+  .hud-spectator-banner { top: calc(var(--mh-top) + 48px); max-width: 65dvw; font-size: 10px; }
+  .hud-bottom-left { left: var(--mh-left); bottom: var(--mh-bottom); width: calc(150px * var(--mobile-info-scale,1)); height: var(--mh-health); padding: 5px 7px; gap: 4px; border-radius: 9px; background: var(--mh-glass); justify-content: center; }
+  .vital-row { gap: 4px; }
+  .vital-bar-bg { height: 8px; }
+  .vital-icon { font-size: 10px; }
+  .vital-text { width: 49px; font-size: calc(10px * var(--mobile-info-scale,1)); white-space: nowrap; }
+  .joystick-zone { left: var(--mh-left); bottom: calc(var(--mh-bottom) + var(--mh-health) + 8px); width: var(--mh-joystick); height: var(--mh-joystick); background: radial-gradient(circle,rgba(56,189,248,.06) 0 46%,rgba(8,18,32,.38) 48% 100%); }
+  .joystick-knob { width: 38px; height: 38px; }
+  .joystick-label { font-size: 8px; }
+  .touch-build-toggle { display: flex; position: fixed; z-index: 5; left: var(--mh-left); bottom: calc(var(--mh-bottom) + var(--mh-health) + var(--mh-joystick) + 16px); width: var(--mh-joystick); height: 44px; pointer-events: auto; }
+  .hud-bottom-right { right: var(--mh-right); bottom: var(--mh-bottom); width: max-content; max-width: none; gap: 4px; }
+  .weapon-materials-strip { display: flex !important; height: 28px; gap: 4px; justify-content: flex-end; }
+  .active-ammo-card { display: flex; flex-direction: row; align-items: center; height: 28px; min-width: 0; padding: 3px 6px; gap: 5px; border-radius: 7px; background: var(--mh-glass); }
+  .active-ammo-card.reload-complete { transform: none; }
+  .weapon-title { max-width: 85px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 10px; }
+  .ammo-numbers { display: flex; align-items: baseline; gap: 2px; white-space: nowrap; }
+  .ammo-clip { font-size: 16px; } .ammo-res { font-size: 10px; }
+  .materials-card { display: flex; height: 28px; padding: 2px 3px; gap: 2px; border-radius: 7px; background: var(--mh-glass); font-size: 9px; }
+  .mat-chip { padding: 1px 2px; white-space: nowrap; }
+  .build-hint-pill { display: none; }
+  .hotbar-row { height: var(--mh-slot); gap: 3px; flex-wrap: nowrap; }
+  .hotbar-slot { min-width: 44px; width: var(--mh-slot); height: var(--mh-slot); padding: 2px; border-radius: 8px; background: var(--mh-glass); touch-action: none; }
+  .slot-key { font-size: 8px; line-height: 1; } .slot-icon { font-size: 13px; line-height: 1; }
+  .slot-name { display: none; } .slot-ammo { font-size: 9px; line-height: 1; }
+  .touch-action-buttons { right: var(--mh-right); bottom: calc(var(--mh-bottom) + var(--mh-slot) + 40px); width: var(--mh-rail); height: auto; display: flex; flex-direction: column; gap: 4px; }
+  .touch-primary-actions { display: grid; grid-template-columns: var(--mh-button) 1fr; grid-template-areas: 'ads fire'; gap: 4px; height: calc(var(--mh-button) + 16px); }
+  .touch-secondary-actions, .touch-build-panel { display: grid; grid-template-columns: repeat(2,1fr); grid-auto-rows: var(--mh-button); gap: 4px; }
+  .touch-btn, .touch-btn.build { grid-area: auto !important; width: 100%; height: 100%; min-height: 44px; min-width: 44px; padding: 3px 2px; display: flex; align-items: center; justify-content: center; font-size: 10px; line-height: 1.15; border-radius: 11px; background: var(--mh-glass); border: 1px solid rgba(187,213,235,.35); box-shadow: none; touch-action: none; user-select: none; -webkit-touch-callout: none; }
+  #touch-fire-btn { grid-area: fire !important; background: rgba(174,49,54,.62); font-size: 12px; border-color: #fc8787; border-radius: 18px; }
+  #touch-aim-btn { grid-area: ads !important; }
+  #touch-build-toggle-btn { width: var(--mh-joystick); height: 44px; }
+  #touch-reload-btn { font-size: 9px; }
+  #touch-material-btn { order: 4; } #touch-build-close-btn { order: 5; }
+  .touch-btn.is-held, .touch-btn:active { background: rgba(56,130,176,.85); border-color: #d7f4ff; transform: none; }
+  .touch-btn.is-active, .touch-btn[aria-pressed=true], .touch-btn.active-build { border: 2px solid #67e8f9; background: rgba(14,91,120,.8); }
+  .touch-btn:disabled, .touch-btn[aria-disabled=true] { opacity: .4; border-style: dashed; }
+  .touch-btn:focus-visible { outline: 2px solid white; outline-offset: 2px; }
+  /* Fix the reticle at the true viewport centre even when a prompt appears. */
+  .hud-center { inset: 0; transform: none; display: block; pointer-events: none; }
+  .crosshair { position: absolute; left: 50%; top: 50%; translate: -50% -50%; }
+  .hitmarker { left: 50%; top: 50%; translate: -50% -50%; }
+  .hit-badge { top: calc(50% + 28px); left: 50%; translate: -50% 0; font-size: 9px; }
+  .pickup-prompt, .loot-toast, .center-Status-tag { position: absolute; left: 50%; top: auto; bottom: calc(var(--mh-bottom) + var(--mh-slot) + 34px); translate: -50% 0; margin: 0; max-width: 42dvw; padding: 4px 7px; font-size: 10px; text-align: center; }
+  .loot-toast { bottom: calc(var(--mh-bottom) + var(--mh-slot) + 62px); }
+  .center-Status-tag { left: auto; right: var(--mh-right); bottom: calc(var(--mh-bottom) + var(--mh-slot)); translate: none; max-width: 150px; padding: 2px 5px; }
+}
+@media (pointer: coarse) and (max-width: 700px) and (orientation: landscape) {
+  .hud-compass-pill { top: calc(var(--mh-top) + 48px); }
+  .materials-card { font-size: 8px; }
+}
+@media (pointer: coarse) and (orientation: portrait) {
+  .hud-top-right { right: var(--mh-right); }
+  .hud-compass-pill { top: calc(var(--mh-top) + 52px); }
+  .hud-bottom-right { left: 50%; right: auto; translate: -50% 0; }
+  .weapon-materials-strip { position: fixed; right: 0; bottom: calc(var(--mh-slot) + 4px); }
+  .materials-card { display: none; }
+  .hud-bottom-left { bottom: calc(var(--mh-bottom) + var(--mh-slot) + 4px); width: 136px; }
+  .joystick-zone { bottom: calc(var(--mh-bottom) + var(--mh-slot) + var(--mh-health) + 12px); }
+  .touch-build-toggle { bottom: calc(var(--mh-bottom) + var(--mh-slot) + var(--mh-health) + var(--mh-joystick) + 20px); }
+  .touch-action-buttons { bottom: calc(var(--mh-bottom) + var(--mh-slot) + var(--mh-health) + 12px); }
+  .pickup-prompt, .loot-toast { max-width: 50dvw; bottom: calc(var(--mh-bottom) + var(--mh-slot) + var(--mh-health) + var(--mh-joystick) + 78px); }
+}
+@media (pointer: coarse) and (orientation: landscape) and (max-height: 350px) {
+  /* Fit expanded controls on short phones even at the largest preference. */
+  :root { --mh-button: clamp(44px, calc(46px * var(--mobile-button-scale,1)), 46px); }
+}
+@media (pointer: coarse) and (orientation: portrait) {
+  .counter-pill { flex-direction: column; min-width: 34px; padding: 2px 3px; gap: 0; }
+}
+@media (pointer: coarse) and (orientation: portrait) {
+  .hud-bottom-right { left: auto; right: var(--mh-right); translate: none; }
+  .weapon-materials-strip { position: static; }
+  :root:has(#touch-build-panel:not([hidden])) .materials-card {
+    display: flex; position: fixed; left: var(--mh-left); right: auto;
+    bottom: calc(var(--mh-bottom) + var(--mh-slot) + var(--mh-health) + var(--mh-joystick) + 68px);
+    width: 136px; justify-content: space-between;
+  }
+}
+
+@media (pointer: coarse) {
+  /* The ammunition card already shows the authoritative LOAD timer and
+   * progress. Suppress only the redundant centre-screen reload banner. */
+  .center-Status-tag { display: none; }
+  .hud-poi-toast, .hud-elim-banner, .pickup-prompt, .loot-toast {
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+}
+@media (pointer: coarse) and (orientation: portrait) {
+  .pickup-prompt { top: calc(var(--mh-top) + 176px); bottom: auto; }
+  .loot-toast { top: calc(var(--mh-top) + 148px); bottom: auto; }
+}
+@media (pointer: fine) {
+  /* Preserve the legacy narrow-desktop layout, including its build hints. */
+  .touch-build-panel[hidden], .touch-secondary-actions[hidden] { display: contents !important; }
+  #touch-build-close-btn { display: none; }
+}
+@media (pointer: coarse) and (orientation: portrait) {
+  .hud-poi-toast, .hud-elim-banner {
+    left: calc(var(--mh-left) + 112px); right: var(--mh-right);
+    transform: none; max-width: none;
+  }
+}

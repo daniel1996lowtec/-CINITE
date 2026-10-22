@@ -8,13 +8,15 @@ import type {
   WeaponCategory,
   WeaponRarity,
 } from '../network/schemas';
-import { createWeaponMesh, getWeaponVisualProfile } from '../weapons/WeaponDefinitions';
+import { createWeaponMesh, getWeaponVisualProfile, getSupportGrip } from '../weapons/WeaponDefinitions';
 import {
   getOutfitVisualProfile,
   normalizeOutfitPresetId,
 } from './CharacterCosmetics';
 import {
   selectPresentationState,
+  advanceLocomotionPhase,
+  getCharacterAnimationInterval,
   type PresentationState,
   getAirbornePose,
   getLocomotionBlend,
@@ -551,6 +553,9 @@ export class CharacterMesh {
   public currentAnimState: CharacterAnimState = 'idle';
   public presentationState: PresentationState = 'ready';
   private reducedDetail = false;
+  private locomotionPhase = 0;
+  private accumulatedFallbackDt = 0;
+  private weaponMicroDetails: THREE.Object3D | undefined;
   public setReducedDetail(reduced: boolean): void {
     if (this.reducedDetail === reduced) return;
     this.reducedDetail = reduced;
@@ -1025,8 +1030,8 @@ export class CharacterMesh {
             vibrantColor.setHSL(hsl.h, Math.min(1, hsl.s * 1.2), Math.max(0.45, hsl.l));
             const tinted = new THREE.Color(0xffffff).lerp(vibrantColor, 0.58);
             customBodyMat.color.copy(tinted);
-            customBodyMat.roughness = profile.roughness;
-            customBodyMat.metalness = profile.metalness;
+            customBodyMat.roughness = Math.max(.48, profile.roughness);
+            customBodyMat.metalness = profile.metalness * .65;
             customBodyMat.envMapIntensity = profile.envMapIntensity;
             if (this.armorTexture && !this.reducedDetail) {
               customBodyMat.bumpMap = this.armorTexture;
@@ -1185,8 +1190,8 @@ export class CharacterMesh {
     this.accentMat.emissiveIntensity = profile.visorEmissiveIntensity * 0.5;
 
     if (this.gltfBodyMat) {
-      this.gltfBodyMat.roughness = profile.roughness;
-      this.gltfBodyMat.metalness = profile.metalness;
+      this.gltfBodyMat.roughness = Math.max(.48, profile.roughness);
+      this.gltfBodyMat.metalness = profile.metalness * .65;
       this.gltfBodyMat.envMapIntensity = profile.envMapIntensity;
       if (this.armorTexture && !this.reducedDetail && !this.gltfBodyMat.bumpMap) {
         this.gltfBodyMat.bumpMap = this.armorTexture;
@@ -1618,7 +1623,7 @@ export class CharacterMesh {
     const key = `${category}_${rarity}`;
     if (this.currentWeaponKey === key) return;
     this.currentWeaponKey = key;
-    this.equipAnimTimer = 0.24;
+    this.equipAnimTimer = 0.14;
 
     for (let i = this.weaponSocket.children.length - 1; i >= 0; i--) {
       const child = this.weaponSocket.children[i];
@@ -1645,6 +1650,7 @@ export class CharacterMesh {
         this.muzzleFlashMesh.position.copy(this.weaponSocket.worldToLocal(this.tempHandWorldPos));
       }
     }
+    this.weaponMicroDetails = model.getObjectByName('weapon_micro_details');
     this.weaponMagazine = model.getObjectByName('weapon_mag');
     this.weaponSlide = model.getObjectByName('weapon_slide');
     if (this.weaponMagazine) this.weaponMagazineRotation.copy(this.weaponMagazine.rotation);
@@ -1655,7 +1661,8 @@ export class CharacterMesh {
     if (this.wasAlive && !state.alive) this.eliminationTimer = 0.3;
     if (!this.wasAlive && state.alive) {
       this.root.scale.setScalar(1);
-      this.equipAnimTimer = 0.24;
+      this.locomotionPhase = 0; this.accumulatedFallbackDt = 0;
+      this.equipAnimTimer = 0.14;
       this.landingTimer = 0;
       this.wasGrounded = state.isGrounded;
     }
@@ -1698,7 +1705,7 @@ export class CharacterMesh {
     this.visualFacingYaw = lerpAngle(
       this.visualFacingYaw,
       targetFacing,
-      Math.min(1, dt * 15)
+      1 - Math.exp(-dt * 15)
     );
     this.bodyGroup.rotation.y = this.visualFacingYaw;
     this.bodyGroup.rotation.z = this.turnLean * 0.45;
@@ -1710,7 +1717,7 @@ export class CharacterMesh {
       this.equipWeaponModel('harvester', 'rare');
     }
 
-    const switchPose = getWeaponSwitchPose(this.equipAnimTimer, 0.24);
+    const switchPose = getWeaponSwitchPose(this.equipAnimTimer, 0.14);
     const drawTilt = switchPose.pitchOffset;
     this.weaponSwitchDipY = switchPose.dipY;
     this.weaponSwitchRoll = switchPose.roll;
@@ -1780,6 +1787,7 @@ export class CharacterMesh {
     if (cameraPos) {
       distToCamera = cameraPos.distanceTo(this.root.position);
     }
+    if (this.weaponMicroDetails) this.weaponMicroDetails.visible = distToCamera < (this.reducedDetail ? 22 : 55);
     if (this.outfitAttachmentGroup) {
       // Cosmetic micro-geometry is the first character detail shed at range;
       // the body, weapon and back accessory remain visible.
@@ -1851,9 +1859,15 @@ export class CharacterMesh {
         distToCamera
       );
     } else {
+      this.accumulatedFallbackDt += dt;
+      const interval = getCharacterAnimationInterval(distToCamera,this.reducedDetail,
+        state.isReloading || state.isAiming || this.attackSwingTimer > 0);
+      if (this.accumulatedFallbackDt + .00001 < interval) return;
+      const stepDt = Math.min(.2,this.accumulatedFallbackDt);
+      this.accumulatedFallbackDt = 0;
       this.updateProceduralFallbackAnimation(
         state,
-        dt,
+        stepDt,
         horizSpeed,
         landDipY,
         activeCat,
@@ -1898,7 +1912,7 @@ export class CharacterMesh {
       if (key === 'reload' || key === 'switch' || key === 'shoot' || key === 'land') {
         const progress = key === 'reload'
           ? getReloadAnimationPose(state.reloadTimer, state.reloadDuration, this.reloadAnimClock).progress
-          : key === 'switch' ? 1 - this.equipAnimTimer / 0.24
+          : key === 'switch' ? 1 - this.equipAnimTimer / 0.14
           : key === 'shoot' ? 1 - this.attackSwingTimer / 0.22 : 1 - this.landingTimer / 0.18;
         action.paused = true;
         action.time = THREE.MathUtils.clamp(progress, 0, 1) * action.getClip().duration;
@@ -1922,25 +1936,25 @@ export class CharacterMesh {
   ): void {
     // Time-based budgets behave consistently on both 30Hz phones and 144Hz desktops.
     this.accumulatedMixerDt += dt;
-    const interval = distToCamera > 145 ? 0.1 : distToCamera > 85 ? 1 / 15
-      : distToCamera > (this.reducedDetail ? 24 : 42) ? 1 / 30 : 0;
+    const interval = getCharacterAnimationInterval(distToCamera, this.reducedDetail,
+      state.isAiming || state.isReloading || this.attackSwingTimer > 0 || this.landingTimer > 0);
     if (this.accumulatedMixerDt + 0.00001 < interval) return;
     const stepDt = Math.min(0.2, this.accumulatedMixerDt);
     this.accumulatedMixerDt = 0;
 
     this.animTime += stepDt * 4.0;
-    const blend = Math.min(1, stepDt * 12);
+    const blend = 1 - Math.exp(-stepDt * 12);
 
     // Smooth upper-body & airborne blend weights to eliminate sudden pose snaps
     this.aimPoseBlend = THREE.MathUtils.lerp(
       this.aimPoseBlend,
       state.isAiming ? 1.0 : 0.0,
-      Math.min(1, stepDt * 14)
+      1 - Math.exp(-stepDt * 14)
     );
     this.reloadPoseBlend = THREE.MathUtils.lerp(
       this.reloadPoseBlend,
       state.isReloading ? 1.0 : 0.0,
-      Math.min(1, stepDt * 12)
+      1 - Math.exp(-stepDt * 12)
     );
     // Procedural weapon sway from turn angular velocity + movement bob
     let yawDelta = state.yaw - this.prevAimYaw;
@@ -1954,12 +1968,12 @@ export class CharacterMesh {
     this.swayYawOffset = THREE.MathUtils.lerp(
       this.swayYawOffset,
       THREE.MathUtils.clamp(-yawDelta * 1.6 * swayDamp, -0.14, 0.14),
-      Math.min(1, stepDt * 12)
+      1 - Math.exp(-stepDt * 12)
     );
     this.swayPitchOffset = THREE.MathUtils.lerp(
       this.swayPitchOffset,
       THREE.MathUtils.clamp(-pitchDelta * 1.4 * swayDamp, -0.12, 0.12),
-      Math.min(1, stepDt * 12)
+      1 - Math.exp(-stepDt * 12)
     );
 
     // 1. Blend Real GLB AnimationAction Weights (Idle, Walk, Run/Sprint) with Stride Matching
@@ -2006,6 +2020,17 @@ export class CharacterMesh {
     // Undo previous procedural overlays before the mixer samples the next frame.
     // Some bones have no tracks after pruning, so relying on mixer overwrite is unsafe.
     for (const [bone, quaternion] of this.baseBonePoses) bone.quaternion.copy(quaternion);
+    // Locomotion clips have different durations; sampling a shared normalized
+    // phase prevents opposing footfalls when Walk, Run and Sprint crossfade.
+    const walkCycle = (this.gltfActions.walk?.getClip().duration ?? 1) / walkTimeScale;
+    const runCycle = (this.gltfActions.run?.getClip().duration ?? 1) / runTimeScale;
+    const cycle = 1 / THREE.MathUtils.lerp(1 / walkCycle,1 / runCycle,locomotion.run);
+    if (horizSpeed > .1 && state.isGrounded && !state.isGliding) {
+      this.locomotionPhase = advanceLocomotionPhase(this.locomotionPhase,stepDt,cycle);
+    }
+    this.sampleGaitAction(this.gltfActions.walk);
+    this.sampleGaitAction(this.gltfActions.run);
+    this.sampleGaitAction(this.gltfActions.sprint);
     this.mixer!.update(stepDt);
     for (const [bone, quaternion] of this.baseBonePoses) quaternion.copy(bone.quaternion);
 
@@ -2153,19 +2178,26 @@ export class CharacterMesh {
     );
     if (distToCamera < (this.reducedDetail ? 22 : 45) && !state.isReloading &&
         this.reloadPoseBlend < 0.05 && !state.isGliding && activeCat !== 'harvester') {
-      this.alignSupportHand(isLongGun);
+      this.alignSupportHand(activeCat);
     }
     this.updateOutfitAttachments();
   }
 
+  private sampleGaitAction(action: THREE.AnimationAction | undefined): void {
+    if (!action) return;
+    action.paused = true;
+    action.time = this.locomotionPhase * action.getClip().duration;
+  }
+
   /** Two-bone support-hand IK. Cosmetic only; the gameplay ray never reads it. */
-  private alignSupportHand(longGun: boolean): void {
+  private alignSupportHand(category: WeaponCategory): void {
     const upper = this.gltfBones.leftArm, lower = this.gltfBones.leftForeArm, hand = this.gltfBones.leftHand;
     if (!upper || !lower || !hand) return;
     const [a, b, c, target, axis, pole, elbow, direction] = this.ikPoints;
     this.root.updateMatrixWorld(true);
     upper.getWorldPosition(a); lower.getWorldPosition(b); hand.getWorldPosition(c);
-    target.set(0, longGun ? 0.015 : -0.035, longGun ? -0.26 : 0.015);
+    const grip = getSupportGrip(category);
+    target.set(grip[0],grip[1],grip[2]);
     this.weaponSocket.localToWorld(target);
     const l1 = a.distanceTo(b), l2 = b.distanceTo(c);
     if (l1 < 0.001 || l2 < 0.001) return;

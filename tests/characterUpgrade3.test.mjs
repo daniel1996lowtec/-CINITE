@@ -477,3 +477,29 @@ test('3.1 fallback disposal is idempotent and keeps shared weapons intact', asyn
   mesh.upgradeToRiggedGLTFModel();
   assert.equal(mesh.root.children.length, 0);
 });
+
+test('3.4 polish: continuous gait weights, phase clock, distance budgets and cached firearm detail',async()=>{
+  const {animation,weapons}=await loadCharacterModules();
+  let previous=animation.getLocomotionBlend(0,false,true,false);
+  for(let speed=.01;speed<12;speed+=.01){
+    const blend=animation.getLocomotionBlend(speed,speed>8.2,true,false);
+    assert.ok(Math.abs(blend.idle+blend.walk+blend.run-1)<1e-9);
+    for(const key of ['idle','walk','run'])assert.ok(Math.abs(blend[key]-previous[key])<.02,`discontinuous ${key} at ${speed}`);
+    previous=blend;
+  }
+  let fine=0,coarse=0;
+  for(let i=0;i<60;i++)fine=animation.advanceLocomotionPhase(fine,1/60,.7);
+  for(let i=0;i<5;i++)coarse=animation.advanceLocomotionPhase(coarse,.2,.7);
+  assert.ok(Math.abs(fine-coarse)<1e-8);
+  assert.equal(animation.getCharacterAnimationInterval(200,false,false),.2);
+  assert.equal(animation.getCharacterAnimationInterval(200,false,true),.1);
+  assert.equal(animation.getCharacterAnimationInterval(10,true,false),0);
+  for(const category of weapons.FIREARM_CATEGORIES){
+    const a=weapons.createWeaponMesh(category,'rare'),b=weapons.createWeaponMesh(category,'rare');
+    const detail=a.getObjectByName('weapon_micro_details');assert.equal(detail.children.length,2);
+    assert.equal(a.getObjectByName('muzzle_bore').geometry,b.getObjectByName('muzzle_bore').geometry);
+    assert.equal(a.getObjectByName('receiver_pin').material,b.getObjectByName('receiver_pin').material);
+    assert.ok(weapons.getSupportGrip(category).every(Number.isFinite));
+    assert.ok(Math.abs(weapons.getSupportGrip(category)[2])<weapons.getWeaponVisualProfile(category).modelLength);
+  }
+});

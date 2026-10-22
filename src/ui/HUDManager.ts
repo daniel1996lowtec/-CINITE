@@ -487,6 +487,14 @@ export class HUDManager {
   }
 
   public updateBuildModeIndicator(activeBuild: BuildPieceType | null): void {
+    for (const piece of ['wall','ramp','floor','roof'] as const) {
+      const button = document.getElementById(`touch-${piece}-btn`);
+      button?.classList.toggle('active-build',activeBuild === piece);
+      button?.setAttribute('aria-pressed',String(activeBuild === piece));
+    }
+    const fire = document.getElementById('touch-fire-btn');
+    if (fire) fire.textContent = activeBuild ? '▧ PLACE' : '🔥 FIRE';
+
     this.buildBtnWall?.classList.toggle('active-build', activeBuild === 'wall');
     this.buildBtnRamp?.classList.toggle('active-build', activeBuild === 'ramp');
     this.buildBtnFloor?.classList.toggle(
