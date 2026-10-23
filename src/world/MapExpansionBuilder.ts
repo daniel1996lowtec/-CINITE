@@ -41,6 +41,7 @@ import type {
   LandmarkPlacement,
   LegendaryTowerSide,
 } from './WorldLayout';
+import { roadHalfWidth } from './RoadNetwork';
 import {
   AURORA_HEIGHTS_SKYBRIDGE,
   EXISTING_MAJOR_FOOTPRINTS,
@@ -2890,8 +2891,10 @@ export class MapExpansionBuilder {
       if (length < 8) continue;
       const dirX = dx / length;
       const dirZ = dz / length;
-      // Road half-width: primary roads are wider than the district links.
-      const halfWidth = segment.kind === 'primary' ? 4.05 : 3.75;
+      // CI CRAFT 9.0 — one source of truth. The asphalt mesh, the terrain
+      // sub-base paint and these kerbs all read ROAD_HALF_WIDTH, so the kerb
+      // line can no longer drift away from the edge of the road it belongs to.
+      const halfWidth = roadHalfWidth(segment.kind);
       const yaw = Math.atan2(dirX, dirZ);
       const steps = Math.max(2, Math.floor(length / kerbStep));
 

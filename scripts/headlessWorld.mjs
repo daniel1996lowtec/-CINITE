@@ -29,11 +29,16 @@ export async function loadWorldModules() {
       ["from './ArchitecturalMaterials'", "from './ArchitecturalMaterials.mjs'"],
       ["from './VisualAtmosphere'", "from './VisualAtmosphere.mjs'"],
     ]);
+    emit('src/world/RoadNetwork.ts', 'RoadNetwork.mjs', [
+      ["from './WorldLayout'", "from './WorldLayout.mjs'"],
+    ]);
+    const roadNetworkModule = await import(pathToFileURL(path.join(tmpDir, 'RoadNetwork.mjs')).href);
     emit('src/world/TerrainGenerator.ts', 'TerrainGenerator.mjs', [
       [/import\s+\{\s*TimeOfDayPreset\s*\}\s+from\s+['"]\.\.\/network\/schemas['"];?\n?/, ''],
       ["from './VisualAtmosphere'", "from './VisualAtmosphere.mjs'"],
       ["from './SkySystem'", "from './SkySystem.mjs'"],
       ["from './WorldLayout'", "from './WorldLayout.mjs'"],
+      ["from './RoadNetwork'", "from './RoadNetwork.mjs'"],
     ]);
     emit('src/world/MapExpansionBuilder.ts', 'MapExpansionBuilder.mjs', [
       ["from './WorldBrandingLayout'", "from './WorldBrandingLayout.mjs'"],
@@ -42,6 +47,7 @@ export async function loadWorldModules() {
       ["from './BuildingKit'", "from './BuildingKit.mjs'"],
       ["from './VegetationGeometry'", "from './VegetationGeometry.mjs'"],
       ["from './WorldLayout'", "from './WorldLayout.mjs'"],
+      ["from './RoadNetwork'", "from './RoadNetwork.mjs'"],
     ]);
     emit('src/world/IslandWorld.ts', 'IslandWorld.mjs', [
       ["from '../../shared/buildPlacement.mjs'", `from '${pathToFileURL(path.join(ROOT_DIR,'shared/buildPlacement.mjs')).href}'`],
@@ -81,6 +87,8 @@ export async function loadWorldModules() {
       skySystem,
       buildingKit,
       IslandWorld: worldModule.IslandWorld,
+      buildRoadNetwork: roadNetworkModule.buildRoadNetwork,
+      roadHalfWidth: roadNetworkModule.roadHalfWidth,
     };
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
