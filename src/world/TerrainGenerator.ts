@@ -777,10 +777,20 @@ export class TerrainGenerator {
         const leftEdge = pushVertex(cx - perpX * halfWidth, cz - perpZ * halfWidth, 0, along * 0.16, 0.95);
         pushVertex(cx + perpX * halfWidth, cz + perpZ * halfWidth, 1, along * 0.16, 0.95);
 
+        // CI CRAFT 8.3 — measure clearance under the SAME point the deck height
+        // was sampled from. This previously compared the deck's left edge
+        // elevation against the terrain under the *centreline*, so any ordinary
+        // cross-slope on a cambered road exceeded the 0.15 m threshold and grew
+        // a full bridge parapet alongside it. That is what produced the long
+        // grey walls running down both sides of flat roads.
+        const edgeX = cx - perpX * halfWidth;
+        const edgeZ = cz - perpZ * halfWidth;
         const deckY = positions[leftEdge * 3 + 1];
-        const groundY = this.getRenderedTerrainHeight(cx, cz);
+        const groundY = this.getRenderedTerrainHeight(edgeX, edgeZ);
         const clearance = deckY - groundY;
-        const onBridge = clearance > 0.15;
+        // A real span needs headroom a player could not walk under; a road on
+        // gently rolling ground never qualifies.
+        const onBridge = clearance > 0.9;
 
         if (onBridge) {
           const yaw = Math.atan2(dirX, dirZ);
@@ -1499,9 +1509,13 @@ export class TerrainGenerator {
       const h = 38 + (i % 3) * 18;
       const r = 42 + (i % 2) * 16;
 
+      // Named so geometry audits can distinguish intentional ~400 m backdrop
+      // scenery from a mesh accidentally stretched across the world.
       const peak = new THREE.Mesh(new THREE.ConeGeometry(r, h, 6), distantMat);
+      peak.name = 'DistantBackdropPeak';
       peak.position.set(ix, h / 2 - 4, iz);
       const cap = new THREE.Mesh(new THREE.ConeGeometry(r * 0.42, h * 0.42, 6), snowCapMat);
+      cap.name = 'DistantBackdropSnowCap';
       cap.position.set(ix, h * 0.78 - 4, iz);
       this.distantIslandsGroup.add(peak, cap);
     }
