@@ -1501,6 +1501,27 @@ export class TerrainGenerator {
       roughness: 0.8,
     });
 
+    // CI CRAFT 8.4 — the distant mountains were cones lofted with only six
+    // radial segments, so from the ground each one silhouetted as a hard-edged
+    // hexagonal pyramid: a flat grey triangle floating over the skyline. The
+    // snow cap made it worse rather than better — it was built 0.38–0.74 m
+    // *inside* the rock cone and 0.42–0.58 m inside its flank, so it never
+    // drew at all. All eight peaks were bare flat slate, and the two nearly
+    // coincident surfaces z-fought near the summit at 380 m, where depth
+    // precision is worst.
+    //
+    // Fixes, both geometric:
+    //   1. 18 radial segments, so the silhouette is a mountain rather than a
+    //      six-sided prism, and no triangle spans half the base.
+    //   2. The cap is derived from the peak's own profile and inflated 4.5 %
+    //      outside it, with its apex just above the rock. That keeps the snow
+    //      strictly in front of the rock at every height, so it reads as a
+    //      snow line instead of z-fighting through it.
+    const PEAK_SEGMENTS = 18;
+    const CAP_BASE_FRAC = 0.62;  // snow starts at 62 % of the peak's height
+    const CAP_PROUD = 1.045;     // 4.5 % outside the rock surface
+    const PEAK_BASE_Y = -4;
+
     for (let i = 0; i < 8; i++) {
       const angle = (i / 8) * Math.PI * 2 + 0.3;
       const dist = 340 + (i % 3) * 38;
@@ -1511,12 +1532,20 @@ export class TerrainGenerator {
 
       // Named so geometry audits can distinguish intentional ~400 m backdrop
       // scenery from a mesh accidentally stretched across the world.
-      const peak = new THREE.Mesh(new THREE.ConeGeometry(r, h, 6), distantMat);
+      const peak = new THREE.Mesh(new THREE.ConeGeometry(r, h, PEAK_SEGMENTS), distantMat);
       peak.name = 'DistantBackdropPeak';
-      peak.position.set(ix, h / 2 - 4, iz);
-      const cap = new THREE.Mesh(new THREE.ConeGeometry(r * 0.42, h * 0.42, 6), snowCapMat);
+      peak.position.set(ix, h / 2 + PEAK_BASE_Y, iz);
+      // Slight elliptical squash so eight cones do not read as a stamped set.
+      peak.scale.set(1, 1, 0.88 + (i % 3) * 0.07);
+
+      const capBaseY = PEAK_BASE_Y + h * CAP_BASE_FRAC;
+      const capApexY = PEAK_BASE_Y + h + h * 0.012;
+      const capHeight = capApexY - capBaseY;
+      const capRadius = r * (1 - CAP_BASE_FRAC) * CAP_PROUD;
+      const cap = new THREE.Mesh(new THREE.ConeGeometry(capRadius, capHeight, PEAK_SEGMENTS), snowCapMat);
       cap.name = 'DistantBackdropSnowCap';
-      cap.position.set(ix, h * 0.78 - 4, iz);
+      cap.position.set(ix, (capBaseY + capApexY) / 2, iz);
+      cap.scale.copy(peak.scale);
       this.distantIslandsGroup.add(peak, cap);
     }
     scene.add(this.distantIslandsGroup);

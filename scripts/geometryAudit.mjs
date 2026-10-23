@@ -255,6 +255,62 @@ async function main() {
     if (underwater > 0) roadIssues.push(`${underwater} road vertices below the water plane`);
   }
 
+  // --- distant backdrop structure -------------------------------------------
+  //
+  // The backdrop cones are allow-listed above because they are legitimately
+  // ~90 m across. Allow-listing them exempted them from *every* check, and that
+  // is how eight bare hexagonal grey pyramids and eight snow caps buried inside
+  // their own mountains survived audit after audit. Exemption from the size
+  // thresholds is not exemption from being structurally sane.
+  const backdropIssues = [];
+  const peaks = [];
+  const caps = [];
+  scene.traverse((object) => {
+    if (object.name === 'DistantBackdropPeak') peaks.push(object);
+    if (object.name === 'DistantBackdropSnowCap') caps.push(object);
+  });
+  const coneProfile = (mesh) => {
+    const h = mesh.geometry.parameters.height;
+    const r = mesh.geometry.parameters.radius;
+    return { base: mesh.position.y - h / 2, apex: mesh.position.y + h / 2, height: h, radius: r };
+  };
+  const radiusAt = (p, y) =>
+    y < p.base || y > p.apex ? 0 : p.radius * ((p.apex - y) / p.height);
+
+  for (const peak of peaks) {
+    const cap = caps.find(
+      (c) =>
+        Math.abs(c.position.x - peak.position.x) < 1e-6 &&
+        Math.abs(c.position.z - peak.position.z) < 1e-6
+    );
+    const where = `backdrop peak at (${peak.position.x.toFixed(0)}, ${peak.position.z.toFixed(0)})`;
+    if (!cap) {
+      backdropIssues.push(`${where} has no snow cap`);
+      continue;
+    }
+    const rock = coneProfile(peak);
+    const snow = coneProfile(cap);
+    if (snow.apex < rock.apex) {
+      backdropIssues.push(`${where}: cap apex ${snow.apex.toFixed(2)} m is below the rock apex ${rock.apex.toFixed(2)} m`);
+      continue;
+    }
+    let worst = Infinity;
+    for (let k = 0; k <= 20; k++) {
+      const y = snow.base + ((snow.apex - snow.base) * k) / 20;
+      if (y > rock.apex) break;
+      worst = Math.min(worst, radiusAt(snow, y) - radiusAt(rock, y));
+    }
+    if (!(worst > 0)) {
+      backdropIssues.push(
+        `${where}: snow cap is ${Math.abs(worst).toFixed(2)} m inside the rock surface and can never be drawn`
+      );
+    }
+    const segs = peak.geometry.parameters.radialSegments;
+    if (segs < 12) {
+      backdropIssues.push(`${where}: only ${segs} radial segments — silhouettes as a flat grey pyramid`);
+    }
+  }
+
   // --- report ---------------------------------------------------------------
   console.log('CI CRAFT geometry audit');
   console.log(`  built in ${buildMs} ms`);
@@ -264,7 +320,12 @@ async function main() {
   );
   console.log('');
 
-  if (failures.length === 0 && elevationIssues.length === 0 && roadIssues.length === 0) {
+  if (
+    failures.length === 0 &&
+    elevationIssues.length === 0 &&
+    roadIssues.length === 0 &&
+    backdropIssues.length === 0
+  ) {
     console.log('  PASS — no structural geometry problems found');
     return 0;
   }
@@ -275,8 +336,12 @@ async function main() {
   }
   for (const issue of elevationIssues) console.log(`  FAIL elevation: ${issue}`);
   for (const issue of roadIssues) console.log(`  FAIL road: ${issue}`);
+  for (const issue of backdropIssues) console.log(`  FAIL backdrop: ${issue}`);
   console.log('');
-  console.log(`  ${failures.length} mesh(es), ${elevationIssues.length + roadIssues.length} world-level issue(s)`);
+  console.log(
+    `  ${failures.length} mesh(es), ` +
+      `${elevationIssues.length + roadIssues.length + backdropIssues.length} world-level issue(s)`
+  );
   return 1;
 }
 
