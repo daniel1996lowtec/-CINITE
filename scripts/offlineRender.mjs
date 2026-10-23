@@ -958,13 +958,18 @@ const viewpoints = {
     [eyeAt(7, -20, 1.75), look(7, groundAt(7, -34) + 2.8, -34), 62],
     [eyeAt(30, 38, 9.0), look(-6, groundAt(0, 0) + 2.0, 0), 72],
   ],
-  docks: [[eyeAt(-100, 100, 1.75), look(-82, groundAt(-82, 96) + 3.0, 96), 62]],
-  keep: [[eyeAt(90, -74, 1.75), look(74, groundAt(74, -88) + 3.0, -88), 62]],
+  docks: [[eyeAt(-112, 116, 1.75), look(-92, groundAt(-92, 100) + 3.0, 100), 62]],
+  keep: [[eyeAt(110, -84, 2.0), look(84, groundAt(84, -80) + 4.0, -80), 64]],
   farms: [[eyeAt(20, -96, 1.75), look(2, groundAt(2, -104) + 3.0, -104), 62]],
   tower: [[eyeAt(-30, -46, 1.75), look(0, groundAt(0, 0) + 8, 0), 68]],
   street: [[eyeAt(-66, 16, 1.75), look(-118, groundAt(-118, 16) + 2.2, 16), 64]],
   grove: [[eyeAt(-102, -68, 1.75), look(-121, groundAt(-121, -80) + 2.6, -80), 62]],
   terrain: [[eyeAt(152, 58, 14.0), look(96, groundAt(96, 20) + 2.0, 20), 68]],
+  // CI CRAFT 8.4 — `docks` and `keep` used to stand 3.4 m behind a shipping
+  // container stack and hard against a tower respectively, so both frames were
+  // a single flat-coloured prop filling the screen and proved nothing about the
+  // world. Both cameras were moved to clear ground lines of sight.
+  //
   // CI CRAFT 8.2 — kept so road geometry can be inspected reproducibly:
   // surface continuity, kerb contact, junction closure and the Mirror Lake
   // causeway. --scene roads
