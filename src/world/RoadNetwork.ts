@@ -43,6 +43,35 @@ export const ROAD_HALF_WIDTH: Record<RoadSegmentDefinition['kind'], number> = {
   secondary: 3.75,
 };
 
+/**
+ * CI CRAFT recovery switch — is the road system supposed to build?
+ *
+ * `?roads=1` builds the 9.0 road system, `?roads=0` suppresses the whole thing:
+ * no carriageway mesh, no bridge structures, no deck walkables, and no road
+ * sub-base painted into the terrain. Everything reads one flag, so the world can
+ * never end up half-roaded.
+ *
+ * The browser default is OFF while the world is recovered. The 9.0 road system
+ * is the only thing in the scene that changed between 8.7 and 9.0 — every other
+ * mesh, including terrain, buildings and props, is byte-identical — so turning
+ * it off restores the 8.1 world (which contained no road geometry at all) and
+ * proves in one page load whether the road surface is the problem.
+ *
+ * Headless runs (tests, audits, the offline renderer) keep roads ON, so the 9.0
+ * regression tests keep exercising the new system and it stays maintained.
+ */
+const ROADS_DEFAULT_IN_BROWSER = false;
+
+export function roadSurfaceRequested(search?: string): boolean {
+  const query = search ?? (typeof window === 'undefined' ? null : window.location.search);
+  // No page context at all: tests, audits and offline renders.
+  if (query === null) return true;
+  const flag = new URLSearchParams(query).get('roads');
+  if (flag === '1') return true;
+  if (flag === '0') return false;
+  return ROADS_DEFAULT_IN_BROWSER;
+}
+
 export function roadHalfWidth(kind: RoadSegmentDefinition['kind']): number {
   return ROAD_HALF_WIDTH[kind] ?? ROAD_HALF_WIDTH.secondary;
 }

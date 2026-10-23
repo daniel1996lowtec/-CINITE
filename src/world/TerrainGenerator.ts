@@ -21,7 +21,7 @@ import {
   setSkyTime,
   SKY_PRESETS as SKY_PALETTES,
 } from './SkySystem';
-import { buildRoadNetwork, type RoadWalkable } from './RoadNetwork';
+import { buildRoadNetwork, roadSurfaceRequested, type RoadWalkable } from './RoadNetwork';
 import {
   EXPANSION_BUILDINGS,
   EXPANSION_LANDMARKS,
@@ -177,6 +177,13 @@ export class TerrainGenerator {
   public lakeFoamRing!: THREE.Mesh;
   public lakeInnerRippleRing!: THREE.Mesh;
   public terrainMesh!: THREE.Mesh;
+  /**
+   * CI CRAFT recovery — whether the road system builds at all. Resolved once,
+   * from `?roads=0`. Everything road-related (carriageway, bridge structures,
+   * deck walkables, the sub-base painted into the terrain) reads this, so the
+   * world can never end up half-roaded.
+   */
+  public readonly roadsEnabled: boolean = roadSurfaceRequested();
   /** CI CRAFT 9.0 — conforming road surface from RoadNetwork.buildRoadNetwork(). */
   public roadSurfaceMesh: THREE.Mesh | null = null;
   /** Support planes for genuine bridge decks, consumed by IslandWorld. */
@@ -728,7 +735,7 @@ export class TerrainGenerator {
       // A road is only a road when it is above the water plane (-0.28 m, see
       // surfaceY in buildWater); genuinely submerged terrain keeps its seabed
       // colour, so river and lake beds are unaffected.
-      const onRoadSubBase = roadDist < 3.6 && vy > -0.2;
+      const onRoadSubBase = this.roadsEnabled && roadDist < 3.6 && vy > -0.2;
 
       if (onRoadSubBase) {
         // CI CRAFT 8.2 — the ±0.22 jitter on this band made the asphalt edge
@@ -973,13 +980,15 @@ export class TerrainGenerator {
     // CI CRAFT 9.0 — the whole road network comes from one deterministic
     // builder that conforms the asphalt across its full width. See
     // src/world/RoadNetwork.ts for why the previous two-vertex strip tore.
-    const roadNetwork = buildRoadNetwork(ISLAND_ROAD_SEGMENTS, this, WATER_SURFACE_Y);
-    this.roadSurfaceMesh = roadNetwork.surface;
-    this.roadBridgeMesh = roadNetwork.structures;
-    this.roadWalkables = roadNetwork.walkables;
-    this.roadStats = roadNetwork.stats;
-    scene.add(roadNetwork.surface);
-    if (roadNetwork.structures) scene.add(roadNetwork.structures);
+    if (this.roadsEnabled) {
+      const roadNetwork = buildRoadNetwork(ISLAND_ROAD_SEGMENTS, this, WATER_SURFACE_Y);
+      this.roadSurfaceMesh = roadNetwork.surface;
+      this.roadBridgeMesh = roadNetwork.structures;
+      this.roadWalkables = roadNetwork.walkables;
+      this.roadStats = roadNetwork.stats;
+      scene.add(roadNetwork.surface);
+      if (roadNetwork.structures) scene.add(roadNetwork.structures);
+    }
 
     // Stylized Ocean, Mirror Lake & Winding River Water Plane with Coastal Depth Gradient
     const waterGeo = new THREE.PlaneGeometry(1600, 1600, 64, 64);
