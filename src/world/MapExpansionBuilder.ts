@@ -2938,7 +2938,12 @@ export class MapExpansionBuilder {
             const sx = kx + dirX * offset;
             const sz = kz + dirZ * offset;
             const centreHeight = this.world.terrain.getTerrainHeight(sx, sz);
-            const underside = centreHeight + averageKerbHeight - KERB_BURY;
+            // CI CRAFT 8.3 — the underside used to be computed as
+            // `centreHeight + averageKerbHeight - KERB_BURY`, which adds the
+            // kerb height back before subtracting the burial. That double-count
+            // made every kerb stand 0.34 m proud instead of 0.17 m, so the whole
+            // network read as a continuous grey barrier wall alongside the road.
+            const underside = centreHeight - KERB_BURY;
             const endA = this.world.terrain.getTerrainHeight(
               sx + dirX * subSpanLength * 0.5,
               sz + dirZ * subSpanLength * 0.5
