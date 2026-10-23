@@ -11,7 +11,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 0.0.0.0 --port 4173",
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/database.test.mjs tests/botMode.test.mjs tests/lobbyBrowserUtils.test.mjs tests/lobbyBrowserUi.test.mjs tests/touchInput.test.mjs tests/mobileLandscape.test.mjs tests/visualAtmosphere.test.mjs tests/upgrade2.test.mjs tests/characterUpgrade3.test.mjs tests/multiplayer.integration.test.mjs tests/humanOnly.integration.test.mjs tests/lobbyBrowser.integration.test.mjs tests/legendaryTower.integration.test.mjs tests/legendaryTowerLoot.test.mjs tests/worldExpansion.test.mjs tests/evolution32.test.mjs tests/gameplay33.test.mjs tests/mobileHud.test.mjs tests/polish35.test.mjs tests/worldBranding.test.mjs tests/textChat.test.mjs tests/textChat.integration.test.mjs tests/displayName.test.mjs tests/gameplay41.test.mjs tests/matchModes50.test.mjs tests/graphics51.test.mjs tests/graphics61.test.mjs tests/graphics62.test.mjs tests/graphics70.test.mjs tests/graphics81.test.mjs tests/graphics82.test.mjs tests/graphics83.test.mjs tests/graphics84.test.mjs tests/aiming72.test.mjs tests/aiming72.integration.test.mjs",
+    "test": "node --test tests/database.test.mjs tests/botMode.test.mjs tests/lobbyBrowserUtils.test.mjs tests/lobbyBrowserUi.test.mjs tests/touchInput.test.mjs tests/mobileLandscape.test.mjs tests/visualAtmosphere.test.mjs tests/upgrade2.test.mjs tests/characterUpgrade3.test.mjs tests/multiplayer.integration.test.mjs tests/humanOnly.integration.test.mjs tests/lobbyBrowser.integration.test.mjs tests/legendaryTower.integration.test.mjs tests/legendaryTowerLoot.test.mjs tests/worldExpansion.test.mjs tests/evolution32.test.mjs tests/gameplay33.test.mjs tests/mobileHud.test.mjs tests/polish35.test.mjs tests/worldBranding.test.mjs tests/textChat.test.mjs tests/textChat.integration.test.mjs tests/displayName.test.mjs tests/gameplay41.test.mjs tests/matchModes50.test.mjs tests/graphics51.test.mjs tests/graphics61.test.mjs tests/graphics62.test.mjs tests/graphics70.test.mjs tests/graphics81.test.mjs tests/graphics82.test.mjs tests/graphics83.test.mjs tests/graphics84.test.mjs tests/graphics87.test.mjs tests/aiming72.test.mjs tests/aiming72.integration.test.mjs",
     "test:modes50": "node --test tests/matchModes50.test.mjs",
     "test:graphics51": "node --test tests/graphics51.test.mjs",
     "test:db": "node --test tests/database.test.mjs",
@@ -30,7 +30,7 @@
     "test:ui4:browser": "node scripts/menu4.browser.mjs",
     "test:gameplay41": "node --test tests/gameplay41.test.mjs",
     "test:gameplay41:browser": "node scripts/gameplay41.browser.mjs",
-    "test:graphics61": "node --test tests/graphics61.test.mjs tests/graphics62.test.mjs tests/graphics70.test.mjs tests/graphics81.test.mjs tests/graphics82.test.mjs tests/graphics83.test.mjs tests/graphics84.test.mjs tests/aiming72.test.mjs tests/aiming72.integration.test.mjs",
+    "test:graphics61": "node --test tests/graphics61.test.mjs tests/graphics62.test.mjs tests/graphics70.test.mjs tests/graphics81.test.mjs tests/graphics82.test.mjs tests/graphics83.test.mjs tests/graphics84.test.mjs tests/graphics87.test.mjs tests/aiming72.test.mjs tests/aiming72.integration.test.mjs",
     "audit:geometry": "node scripts/geometryAudit.mjs"
   },
   "engines": {

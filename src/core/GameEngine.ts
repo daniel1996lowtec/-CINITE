@@ -80,6 +80,16 @@ export class GameEngine {
 
   public network: NetworkManager;
   public world: IslandWorld;
+
+  /**
+   * CI CRAFT 8.7 — read-only view of the live renderer for diagnostics.
+   *
+   * Kept as a single accessor rather than making `renderer`/`scene` public so
+   * gameplay code still cannot reach in and mutate them.
+   */
+  public getDiagnosticsTargets(): { renderer: THREE.WebGLRenderer; scene: THREE.Scene } {
+    return { renderer: this.renderer, scene: this.scene };
+  }
   public playerController: PlayerController;
   public botController: BotAIController;
   public lootSystem: LootSystem;
@@ -206,34 +216,14 @@ export class GameEngine {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.container.appendChild(this.renderer.domElement);
 
-    // CI CRAFT 8.6 — surface GLSL failures instead of silently dropping meshes.
+    // CI CRAFT 8.7 — deliberately NOT installing renderer.debug.onShaderError.
     //
-    // When a program fails to compile or link, three.js skips that draw call
-    // entirely: the mesh does not render at all and nothing is drawn in its
-    // place. That matters here because the terrain is the only mesh carrying
-    // custom injected shader code, so a terrain-only failure removes the ground
-    // while the ocean plane, roads, buildings and props keep drawing — which
-    // looks exactly like "the world is covered in turquoise and the buildings
-    // float". Offline rendering and unit tests cannot see this because they
-    // never compile GLSL on the device's driver.
-    //
-    // This does not change any visual output. It records what the driver says
-    // so the next report can name the failing material instead of inferring it.
-    const shaderFailures: Array<Record<string, string>> = [];
-    (window as unknown as Record<string, unknown>).__cicraftShaderErrors = shaderFailures;
-    this.renderer.debug.onShaderError = (gl, program, glVertexShader, glFragmentShader) => {
-      const entry = {
-        program: (gl.getProgramInfoLog(program) ?? '').trim(),
-        vertex: (gl.getShaderInfoLog(glVertexShader) ?? '').trim(),
-        fragment: (gl.getShaderInfoLog(glFragmentShader) ?? '').trim(),
-        renderer: gl.getParameter(gl.RENDERER) as string,
-        maxVaryingVectors: String(gl.getParameter(gl.MAX_VARYING_VECTORS)),
-        maxVertexUniformVectors: String(gl.getParameter(gl.MAX_VERTEX_UNIFORM_VECTORS)),
-        maxFragmentUniformVectors: String(gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_VECTORS)),
-      };
-      shaderFailures.push(entry);
-      console.error('[CI Craft] shader failed to build — this mesh will not render:', entry);
-    };
+    // three.js calls that hook *instead of* its own reporter, and its reporter
+    // is the only thing that prints `Material Name`, `Material Type` and the
+    // annotated shader source. Overriding the hook silently downgrades real
+    // evidence to a bare info log. Diagnostics therefore leave three.js to
+    // report normally and capture its console output instead; see
+    // src/debug/RendererDiagnostics.ts.
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x38bdf8);
