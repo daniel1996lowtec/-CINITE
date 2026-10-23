@@ -37,6 +37,8 @@ import {
 import { IslandWorld } from '../world/IslandWorld';
 import {
   getCameraFarForQuality,
+  getShadowRigForQuality,
+  getFogDensityForQuality,
   getEnvironmentPreset,
   getSunOffset,
   resolveGraphicsQuality,
@@ -68,6 +70,8 @@ export class GameEngine {
   /** Dev-only overlay, enabled with `?aimdebug=1`; inert otherwise. */
   private aimDiagnostics = new AimDiagnostics();
   private dirLight!: THREE.DirectionalLight;
+  /** CI CRAFT 9.1 — tier currently backing the shadow rig. */
+  private shadowRigQuality: ResolvedGraphicsQuality | null = null;
   private dirLightTarget!: THREE.Object3D;
   private fillLight!: THREE.DirectionalLight;
   private hemiLight!: THREE.HemisphereLight;
@@ -926,16 +930,21 @@ export class GameEngine {
   }
 
   private setupLighting(): void {
-    this.hemiLight = new THREE.HemisphereLight(0xe0f2fe, 0x16a34a, 0.96);
+    // CI CRAFT 9.1 — stronger key, weaker ambient.
+    //
+    // A hemisphere light near 0.96 lit every surface from every direction, so
+    // shadowed faces were almost as bright as lit ones and the whole world read
+    // flat. Pulling ambient down and the key sun up restores form and depth
+    // without darkening the scene: total delivered light is about the same.
+    this.hemiLight = new THREE.HemisphereLight(0xdceeff, 0x1f6b34, 0.66);
     this.scene.add(this.hemiLight);
 
-    this.dirLight = new THREE.DirectionalLight(0xfffbeb, 1.54);
+    this.dirLight = new THREE.DirectionalLight(0xfff0d2, 1.86);
     const initialSun = getSunOffset('day');
     this.sunOffset.set(initialSun.x, initialSun.y, initialSun.z);
     this.dirLight.position.copy(this.sunOffset);
     this.dirLight.castShadow = true;
-    this.dirLight.shadow.mapSize.width = 1536;
-    this.dirLight.shadow.mapSize.height = 1536;
+    this.applyShadowQuality(this.getResolvedGraphicsQuality());
     this.dirLight.shadow.camera.near = 15;
     this.dirLight.shadow.camera.far = 360;
     const d = 98;
@@ -944,8 +953,6 @@ export class GameEngine {
     this.dirLight.shadow.camera.top = d;
     this.dirLight.shadow.camera.bottom = -d;
     this.dirLight.shadow.bias = -0.00028;
-    this.dirLight.shadow.normalBias = 0.028;
-    this.dirLight.shadow.radius = 2.0;
     this.dirLightTarget = new THREE.Object3D();
     this.scene.add(this.dirLightTarget);
     this.dirLight.target = this.dirLightTarget;
@@ -1061,10 +1068,34 @@ export class GameEngine {
     return this.resolvedGraphicsQuality;
   }
 
+  /**
+   * CI CRAFT 9.1 — apply the tier's shadow rig.
+   *
+   * Changing `mapSize` after the map has been allocated does nothing unless the
+   * previous render target is disposed and rebuilt, so do that explicitly here.
+   * This is pure render state: no world geometry, no collision, no gameplay.
+   */
+  private applyShadowQuality(quality: ResolvedGraphicsQuality): void {
+    if (!this.dirLight) return;
+    const rig = getShadowRigForQuality(quality);
+    const shadow = this.dirLight.shadow;
+    if (shadow.mapSize.width !== rig.mapSize) {
+      shadow.mapSize.width = rig.mapSize;
+      shadow.mapSize.height = rig.mapSize;
+      // Drop the stale target; three.js reallocates it on the next shadow pass.
+      shadow.map?.dispose();
+      shadow.map = null;
+    }
+    shadow.radius = rig.radius;
+    shadow.normalBias = rig.normalBias;
+    this.shadowRigQuality = quality;
+  }
+
   private setAdaptiveDetailReduced(reduced: boolean): void {
     if (this.adaptiveDetailReduced === reduced) return;
     this.adaptiveDetailReduced = reduced;
     const quality = this.getResolvedGraphicsQuality();
+    if (this.shadowRigQuality !== quality) this.applyShadowQuality(quality);
     this.stormSystem.setDetailEnabled(quality !== 'low' && !reduced);
     this.world.setLandmarkDetail(quality !== 'low' && !reduced);
 
@@ -1270,7 +1301,7 @@ export class GameEngine {
     if (preset === 'sunset') {
       this.scene.background = new THREE.Color(0xf97316);
       fog.color.setHex(0xfb923c);
-      fog.density = 0.0019;
+      fog.density = getFogDensityForQuality(0.0019, this.resolvedGraphicsQuality);
       this.hemiLight.color.setHex(0xfed7aa);
       this.hemiLight.groundColor.setHex(0x451a03);
       this.hemiLight.intensity = 0.82;
@@ -1284,7 +1315,7 @@ export class GameEngine {
     } else if (preset === 'night') {
       this.scene.background = new THREE.Color(0x0f172a);
       fog.color.setHex(0x1e293b);
-      fog.density = 0.0021;
+      fog.density = getFogDensityForQuality(0.0021, this.resolvedGraphicsQuality);
       this.hemiLight.color.setHex(0x38bdf8);
       this.hemiLight.groundColor.setHex(0x020617);
       this.hemiLight.intensity = 0.56;
@@ -1298,12 +1329,12 @@ export class GameEngine {
     } else {
       this.scene.background = new THREE.Color(0x38bdf8);
       fog.color.setHex(0xcbdde5);
-      fog.density = 0.0018;
-      this.hemiLight.color.setHex(0xe0f2fe);
-      this.hemiLight.groundColor.setHex(0x6b7256);
-      this.hemiLight.intensity = 0.96;
-      this.dirLight.color.setHex(0xfffbeb);
-      this.dirLight.intensity = 1.54;
+      fog.density = getFogDensityForQuality(0.0018, this.resolvedGraphicsQuality);
+      this.hemiLight.color.setHex(0xdceeff);
+      this.hemiLight.groundColor.setHex(0x1f6b34);
+      this.hemiLight.intensity = 0.66;
+      this.dirLight.color.setHex(0xfff0d2);
+      this.dirLight.intensity = 1.86;
       this.dirLight.position.copy(this.dirLightTarget.position).add(this.sunOffset);
       if (this.fillLight) {
         this.fillLight.color.setHex(0x7dd3fc);

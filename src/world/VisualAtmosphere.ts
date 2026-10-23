@@ -38,8 +38,17 @@ export const SKY_DOME_RADIUS = 285;
 export const STARFIELD_RADIUS = 272;
 export const SUN_DISTANCE = 258;
 
+/**
+ * CI CRAFT 9.1 — cinematic key light.
+ *
+ * The day sun used to sit at roughly 48° elevation, which is close to a flat
+ * overhead lamp: short shadows, weak form on buildings and almost no modelling
+ * on trees. Dropping it to ~36° and moving it off-axis gives the world longer,
+ * readable shadows and real directional shaping, without touching a single
+ * world coordinate — this is the light rig only. Sunset/night are unchanged.
+ */
 const SUN_OFFSETS: Record<AtmospherePreset, SunVector> = {
-  day: { x: 115, y: 165, z: 95 },
+  day: { x: 150, y: 132, z: 115 },
   sunset: { x: 150, y: 75, z: 110 },
   night: { x: -90, y: 150, z: -80 },
 };
@@ -49,7 +58,9 @@ const ENVIRONMENT_PRESETS: Record<AtmospherePreset, EnvironmentPreset> = {
     zenith: 0x4387a8,
     horizon: 0xcbdde5,
     ground: 0x626a4e,
-    sun: 0xfff7cc,
+    // 9.1: a touch warmer than the old near-white, so sun-lit stone and asphalt
+    // read warm against the cool sky instead of looking flat and grey.
+    sun: 0xfff0d2,
     sunU: 0.68,
     sunV: 0.27,
     intensity: 0.42,
@@ -105,6 +116,55 @@ export function getEnvironmentPreset(preset: AtmospherePreset): EnvironmentPrese
       1 -
       (Math.asin(THREE.MathUtils.clamp(direction.y, -1, 1)) / Math.PI + 0.5),
   };
+}
+
+/**
+ * CI CRAFT 9.1 — shadow rig per quality tier.
+ *
+ * The shadow map was a fixed 1536 px for every device, which is both too soft
+ * for a high-end desktop and too expensive for a phone. Splitting it by tier is
+ * the "shadows only where performance-safe" rule applied concretely: LOW trades
+ * sharpness for fill rate, HIGH/ULTRA buy crisper contact shadows.
+ *
+ * `radius` only affects PCF softening, never the geometry of the shadow cast.
+ */
+export interface ShadowRig {
+  mapSize: number;
+  radius: number;
+  normalBias: number;
+}
+
+const SHADOW_RIGS: Record<ResolvedGraphicsQuality, ShadowRig> = {
+  low: { mapSize: 1024, radius: 1.2, normalBias: 0.034 },
+  medium: { mapSize: 1536, radius: 2.0, normalBias: 0.028 },
+  high: { mapSize: 2048, radius: 2.4, normalBias: 0.024 },
+  ultra: { mapSize: 2048, radius: 2.6, normalBias: 0.022 },
+};
+
+export function getShadowRigForQuality(quality: ResolvedGraphicsQuality): ShadowRig {
+  return SHADOW_RIGS[quality] ?? SHADOW_RIGS.medium;
+}
+
+/**
+ * CI CRAFT 9.1 — aerial perspective per tier.
+ *
+ * Distance fog is what stops the far side of the island reading as a hard cut
+ * out against the sky, but it must never swallow the buildings you are aiming
+ * at. Mobile pulls in slightly harder (it is a cheaper frame), desktop holds a
+ * longer, clearer view.
+ */
+const FOG_DENSITY_SCALE: Record<ResolvedGraphicsQuality, number> = {
+  low: 1.08,
+  medium: 1.0,
+  high: 0.94,
+  ultra: 0.9,
+};
+
+export function getFogDensityForQuality(
+  baseDensity: number,
+  quality: ResolvedGraphicsQuality
+): number {
+  return baseDensity * (FOG_DENSITY_SCALE[quality] ?? 1);
 }
 
 export function getCameraFarForQuality(quality: ResolvedGraphicsQuality): number {

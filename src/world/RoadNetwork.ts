@@ -458,8 +458,18 @@ export function buildRoadNetwork(
         } else if (edgeDistance < 0.08) {
           colour = ASPHALT_EDGE;
         } else {
-          // ±4 % deterministic mottling: reads as worn asphalt, not a flat fill.
-          const n = (hash01(px * 0.7, pz * 0.7) - 0.5) * 0.08;
+          // CI CRAFT 9.1 — two-scale wear instead of one.
+          //
+          // A single high-frequency jitter reads as noise rather than asphalt.
+          // Adding a slow ~9 m patch layer on top of it gives resurfaced
+          // patches and older, darker stretches, which is what actually sells a
+          // road at eye level. Pure vertex-colour variation: no extra draw
+          // call, no texture, no geometry change, and deterministic so the road
+          // looks identical on every client and in every screenshot.
+          const fine = (hash01(px * 0.7, pz * 0.7) - 0.5) * 0.075;
+          const patch =
+            (hash01(Math.floor(px / 9) * 3.1, Math.floor(pz / 9) * 3.1) - 0.5) * 0.05;
+          const n = fine + patch;
           colour = [ASPHALT[0] + n, ASPHALT[1] + n, ASPHALT[2] + n];
         }
         colors.push(colour[0], colour[1], colour[2]);
@@ -655,9 +665,10 @@ export function buildRoadNetwork(
     // asphalt without a second mesh or a second draw call.
     color: 0xffffff,
     vertexColors: true,
-    roughness: 0.93,
-    metalness: 0.02,
-    envMapIntensity: 0.35,
+    // 9.1: a touch of sheen so the crown catches the sun; still firmly matte.
+    roughness: 0.90,
+    metalness: 0.03,
+    envMapIntensity: 0.42,
     polygonOffset: true,
     polygonOffsetFactor: -2,
     polygonOffsetUnits: -2,
