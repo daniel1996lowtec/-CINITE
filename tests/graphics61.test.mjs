@@ -14,6 +14,7 @@
  *  - character armour layers bound to the animated limb bones.
  */
 import test from 'node:test';
+import { measureQualityTiers, auditTreeLod } from './helpers/sceneStats.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
@@ -312,33 +313,19 @@ test('6.1 world: facade depth, street furniture and upgraded nature are really i
     if (!object.isMesh) return;
     tris += triangles(object.geometry) * (object.isInstancedMesh ? object.count : 1);
   });
-  // CI CRAFT 6.2 tiered budget: the decorative tier is hidden on Low/Medium,
-  // so the always-on scene keeps the pre-6.2 ceiling while the full-detail
-  // total has its own (higher) cap.
-  const detailGroups = new Set([
-    world.expansionDetailGroup,
-    world.houseDetailGroup,
-    world.detailFoliageGroup,
-  ]);
-  let essential = 0;
-  scene.traverse((object) => {
-    if (!object.isMesh) return;
-    const t =
-      ((object.geometry.index?.count ?? object.geometry.attributes.position.count) / 3) *
-      (object.isInstancedMesh ? object.count : 1);
-    let node = object;
-    let inDetail = false;
-    while (node) {
-      if (detailGroups.has(node)) {
-        inDetail = true;
-        break;
-      }
-      node = node.parent;
-    }
-    if (!inDetail) essential += t;
-  });
-  assert.ok(essential <= 330000, `always-on triangle budget ${Math.round(essential)}`);
-  assert.ok(tris <= 560000, `full-detail triangle budget ${tris}`);
+  // CI CRAFT 7.0 tiered budgets measured per quality tier (shared helper).
+  const tiers = measureQualityTiers(scene, world);
+  // Measured 7.0 baseline (visualAudit, detailed vegetation on the high tier):
+  //   LOW/MEDIUM 320,030 tris | HIGH/ULTRA 576,900 tris
+  // 6.2's always-on tier was 305,226. The +4.8 % on LOW buys the round
+  // shared cylinder (10 -> 18 segments), which is the single fix for the
+  // visibly faceted silos, tanks and towers. Budgets sit just above the
+  // measured value so ordinary tweaks do not churn, and any further growth
+  // has to be justified explicitly.
+  assert.ok(tiers.low.triangles <= 325000, `LOW/MEDIUM triangle budget ${tiers.low.triangles}`);
+  assert.ok(tiers.high.triangles <= 585000, `HIGH/ULTRA triangle budget ${tiers.high.triangles}`);
+  const lodAudit = auditTreeLod(world.treeLodHighGroup, world.treeLodLowGroup);
+  assert.deepEqual(lodAudit.problems, [], `vegetation LOD desync: ${lodAudit.problems.join('; ')}`);
 });
 
 test('6.1 weapons: authored iron sights, vents, magwell, sling loop and steel normal maps', async () => {

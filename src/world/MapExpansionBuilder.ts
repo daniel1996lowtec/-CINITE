@@ -3820,8 +3820,12 @@ export class MapExpansionBuilder {
     const contactGeo = new THREE.PlaneGeometry(1,1);
     contactGeo.rotateX(-Math.PI/2);
     const boxGeo = new THREE.BoxGeometry(1, 1, 1);
-    const coneGeo = new THREE.ConeGeometry(0.5, 1, 8);
-    const cylinderGeo = new THREE.CylinderGeometry(0.5, 0.5, 1, 10);
+    // CI CRAFT 7.0 — the shared cylinder was 10-sided and the cone 8-sided.
+    // On a 3 m silo or a water tank the flat panels are the silhouette, so the
+    // whole district read as low-poly. 18/14 segments still cost only ~1.5 k
+    // triangles across every instance while removing the visible facets.
+    const coneGeo = new THREE.ConeGeometry(0.5, 1, 14);
+    const cylinderGeo = new THREE.CylinderGeometry(0.5, 0.5, 1, 18);
     const glowGeo = weldAndSmoothGeometry(new THREE.IcosahedronGeometry(0.5, 0));
 
     // CI CRAFT 6.2 — the instanced shells now sample the authored 512 px

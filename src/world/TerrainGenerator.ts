@@ -6,6 +6,8 @@ import {
   STARFIELD_RADIUS,
   SUN_DISTANCE,
   applyTerrainGroundDetail,
+  applyOceanShader,
+  setOceanTime,
   createTerrainSurfaceMaps,
   getSunDirection,
   getEnvironmentPreset,
@@ -844,8 +846,24 @@ export class TerrainGenerator {
       opacity: 0.92,
       flatShading: false,
     });
+    // CI CRAFT 7.0 — per-vertex water depth. `aOceanDepth` is the vertical gap
+    // between the water surface and the actual terrain heightfield, baked once
+    // here. The ocean shader uses it to grade colour by depth, fade the water
+    // out into translucency at the waterline and place shoreline foam exactly
+    // where the seabed meets the surface, instead of drawing a hard colour ring.
+    const depthArray = new Float32Array(waterPosAttr.count);
+    const surfaceY = -0.28;
+    for (let i = 0; i < waterPosAttr.count; i++) {
+      const wx = waterPosAttr.getX(i);
+      const wz = waterPosAttr.getZ(i);
+      const groundY = this.getTerrainHeight(wx, wz);
+      depthArray[i] = surfaceY - groundY;
+    }
+    waterGeo.setAttribute('aOceanDepth', new THREE.BufferAttribute(depthArray, 1));
+    applyOceanShader(waterMat, { waveHeight: 0.16, foamDepth: 0.85 });
+
     this.waterMesh = new THREE.Mesh(waterGeo, waterMat);
-    this.waterMesh.position.y = -0.28;
+    this.waterMesh.position.y = surfaceY;
     this.waterMesh.receiveShadow = true;
     scene.add(this.waterMesh);
 
@@ -1195,7 +1213,9 @@ export class TerrainGenerator {
       this.skyGroup.position.copy(cameraPosition);
     }
     if (this.waterMesh) {
-      this.waterMesh.position.y = -0.28 + Math.sin(this.time * 1.8) * 0.12;
+      // The surface now waves per-vertex in the shader; moving the whole plane
+      // up and down (the old behaviour) made the entire ocean pump as one slab.
+      setOceanTime(this.waterMesh.material as THREE.Material, this.time);
       if (this.waterTexture) {
         this.waterTexture.offset.x = (this.time * 0.032) % 1;
         this.waterTexture.offset.y = (this.time * 0.02) % 1;

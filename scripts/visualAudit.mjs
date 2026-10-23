@@ -28,6 +28,17 @@ let instancedMeshes = 0;
 let instances = 0;
 let triangles = 0;
 let vertices = 0;
+
+/** True only when this object and every ancestor is visible. */
+function isEffectivelyVisible(object) {
+  let node = object;
+  while (node) {
+    if (node.visible === false) return false;
+    node = node.parent;
+  }
+  return true;
+}
+
 const geometries = new Set();
 const materials = new Set();
 const textures = new Set();
@@ -35,6 +46,9 @@ const primitives = {};
 
 scene.traverse((object) => {
   if (!object.isMesh) return;
+  // Hidden geometry (the LOD twin that is not active on this tier) costs no
+  // GPU time, so it must not be counted as a draw call or a triangle.
+  if (!isEffectivelyVisible(object)) return;
   meshes++;
   const geometry = object.geometry;
   const indexCount = geometry.index ? geometry.index.count : geometry.attributes.position.count;

@@ -168,11 +168,23 @@ function materialInfo(material) {
     groundDetail:
       typeof material.customProgramCacheKey === 'function' &&
       material.customProgramCacheKey() === 'cicraft-terrain-ground-detail',
+    ocean:
+      typeof material.customProgramCacheKey === 'function' &&
+      String(material.customProgramCacheKey()).includes('cicraft-ocean'),
     doubleSided: material.side === THREE.DoubleSide,
     flat: Boolean(material.flatShading),
   };
   textureCache.set(material, cached);
   return cached;
+}
+
+// Per-vertex ocean depth (water surface minus terrain height), read once from
+// the geometry attribute so the offline renderer can reproduce the water
+// shader's depth grading and shoreline foam.
+function readOceanDepth(geometry) {
+  const attr = geometry.getAttribute('aOceanDepth');
+  if (!attr) return null;
+  return attr;
 }
 
 const v0 = new THREE.Vector3();
@@ -229,13 +241,19 @@ function pushGeometry(geometry, worldMatrix, material, instanceColor, vertexColo
           [vertexColorAttr.getX(ic), vertexColorAttr.getY(ic), vertexColorAttr.getZ(ic)],
         ]
       : null;
+    let oceanDepth = null;
+    if (info.ocean) {
+      const depthAttr = readOceanDepth(geometry);
+      if (depthAttr) oceanDepth = [depthAttr.getX(ia), depthAttr.getX(ib), depthAttr.getX(ic)];
+    }
     triangles.push({
       p: [v0.clone(), v1.clone(), v2.clone()],
       n: [n0.clone(), n1.clone(), n2.clone()],
-    hasVertexNormals: Boolean(normal),
+      hasVertexNormals: Boolean(normal),
       info,
       tint,
       vertexColors,
+      oceanDepth,
       name,
     });
   }
@@ -505,17 +523,73 @@ function render(name, eye, target, fov = 58) {
               info.color[2] * sampled[2],
             ];
           }
+          // Three.js multiplies BOTH the instance colour and the geometry
+          // vertex colour into vColor (see the color_vertex chunk); it does not
+          // substitute one for the other. The renderer used to replace the tint,
+          // which silently dropped the per-tree leaf/trunk colour as soon as a
+          // geometry carried a colour attribute.
           let tint = tri.tint;
           if (tri.vertexColors) {
             tint = [
-              (tri.vertexColors[0][0] * b0 + tri.vertexColors[1][0] * b1 + tri.vertexColors[2][0] * b2) * invTotal,
-              (tri.vertexColors[0][1] * b0 + tri.vertexColors[1][1] * b1 + tri.vertexColors[2][1] * b2) * invTotal,
-              (tri.vertexColors[0][2] * b0 + tri.vertexColors[1][2] * b1 + tri.vertexColors[2][2] * b2) * invTotal,
+              tint[0] * (tri.vertexColors[0][0] * b0 + tri.vertexColors[1][0] * b1 + tri.vertexColors[2][0] * b2) * invTotal,
+              tint[1] * (tri.vertexColors[0][1] * b0 + tri.vertexColors[1][1] * b1 + tri.vertexColors[2][1] * b2) * invTotal,
+              tint[2] * (tri.vertexColors[0][2] * b0 + tri.vertexColors[1][2] * b1 + tri.vertexColors[2][2] * b2) * invTotal,
             ];
           }
           let r;
           let g;
           let b;
+          let oceanLit = false;
+          let wr_ocean = 0;
+          let wg_ocean = 0;
+          let wb_ocean = 0;
+          if (info.ocean && tri.oceanDepth) {
+            // Reproduce applyOceanShader(): depth grading, animated shoreline
+            // foam and the capped Fresnel sky lift. Wave displacement is not
+            // emulated (it does not change the silhouette at these ranges).
+            const depth = Math.max(
+              0,
+              (tri.oceanDepth[0] * b0 + tri.oceanDepth[1] * b1 + tri.oceanDepth[2] * b2) * invTotal
+            );
+            const smoothstep = (e0, e1, x) => {
+              const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0)));
+              return t * t * (3 - 2 * t);
+            };
+            const mix = (a, c, t) => a + (c - a) * t;
+            const shallow = [0.24, 0.8, 0.74];
+            const mid = [0.06, 0.52, 0.68];
+            const deep = [0.02, 0.17, 0.33];
+            const toMid = smoothstep(0, 3.2, depth);
+            const toDeep = smoothstep(2.6, 12.0, depth);
+            let wr = mix(shallow[0], mid[0], toMid);
+            let wg = mix(shallow[1], mid[1], toMid);
+            let wb = mix(shallow[2], mid[2], toMid);
+            wr = mix(wr, deep[0], toDeep);
+            wg = mix(wg, deep[1], toDeep);
+            wb = mix(wb, deep[2], toDeep);
+            wr = mix(wr, albedo[0], 0.42);
+            wg = mix(wg, albedo[1], 0.42);
+            wb = mix(wb, albedo[2], 0.42);
+            const foamBand = 1 - smoothstep(0, 0.85, depth);
+            const ripple =
+              Math.sin(wx * 3.1 + 0.4) * Math.sin(wz * 2.7 - 0.3);
+            const foamMask = smoothstep(0.35, 1.0, foamBand * (0.72 + ripple * 0.38));
+            wr = mix(wr, 0.94, foamMask * 0.85);
+            wg = mix(wg, 0.98, foamMask * 0.85);
+            wb = mix(wb, 1.0, foamMask * 0.85);
+            const nrm = tri.n[0];
+            const toEye = new THREE.Vector3(
+              camera.position.x - wx,
+              camera.position.y - wy,
+              camera.position.z - wz
+            ).normalize();
+            const facing = Math.max(0, nrm.dot(toEye));
+            const fres = Math.min(0.55, Math.pow(1 - facing, 4)) * 0.6;
+            wr_ocean = mix(wr, 0.46, fres) * (1.02 - tint[0] * 0.02);
+            wg_ocean = mix(wg, 0.66, fres) * (1.02 - tint[1] * 0.02);
+            wb_ocean = mix(wb, 0.82, fres) * (1.02 - tint[2] * 0.02);
+            oceanLit = true;
+          }
           if (info.groundDetail) {
             // Emulate the terrain ground-detail shader: the same three octaves
             // of value noise, dry patches, rock chips, wet sand and speckle.
@@ -572,6 +646,12 @@ function render(name, eye, target, fov = 58) {
             r = albedo[0];
             g = albedo[1];
             b = albedo[2];
+          } else if (oceanLit) {
+            // Water is dominated by reflection and depth scattering, not by
+            // the diffuse lambert term; use the shader-emulated colour directly.
+            r = wr_ocean;
+            g = wg_ocean;
+            b = wb_ocean;
           } else if (info.isGlow) {
             r = albedo[0] * tint[0] * 1.9;
             g = albedo[1] * tint[1] * 1.9;

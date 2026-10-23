@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { measureQualityTiers, auditTreeLod } from './helpers/sceneStats.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -99,14 +100,20 @@ test('3.5 navigation paint follows existing supported surfaces; landmark light i
   // shared instanced batches and is dropped on the reduced-detail tier; the
   // draw-call/mesh count and the exact collider fingerprint are unchanged.
   assert.ok(decals>20);
-// CI CRAFT 6.2: the decorative tier (window frames, sills, railings, fine
-// foliage) is hidden on Low/Medium, so the always-on scene is budgeted at the
-// pre-6.2 ceiling while the full-detail total has its own cap.
-const detailGroups=new Set([world.expansionDetailGroup,world.houseDetailGroup,world.detailFoliageGroup]);
-let essential=0;
-scene.traverse(o=>{if(!o.isMesh)return;const t=(o.geometry.index?.count??o.geometry.attributes.position.count)/3*(o.isInstancedMesh?o.count:1);let n=o,inDetail=false;while(n){if(detailGroups.has(n)){inDetail=true;break}n=n.parent}if(!inDetail)essential+=t});
-assert.ok(essential<=330000,`always-on triangle budget ${Math.round(essential)}`);
-assert.ok(triangles<=560000,`full-detail triangle budget ${Math.round(triangles)}`);
+// CI CRAFT 7.0 tiered budgets (shared helper): what LOW/MEDIUM and HIGH/ULTRA
+// actually draw, factoring out hidden LOD twins and the decorative tier.
+const tiers=measureQualityTiers(scene,world);
+  // Measured 7.0 baseline (visualAudit, detailed vegetation on the high tier):
+  //   LOW/MEDIUM 320,030 tris | HIGH/ULTRA 576,900 tris
+  // 6.2's always-on tier was 305,226. The +4.8 % on LOW buys the round
+  // shared cylinder (10 -> 18 segments), which is the single fix for the
+  // visibly faceted silos, tanks and towers. Budgets sit just above the
+  // measured value so ordinary tweaks do not churn, and any further growth
+  // has to be justified explicitly.
+assert.ok(tiers.low.triangles<=325000,`LOW/MEDIUM triangle budget ${tiers.low.triangles}`);
+assert.ok(tiers.high.triangles<=585000,`HIGH/ULTRA triangle budget ${tiers.high.triangles}`);
+const lodAudit=auditTreeLod(world.treeLodHighGroup,world.treeLodLowGroup);
+assert.deepEqual(lodAudit.problems,[],`vegetation LOD desync: ${lodAudit.problems.join('; ')}`);
   const light=scene.getObjectByName('LegendaryTowerVaultLight');world.update(.1,new THREE.Vector3(500,50,500));assert.equal(light.visible,false);
   world.setLandmarkDetail(false);world.update(.1,new THREE.Vector3(0,55,0));assert.equal(light.visible,false);
   world.setLandmarkDetail(true);world.update(.1,new THREE.Vector3(0,55,0));assert.equal(light.visible,true);assert.ok(light.intensity>=71&&light.intensity<=85);

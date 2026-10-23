@@ -13,3 +13,6 @@ data/.server_secret
 
 # Locally generated verification renders (not shipped, not bundled)
 artifacts/
+
+# Scratch probes
+.tmp-probe/

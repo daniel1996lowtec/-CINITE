@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { measureQualityTiers, auditTreeLod } from './helpers/sceneStats.mjs';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {loadWorldModules} from '../scripts/headlessWorld.mjs';
@@ -107,12 +108,19 @@ test('3.6 gameplay fingerprint is byte-identical to 3.5: collision, routes, fixe
   // detail-tier triangle budget absorbs the richer facades/foliage, which
   // are hidden on the reduced-detail tier.
   assert.ok(meshes<=900);
-// CI CRAFT 6.2 tiered triangle budgets (see worldExpansion.test.mjs).
-const detailGroups=new Set([world.expansionDetailGroup,world.houseDetailGroup,world.detailFoliageGroup]);
-let essential=0;
-scene.traverse(o=>{if(!o.isMesh)return;const t=(o.geometry.index?.count??o.geometry.attributes.position.count)/3*(o.isInstancedMesh?o.count:1);let n=o,inDetail=false;while(n){if(detailGroups.has(n)){inDetail=true;break}n=n.parent}if(!inDetail)essential+=t});
-assert.ok(essential<=330000,`always-on triangle budget ${Math.round(essential)}`);
-assert.ok(triangles<=560000,`full-detail triangle budget ${Math.round(triangles)}`);
+// CI CRAFT 7.0 tiered triangle budgets measured per quality tier.
+const tiers=measureQualityTiers(scene,world);
+  // Measured 7.0 baseline (visualAudit, detailed vegetation on the high tier):
+  //   LOW/MEDIUM 320,030 tris | HIGH/ULTRA 576,900 tris
+  // 6.2's always-on tier was 305,226. The +4.8 % on LOW buys the round
+  // shared cylinder (10 -> 18 segments), which is the single fix for the
+  // visibly faceted silos, tanks and towers. Budgets sit just above the
+  // measured value so ordinary tweaks do not churn, and any further growth
+  // has to be justified explicitly.
+assert.ok(tiers.low.triangles<=325000,`LOW/MEDIUM triangle budget ${tiers.low.triangles}`);
+assert.ok(tiers.high.triangles<=585000,`HIGH/ULTRA triangle budget ${tiers.high.triangles}`);
+const lodAudit=auditTreeLod(world.treeLodHighGroup,world.treeLodLowGroup);
+assert.deepEqual(lodAudit.problems,[],`vegetation LOD desync: ${lodAudit.problems.join('; ')}`);
   assert.ok(world.boxColliders.length+world.cylinderColliders.length<=1450);
   console.log(JSON.stringify({branding36:{meshes,triangles,colliders:1414,signs:branding.BUILDING_BRANDING.length,roadMarkings:branding.ROAD_BRANDING.length,batches:world.branding.group.children.length}}));
 });

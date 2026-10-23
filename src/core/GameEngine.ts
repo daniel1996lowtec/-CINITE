@@ -1031,6 +1031,14 @@ export class GameEngine {
     this.stormSystem.setDetailEnabled(quality !== 'low' && !reduced);
     this.world.setLandmarkDetail(quality !== 'low' && !reduced);
 
+    // CI CRAFT 7.0 — vegetation quality tiers. HIGH/ULTRA use the detailed
+    // canopies, LOW/MEDIUM swap to the coarse twins over the same instances.
+    const detailedTrees = quality === 'ultra' || quality === 'high';
+    if (this.world.treeLodHighGroup) {
+      this.world.treeLodHighGroup.visible = detailedTrees;
+      this.world.treeLodLowGroup.visible = !detailedTrees;
+    }
+
     if (quality === 'ultra') {
       this.world.detailFoliageGroup.visible = !reduced;
       this.world.expansionDetailGroup.visible = !reduced;

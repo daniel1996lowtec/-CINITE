@@ -23,6 +23,7 @@ export async function loadWorldModules() {
     ]);
     emit('src/world/VisualAtmosphere.ts', 'VisualAtmosphere.mjs');
     emit('src/world/ArchitecturalMaterials.ts', 'ArchitecturalMaterials.mjs');
+    emit('src/world/VegetationGeometry.ts', 'VegetationGeometry.mjs');
     emit('src/world/BuildingKit.ts', 'BuildingKit.mjs', [
       ["from './ArchitecturalMaterials'", "from './ArchitecturalMaterials.mjs'"],
       ["from './VisualAtmosphere'", "from './VisualAtmosphere.mjs'"],
@@ -37,6 +38,7 @@ export async function loadWorldModules() {
       ["from './TerrainGenerator'", "from './TerrainGenerator.mjs'"],
       ["from './VisualAtmosphere'", "from './VisualAtmosphere.mjs'"],
       ["from './BuildingKit'", "from './BuildingKit.mjs'"],
+      ["from './VegetationGeometry'", "from './VegetationGeometry.mjs'"],
       ["from './WorldLayout'", "from './WorldLayout.mjs'"],
     ]);
     emit('src/world/IslandWorld.ts', 'IslandWorld.mjs', [
@@ -47,6 +49,7 @@ export async function loadWorldModules() {
       ["from './VisualAtmosphere'", "from './VisualAtmosphere.mjs'"],
       ["from './ArchitecturalMaterials'", "from './ArchitecturalMaterials.mjs'"],
       ["from './BuildingKit'", "from './BuildingKit.mjs'"],
+      ["from './VegetationGeometry'", "from './VegetationGeometry.mjs'"],
       ["from './WorldLayout'", "from './WorldLayout.mjs'"],
       [/import\s+\{\s*BuildablePieceState,[\s\S]*?\}\s+from\s+['"]\.\.\/network\/schemas['"];?\n?/, ''],
     ]);
