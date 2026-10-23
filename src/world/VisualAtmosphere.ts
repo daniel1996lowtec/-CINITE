@@ -1300,13 +1300,13 @@ ${shader.fragmentShader}`.replace(
         // Sand next to the water: warm, and darker where it is wet.
         float wet = smoothstep(1.4, 0.25, altitude);
         diffuseColor.rgb *= 1.0 - wet * 0.20;
-
-        // Normal perturbation from the same field gives the ground real relief.
-        float e = 0.05;
-        float nx = cicraftValueNoise((gp + vec2(e, 0.0)) * 1.7) - nFine;
-        float nz = cicraftValueNoise((gp + vec2(0.0, e)) * 1.7) - nFine;
-        vec3 groundBump = vec3(nx * 3.0, 1.0, nz * 3.0);
-        normal = normalize(mix(normal, normalize(normal + groundBump * 0.42), 0.6));
+        // NOTE: the surface-normal perturbation deliberately does NOT live
+        // here. The variable 'normal' is not declared until
+        // normal_fragment_begin, several chunks *after* map_fragment, so
+        // assigning it here is a GLSL compile error. That error took out the
+        // whole terrain material in the browser while every Node test and the
+        // offline rasteriser stayed green. It is injected after
+        // normal_fragment_maps below, where 'normal' exists.
       }`
     ).replace(
       '#include <roughnessmap_fragment>',
@@ -1317,6 +1317,23 @@ ${shader.fragmentShader}`.replace(
         float dampSoil = smoothstep(0.62, 0.9, cicraftValueNoise(gp2 * 0.012 + 41.0));
         float wetMask = smoothstep(1.4, 0.25, vCicraftGroundPos.y);
         roughnessFactor *= 1.0 - wetMask * 0.42 - dampSoil * 0.12;
+      }`
+    ).replace(
+      // Injected AFTER normal_fragment_begin has declared `normal` and after
+      // normal_fragment_maps has applied any tangent-space map, so this is the
+      // first point where the surface normal exists and is still writable.
+      '#include <normal_fragment_maps>',
+      `#include <normal_fragment_maps>
+      {
+        // Low-frequency relief from the same field that drives the albedo
+        // blend, so the bump agrees with the colour instead of fighting it.
+        vec2 gp3 = vCicraftGroundPos.xz;
+        float nBase = cicraftValueNoise(gp3 * 1.7);
+        float e = 0.05;
+        float nx = cicraftValueNoise((gp3 + vec2(e, 0.0)) * 1.7) - nBase;
+        float nz = cicraftValueNoise((gp3 + vec2(0.0, e)) * 1.7) - nBase;
+        vec3 groundBump = vec3(nx * 3.0, 1.0, nz * 3.0);
+        normal = normalize(mix(normal, normalize(normal + groundBump * 0.42), 0.6));
       }`
     );
   };
