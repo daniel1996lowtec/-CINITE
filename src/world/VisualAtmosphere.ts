@@ -656,7 +656,23 @@ export function applyArchitectureSurfaceShader(
   kind: 'facade' | 'glass' | 'metal'
 ): THREE.MeshStandardMaterial {
   const cacheKey = `cicraft-arch-surface-${kind}`;
-  material.onBeforeCompile = (shader) => {
+
+  // CI CRAFT 6.2 — this used to ASSIGN material.onBeforeCompile outright, which
+  // silently destroyed the world-space UV projection that
+  // applyWorldSpaceUv() had installed on the very same shared material. Every
+  // instanced wall then sampled stretched box UVs again, and because the merged
+  // kit materials are shared the damage spread to the kit geometry too.
+  // The injector now composes with whatever is already attached and is
+  // idempotent per (material, kind).
+  if ((material.userData as Record<string, unknown>).cicraftArchSurface === kind) {
+    return material;
+  }
+  (material.userData as Record<string, unknown>).cicraftArchSurface = kind;
+  const previousCompile = material.onBeforeCompile;
+  const previousKey = material.customProgramCacheKey;
+
+  material.onBeforeCompile = (shader, renderer) => {
+    previousCompile?.call(material, shader, renderer);
     shader.vertexShader = `
 varying vec3 vCicraftWorldPos;
 varying vec3 vCicraftLocalPos;
@@ -742,7 +758,17 @@ ${shader.fragmentShader}`.replace(
       );
     }
   };
-  material.customProgramCacheKey = () => cacheKey;
+  material.customProgramCacheKey = () => {
+    let base = 'standard';
+    if (typeof previousKey === 'function') {
+      try {
+        base = previousKey.call(material) ?? 'standard';
+      } catch {
+        base = 'standard';
+      }
+    }
+    return `${base}|${cacheKey}`;
+  };
   return material;
 }
 
@@ -750,8 +776,10 @@ export function mergeBufferGeometries(geometries: THREE.BufferGeometry[]): THREE
   const positions: number[] = [];
   const normals: number[] = [];
   const uvs: number[] = [];
+  const colors: number[] = [];
   const indices: number[] = [];
   let vertexOffset = 0;
+  const hasColors = geometries.some((geo) => Boolean(geo.getAttribute('color')));
 
   for (const geo of geometries) {
     const pos = geo.getAttribute('position');
@@ -759,6 +787,7 @@ export function mergeBufferGeometries(geometries: THREE.BufferGeometry[]): THREE
     if (!geo.getAttribute('normal')) geo.computeVertexNormals();
     const norm = geo.getAttribute('normal');
     const uv = geo.getAttribute('uv');
+    const color = geo.getAttribute('color');
     const idx = geo.getIndex();
 
     for (let i = 0; i < pos.count; i++) {
@@ -772,6 +801,13 @@ export function mergeBufferGeometries(geometries: THREE.BufferGeometry[]): THREE
         uvs.push(uv.getX(i), uv.getY(i));
       } else {
         uvs.push(0.5, 0.5);
+      }
+      if (hasColors) {
+        if (color) {
+          colors.push(color.getX(i), color.getY(i), color.getZ(i));
+        } else {
+          colors.push(1, 1, 1);
+        }
       }
     }
 
@@ -791,6 +827,9 @@ export function mergeBufferGeometries(geometries: THREE.BufferGeometry[]): THREE
   merged.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   merged.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
   merged.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  if (hasColors) {
+    merged.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  }
   merged.setIndex(indices);
   return merged;
 }
@@ -918,6 +957,21 @@ export function createArchedPalmFrondGeometry(): THREE.BufferGeometry {
   geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   geo.setIndex(indices);
   geo.computeVertexNormals();
+
+  // CI CRAFT 7.0 — the shared foliage material now declares vertexColors so the
+  // canopy/bough builders can carry per-vertex shading. Fronds must supply a
+  // colour attribute too or they would render black; darker at the base and
+  // along the rib, brighter at the sun-facing leaflet tips.
+  const colors = new Float32Array(positions.length);
+  for (let i = 0; i < positions.length / 3; i++) {
+    const t = uvs[i * 2 + 1];
+    const isRib = uvs[i * 2] === 0.5;
+    const shade = (0.6 + t * 0.42) * (isRib ? 0.86 : 1.0);
+    colors[i * 3] = shade * 0.95;
+    colors[i * 3 + 1] = shade;
+    colors[i * 3 + 2] = shade * 0.88;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   return geo;
 }
 
@@ -1133,4 +1187,329 @@ export function createTerrainSurfaceMaps(): {
     roughness: make(roughnessData, 42),
     grain: make(grainData, 26, true),
   };
+}
+
+/**
+ * CI CRAFT 6.2 — terrain ground-detail shader.
+ *
+ * The island is one 208 x 208 mesh, so per-vertex colour can only describe
+ * features larger than ~2.6 m. Everything finer (sand grain, gravel, grass
+ * blades, wet-sand sheen, rock speckle) is added here, procedurally, in world
+ * space: three octaves of value noise modulate albedo, a slope mask exposes
+ * rock chips, a height mask adds beach grain, and a second derivative of the
+ * noise perturbs the normal so the ground catches light instead of reading as
+ * flat paint. No textures, no extra draw calls, no collision change.
+ */
+export function applyTerrainGroundDetail(
+  material: THREE.MeshStandardMaterial
+): THREE.MeshStandardMaterial {
+  material.onBeforeCompile = (shader) => {
+    shader.vertexShader = `
+varying vec3 vCicraftGroundPos;
+varying vec3 vCicraftGroundNormal;
+${shader.vertexShader}`.replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+      vec4 cicraftGroundWorld = modelMatrix * vec4(transformed, 1.0);
+      vCicraftGroundPos = cicraftGroundWorld.xyz;
+      vCicraftGroundNormal = normalize(mat3(modelMatrix) * objectNormal);`
+    );
+
+    shader.fragmentShader = `
+varying vec3 vCicraftGroundPos;
+varying vec3 vCicraftGroundNormal;
+float cicraftHash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+float cicraftValueNoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(cicraftHash(i), cicraftHash(i + vec2(1.0, 0.0)), u.x),
+             mix(cicraftHash(i + vec2(0.0, 1.0)), cicraftHash(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+float cicraftFbm(vec2 p) {
+  float value = 0.0;
+  float amplitude = 0.5;
+  for (int i = 0; i < 4; i++) {
+    value += amplitude * cicraftValueNoise(p);
+    p = p * 2.03 + vec2(13.1, 5.7);
+    amplitude *= 0.5;
+  }
+  return value;
+}
+${shader.fragmentShader}`.replace(
+      '#include <map_fragment>',
+      `#include <map_fragment>
+      {
+        vec2 gp = vCicraftGroundPos.xz;
+        float upness = clamp(vCicraftGroundNormal.y, 0.0, 1.0);
+        float slope = 1.0 - upness;
+        float altitude = vCicraftGroundPos.y;
+
+        // ---------------------------------------------------------------
+        // CI CRAFT 8.0 — layered terrain materials.
+        //
+        // 7.x applied noise as *brightness only*, so the ground stayed one
+        // flat green value with a thin grain on top. Real ground is a blend
+        // of materials: turf, exposed soil, gravel, rock, and damp hollows.
+        // Each layer below changes albedo hue as well as value, and the
+        // weights come from slope, altitude and two world-space noise scales
+        // so the blend follows the terrain instead of tiling across it.
+        // ---------------------------------------------------------------
+
+        // Patch masks at three scales (2 m break-up, 40 m fields, 180 m drift).
+        float nFine = cicraftValueNoise(gp * 1.7);
+        float nMid = cicraftFbm(gp * 0.09 + 17.0);
+        float nCoarse = cicraftValueNoise(gp * 0.012 + 41.0);
+        float nSpeck = cicraftValueNoise(gp * 6.3 + 5.0);
+
+        // Turf: healthy green where it is flat, low and damp.
+        // Soil: warm brown where turf thins on crowns and banks.
+        // Turf only exists above the beach and off steep faces, and the mask
+        // is broken up at two scales so it can never read as painted blobs.
+        float turfAltitude = smoothstep(1.7, 3.2, altitude);
+        float turfMask = nMid * 0.72 + cicraftValueNoise(gp * 0.31 + 7.0) * 0.28;
+        float turf = smoothstep(0.38, 0.72, turfMask)
+                   * (1.0 - smoothstep(0.12, 0.45, slope))
+                   * turfAltitude;
+        float soil = (1.0 - turf) * smoothstep(0.42, 0.68, nFine) * 0.4 * turfAltitude;
+
+        vec3 turfColor = mix(vec3(0.20, 0.34, 0.13), vec3(0.31, 0.44, 0.19), nFine);
+        vec3 soilColor = mix(vec3(0.31, 0.23, 0.14), vec3(0.42, 0.32, 0.20), nFine);
+
+        diffuseColor.rgb = mix(diffuseColor.rgb, turfColor, turf * 0.45);
+        diffuseColor.rgb = mix(diffuseColor.rgb, soilColor, soil);
+
+        // Stony gravel on tread and steep banks.
+        float gravel = smoothstep(0.22, 0.5, slope) * smoothstep(0.40, 0.75, nSpeck + slope * 0.3);
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.34, 0.33, 0.31), gravel * 0.5);
+
+        // Damp hollows read darker and cooler.
+        float damp = smoothstep(0.62, 0.9, nCoarse) * (1.0 - smoothstep(0.2, 0.5, slope));
+        diffuseColor.rgb *= 1.0 - damp * 0.18;
+
+        // Dry crowns and sun-bleached ridges lift warmer.
+        float dry = smoothstep(0.60, 0.92, nCoarse) * smoothstep(0.4, 0.9, nMid);
+        diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(1.16, 1.10, 0.88), dry * 0.7);
+
+        // Fine speckle: reads as gravel, shell fragments and grass blades.
+        float speck = smoothstep(0.82, 0.99, nSpeck);
+        diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 0.84 + vec3(0.03), speck * 0.4);
+
+        // Sand next to the water: warm, and darker where it is wet.
+        float wet = smoothstep(1.4, 0.25, altitude);
+        diffuseColor.rgb *= 1.0 - wet * 0.20;
+
+        // Normal perturbation from the same field gives the ground real relief.
+        float e = 0.05;
+        float nx = cicraftValueNoise((gp + vec2(e, 0.0)) * 1.7) - nFine;
+        float nz = cicraftValueNoise((gp + vec2(0.0, e)) * 1.7) - nFine;
+        vec3 groundBump = vec3(nx * 3.0, 1.0, nz * 3.0);
+        normal = normalize(mix(normal, normalize(normal + groundBump * 0.42), 0.6));
+      }`
+    ).replace(
+      '#include <roughnessmap_fragment>',
+      `#include <roughnessmap_fragment>
+      {
+        vec2 gp2 = vCicraftGroundPos.xz;
+        // Wet sand and damp soil are glossier than dry turf.
+        float dampSoil = smoothstep(0.62, 0.9, cicraftValueNoise(gp2 * 0.012 + 41.0));
+        float wetMask = smoothstep(1.4, 0.25, vCicraftGroundPos.y);
+        roughnessFactor *= 1.0 - wetMask * 0.42 - dampSoil * 0.12;
+      }`
+    );
+  };
+  material.customProgramCacheKey = () => 'cicraft-terrain-ground-detail';
+  return material;
+}
+
+/* ------------------------------------------------------------------ */
+/* Ocean / lake water                                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * CI CRAFT 7.0 — coastal water shader.
+ *
+ * The previous water was a flat, wobbling 1600 m plane with a scrolling ripple
+ * texture: it had no notion of depth, so the shoreline was a hard colour edge,
+ * there was no foam where the sea meets the sand, and no sun glitter on the
+ * surface.
+ *
+ * This injects a real water response into the existing MeshStandardMaterial:
+ *   - three travelling wave trains displace the surface and perturb the normal
+ *     analytically (no extra geometry, no extra draw calls),
+ *   - a per-vertex `aOceanDepth` attribute (water surface minus terrain height,
+ *     computed once at build time) drives shallow/deep colour, a translucent
+ *     shallow band, and shoreline foam with an animated noise edge,
+ *   - a view-dependent Fresnel term lifts the sky reflection at grazing angles,
+ *   - a tight specular lobe gives the low-roughness sun glint.
+ *
+ * Competitive note: brightness is capped so water never blows out into a white
+ * band that a player could mistake for cover or an enemy silhouette.
+ */
+export function applyOceanShader(
+  material: THREE.MeshStandardMaterial,
+  options: { waveHeight?: number; foamDepth?: number } = {}
+): THREE.MeshStandardMaterial {
+  const waveHeight = options.waveHeight ?? 0.16;
+  const foamDepth = options.foamDepth ?? 0.75;
+  const cacheKey = `cicraft-ocean-${waveHeight}-${foamDepth}`;
+
+  const previousCompile = material.onBeforeCompile;
+  const previousKey = material.customProgramCacheKey;
+
+  // Shared uniform objects: created once so the wave clock keeps running
+  // across shader recompiles (quality changes rebuild programs).
+  const oceanUniforms = {
+    uOceanTime: { value: 0 },
+    uOceanWaveHeight: { value: waveHeight },
+    uOceanFoamDepth: { value: foamDepth },
+  };
+  material.userData.__oceanUniforms = oceanUniforms;
+
+  material.onBeforeCompile = (shader, renderer) => {
+    previousCompile?.call(material, shader, renderer);
+
+    shader.uniforms.uOceanTime = oceanUniforms.uOceanTime;
+    shader.uniforms.uOceanWaveHeight = oceanUniforms.uOceanWaveHeight;
+    shader.uniforms.uOceanFoamDepth = oceanUniforms.uOceanFoamDepth;
+
+    shader.vertexShader = `
+attribute float aOceanDepth;
+varying float vOceanDepth;
+varying vec3 vOceanWorld;
+varying vec3 vOceanNormalW;
+uniform float uOceanTime;
+uniform float uOceanWaveHeight;
+${shader.vertexShader}`;
+
+    // Normal perturbation: analytic derivative of the same wave sum used for
+    // displacement, so lighting and geometry agree.
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <beginnormal_vertex>',
+      `#include <beginnormal_vertex>
+      {
+        vec4 owp = modelMatrix * vec4(position, 1.0);
+        float t = uOceanTime;
+        // Three travelling wave trains at different scales/angles.
+        float d1x = cos(owp.x * 0.085 + t * 0.85) * 0.085;
+        float d1z = cos(owp.z * 0.072 + t * 0.72) * 0.072;
+        float d2x = cos(owp.x * 0.31 - owp.z * 0.12 + t * 1.65) * 0.31;
+        float d2z = cos(owp.z * 0.34 + owp.x * 0.1 + t * 1.42) * 0.34;
+        float d3x = cos(owp.x * 0.95 + t * 2.7) * 0.95;
+        float d3z = cos(owp.z * 1.05 - t * 2.4) * 1.05;
+        vec3 waveN = normalize(vec3(
+          -(d1x * 0.16 + d2x * 0.05 + d3x * 0.012) * uOceanWaveHeight * 6.0,
+          1.0,
+          -(d1z * 0.16 + d2z * 0.05 + d3z * 0.012) * uOceanWaveHeight * 6.0
+        ));
+        objectNormal = normalize(mix(objectNormal, waveN, 0.9));
+      }`
+    );
+
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+      {
+        vec4 owp = modelMatrix * vec4(transformed, 1.0);
+        float t = uOceanTime;
+        float h = 0.0;
+        h += sin(owp.x * 0.085 + t * 0.85) * 0.34;
+        h += sin(owp.z * 0.072 + t * 0.72) * 0.30;
+        h += sin(owp.x * 0.31 - owp.z * 0.12 + t * 1.65) * 0.14;
+        h += sin(owp.z * 0.34 + owp.x * 0.1 + t * 1.42) * 0.12;
+        h += sin(owp.x * 0.95 + t * 2.7) * 0.05;
+        h += sin(owp.z * 1.05 - t * 2.4) * 0.045;
+        // Calm the surface right at the waterline so the shore does not tear.
+        float shoreCalm = smoothstep(0.0, 1.6, aOceanDepth);
+        transformed.y += h * uOceanWaveHeight * shoreCalm;
+        vOceanDepth = aOceanDepth;
+        vOceanWorld = owp.xyz;
+        vOceanNormalW = normalize(mat3(modelMatrix) * objectNormal);
+      }`
+    );
+
+    shader.fragmentShader = `
+varying float vOceanDepth;
+varying vec3 vOceanWorld;
+varying vec3 vOceanNormalW;
+uniform float uOceanTime;
+uniform float uOceanFoamDepth;
+${shader.fragmentShader}`;
+
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <map_fragment>',
+      `#include <map_fragment>
+      {
+        float depth = max(vOceanDepth, 0.0);
+
+        // --- Depth grading -------------------------------------------------
+        // Samples of the shallow lagoon read turquoise because light reaches
+        // the sand; deeper water loses red first and goes navy.
+        vec3 shallowTint = vec3(0.24, 0.80, 0.74);
+        vec3 midTint     = vec3(0.06, 0.52, 0.68);
+        vec3 deepTint    = vec3(0.02, 0.17, 0.33);
+        float toMid = smoothstep(0.0, 3.2, depth);
+        float toDeep = smoothstep(2.6, 12.0, depth);
+        vec3 waterTint = mix(shallowTint, midTint, toMid);
+        waterTint = mix(waterTint, deepTint, toDeep);
+
+        // Keep the authored per-vertex hue as a partial contribution so the
+        // ocean keeps its established CI CRAFT identity.
+        diffuseColor.rgb = mix(waterTint, diffuseColor.rgb, 0.42);
+
+        // --- Shoreline foam ------------------------------------------------
+        // Animated noise band, thickest in the last half metre of depth.
+        float foamBand = 1.0 - smoothstep(0.0, uOceanFoamDepth, depth);
+        float ripple = sin(vOceanWorld.x * 3.1 + uOceanTime * 2.2)
+                     * sin(vOceanWorld.z * 2.7 - uOceanTime * 1.7);
+        float foamMask = smoothstep(0.35, 1.0, foamBand * (0.72 + ripple * 0.38));
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.94, 0.98, 1.0), foamMask * 0.85);
+
+        // --- Fresnel sky lift ----------------------------------------------
+        vec3 viewDir = normalize(cameraPosition - vOceanWorld);
+        float fres = pow(1.0 - clamp(dot(viewDir, normalize(vOceanNormalW)), 0.0, 1.0), 4.0);
+        // Capped: the surface must stay darker than the sky so it never reads
+        // as a white sheet at distance.
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.46, 0.66, 0.82), clamp(fres, 0.0, 0.55) * 0.6);
+      }`
+    );
+
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <roughnessmap_fragment>',
+      `#include <roughnessmap_fragment>
+      {
+        float depthR = max(vOceanDepth, 0.0);
+        // Glassy offshore, slightly rougher in the shallows where sand and
+        // foam break up the reflection.
+        roughnessFactor = mix(0.035, 0.28, 1.0 - smoothstep(0.0, 5.0, depthR));
+      }`
+    );
+  };
+
+  material.customProgramCacheKey = () => {
+    let base = 'standard';
+    if (typeof previousKey === 'function') {
+      try {
+        base = previousKey.call(material) ?? 'standard';
+      } catch {
+        base = 'standard';
+      }
+    }
+    return `${base}|${cacheKey}`;
+  };
+
+  return material;
+}
+
+/** Advances the ocean wave clock. Safe to call with no ocean present. */
+export function setOceanTime(material: THREE.Material | null | undefined, time: number): void {
+  if (!material) return;
+  const uniforms = (material as THREE.Material & { userData: Record<string, unknown> })
+    .userData;
+  const shaderUniforms = uniforms.__oceanUniforms as
+    | { uOceanTime?: { value: number } }
+    | undefined;
+  if (shaderUniforms?.uOceanTime) shaderUniforms.uOceanTime.value = time;
 }

@@ -14,6 +14,7 @@
  *  - character armour layers bound to the animated limb bones.
  */
 import test from 'node:test';
+import { measureQualityTiers, auditTreeLod } from './helpers/sceneStats.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
@@ -253,9 +254,23 @@ test('6.1 world: facade depth, street furniture and upgraded nature are really i
     }
   });
   const totalFacadeDetail = Object.values(detailCounts).reduce((sum, n) => sum + n, 0);
+  // CI CRAFT 6.2 moved facade relief out of thin instanced decals and into
+  // merged kit meshes with real depth. The decal count therefore legitimately
+  // drops; assert on the combined facade throughput instead (instanced decals
+  // plus the authored kit's window/door/roof geometry).
+  const kitMeshes = [...world.expansionGroup.children, ...world.expansionDetailGroup.children].filter(
+    (mesh) => mesh.name.startsWith('ExpansionKit_')
+  );
+  let kitTriangles = 0;
+  for (const mesh of kitMeshes) kitTriangles += triangles(mesh.geometry);
+  assert.ok(kitMeshes.length >= 8, `expected authored kit meshes, got ${kitMeshes.length}`);
   assert.ok(
-    totalFacadeDetail > 2500,
-    `expected substantial facade/street detail instances, got ${totalFacadeDetail}`
+    kitTriangles > 120000,
+    `expected substantial authored facade geometry, got ${kitTriangles}`
+  );
+  assert.ok(
+    totalFacadeDetail + kitMeshes.length > 2000,
+    `expected substantial facade/street detail, got ${totalFacadeDetail} decals + ${kitMeshes.length} kit meshes`
   );
 
   // Architecture materials carry real PBR maps and the surface shader.
@@ -298,7 +313,26 @@ test('6.1 world: facade depth, street furniture and upgraded nature are really i
     if (!object.isMesh) return;
     tris += triangles(object.geometry) * (object.isInstancedMesh ? object.count : 1);
   });
-  assert.ok(tris <= 340000, `triangle budget ${tris}`);
+  // CI CRAFT 7.0 tiered budgets measured per quality tier (shared helper).
+  const tiers = measureQualityTiers(scene, world);
+  // Measured 7.0 baseline (visualAudit, detailed vegetation on the high tier):
+  //   LOW/MEDIUM 320,030 tris | HIGH/ULTRA 576,900 tris
+  // 6.2's always-on tier was 305,226. The +4.8 % on LOW buys the round
+  // shared cylinder (10 -> 18 segments), which is the single fix for the
+  // visibly faceted silos, tanks and towers. Budgets sit just above the
+  // measured value so ordinary tweaks do not churn, and any further growth
+  // has to be justified explicitly.
+  // Measured 8.0 tier totals (visualAudit / measureQualityTiers):
+  //   LOW/MEDIUM 327,640 tris | HIGH/ULTRA 609,542 tris
+  // The 8.0 delta over 7.2 (+2.6k LOW, +24.5k HIGH) is the clustered ground
+  // cover: 6,400 grass tufts at 6 triangles plus 1,400 flowers, in four
+  // instanced draw calls. LOW keeps one band and no flowers; HIGH/ULTRA show
+  // all of it with a taller/tighter band layout. Nothing else was added, and
+  // no existing geometry was made heavier to reach these numbers.
+  assert.ok(tiers.low.triangles <= 330000, `LOW/MEDIUM triangle budget ${tiers.low.triangles}`);
+  assert.ok(tiers.high.triangles <= 620000, `HIGH/ULTRA triangle budget ${tiers.high.triangles}`);
+  const lodAudit = auditTreeLod(world.treeLodHighGroup, world.treeLodLowGroup);
+  assert.deepEqual(lodAudit.problems, [], `vegetation LOD desync: ${lodAudit.problems.join('; ')}`);
 });
 
 test('6.1 weapons: authored iron sights, vents, magwell, sling loop and steel normal maps', async () => {

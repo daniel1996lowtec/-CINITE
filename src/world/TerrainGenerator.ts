@@ -5,11 +5,22 @@ import {
   weldAndSmoothGeometry,
   STARFIELD_RADIUS,
   SUN_DISTANCE,
+  applyTerrainGroundDetail,
+  applyOceanShader,
+  setOceanTime,
   createTerrainSurfaceMaps,
   getSunDirection,
   getEnvironmentPreset,
   getSurfaceVariation,
 } from './VisualAtmosphere';
+import {
+  applySkyPreset,
+  createSkyMaterial,
+  horizonAirColor,
+  setSkyCloudDetail,
+  setSkyTime,
+  SKY_PRESETS as SKY_PALETTES,
+} from './SkySystem';
 import {
   EXPANSION_BUILDINGS,
   EXPANSION_LANDMARKS,
@@ -168,8 +179,11 @@ export class TerrainGenerator {
   public starfieldPoints!: THREE.Points;
   public atmosphereMotes!: THREE.Points;
   public skyDome!: THREE.Mesh;
-  public sunMesh!: THREE.Mesh;
-  public sunHaloMesh!: THREE.Mesh;
+  /** Shader material driven by SkySystem; null until the sky is built. */
+  public skyMaterial: THREE.ShaderMaterial | null = null;
+  /** Reused scratch colour for aerial perspective, never allocated per frame. */
+  private readonly airColor = new THREE.Color();
+  private airPreset: TimeOfDayPreset = 'day';
   public waterfallMesh!: THREE.Mesh;
   private waterTexture: THREE.CanvasTexture | null = null;
   private waterBumpTexture: THREE.CanvasTexture | null = null;
@@ -181,6 +195,38 @@ export class TerrainGenerator {
    * Deterministic per-cell tonal value for paving slabs, cobbles, gravel and
    * tilled rows. Keeps large ground planes from reading as flat colour bands.
    */
+  /**
+   * Tileable-ish fractal value noise in 0..1 used for biome-border jitter and
+   * large tonal patches. Deterministic and independent of terrain height.
+   */
+  private macroNoise(x: number, z: number): number {
+    const n = (a: number, b: number): number => {
+      const h = Math.sin(a * 12.9898 + b * 78.233) * 43758.5453;
+      return h - Math.floor(h);
+    };
+    const smooth = (t: number): number => t * t * (3 - 2 * t);
+    let total = 0;
+    let amp = 1;
+    let sum = 0;
+    for (let o = 0; o < 4; o++) {
+      const scale = 0.018 * 2 ** o;
+      const fx = x * scale;
+      const fz = z * scale;
+      const x0 = Math.floor(fx);
+      const z0 = Math.floor(fz);
+      const tx = smooth(fx - x0);
+      const tz = smooth(fz - z0);
+      const a = n(x0, z0);
+      const b = n(x0 + 1, z0);
+      const c = n(x0, z0 + 1);
+      const d = n(x0 + 1, z0 + 1);
+      total += ((a * (1 - tx) + b * tx) * (1 - tz) + (c * (1 - tx) + d * tx) * tz) * amp;
+      sum += amp;
+      amp *= 0.5;
+    }
+    return total / sum;
+  }
+
   private stoneTone(cellX: number, cellZ: number): number {
     const h = Math.sin(cellX * 12.9898 + cellZ * 78.233) * 43758.5453;
     return h - Math.floor(h);
@@ -586,23 +632,49 @@ export class TerrainGenerator {
       const microNoise = getSurfaceVariation(vx, vz);
       const fineVariation = Math.sin(vx * 0.21 + vz * 0.17) * 0.5 + 0.5;
 
-      if (vy < -0.35) {
+      // CI CRAFT 6.2 — biome borders are jittered by fractal noise instead of
+      // following perfect height/radius contours, and wide tonal patches break
+      // up large single-colour fields. Both are pure functions of position, so
+      // terrain height, collision and navigation are untouched.
+      const macro = this.macroNoise(vx, vz);
+      const jitter = (macro - 0.5) * 1.5;
+      const vyJ = vy + jitter * 0.55;
+      const shoreJ = vy + jitter * 0.32;
+      const patch = this.macroNoise(vx * 0.45 + 91, vz * 0.45 - 37);
+
+      if (shoreJ < -0.35) {
         // Deep seabed & riverbed
         color.setHex(0x075985);
-      } else if (vy < 0.08) {
+      } else if (shoreJ < 0.08) {
         // Shallow turquoise lagoon shelf
-        color.setHex(0x0e7490).lerp(new THREE.Color(0xc49f6c), (vy + 0.35) / 0.43);
-      } else if (vy < 0.52) {
+        color.setHex(0x0e7490).lerp(new THREE.Color(0xc49f6c), (shoreJ + 0.35) / 0.43);
+      } else if (shoreJ < 0.52) {
         // Wet shoreline sand
-        color.setHex(0xc49f6c).lerp(new THREE.Color(0xdcc59a), (vy - 0.08) / 0.44);
+        color.setHex(0xc49f6c).lerp(new THREE.Color(0xdcc59a), (shoreJ - 0.08) / 0.44);
       } else if (
-        vy < 1.85 ||
-        distCenter > this.islandRadius * 0.88 ||
-        (riverDist < 6.4 && vy < 2.5) ||
-        (lakeDist > 20 && lakeDist < 26.5 && vy < 2.6)
+        // CI CRAFT 8.0 — sand belongs next to water, not everywhere below 1.85 m.
+        // The old condition treated *all* low ground as beach, so every flat
+        // valley on the island rendered as one enormous beige field with no
+        // grass, no soil and no colour break: the single flattest, least
+        // authored-looking surface in the game.
+        //
+        // Sand is now gated on actual proximity to the sea, a river or a lake,
+        // plus a noise mask so the dune/meadow border is organic rather than a
+        // contour line. Height still has to be low; it just is not sufficient.
+        (vyJ < 2.05 &&
+          (distCenter > this.islandRadius * 0.8 + jitter * 3.5 ||
+            riverDist < 8.5 + jitter * 1.4 ||
+            (lakeDist > 17 + jitter * 2 && lakeDist < 30 + jitter * 2))) ||
+        (vyJ < 1.15 && macro > 0.66)
       ) {
-        // Warm Mediterranean coastal sand & riverbank pebble-sand
+        // Warm Mediterranean coastal sand & riverbank pebble-sand, with the
+        // dune inland edge breaking up through patches of dry marram grass.
         color.setHex(0xdcc59a).lerp(new THREE.Color(0xe8d7b4), fineVariation * 0.65);
+        const duneEdge = Math.min(1, Math.max(0, (vyJ - 1.15) / 0.9));
+        color.lerp(
+          new THREE.Color(0x9aa05e),
+          duneEdge * Math.max(0, patch - 0.34) * 1.15
+        );
       } else if (Math.hypot(vx, vz) < 30) {
         // Pipeline Plaza paving: individual travertine slabs with mortar
         // joints and per-slab tonal variation instead of a two-tone checker.
@@ -612,15 +684,26 @@ export class TerrainGenerator {
         const joint =
           Math.abs(vx * 0.62 + Math.sin(vz * 0.31) * 0.4 - slabX - 0.5) > 0.45 ||
           Math.abs(vz * 0.62 - slabZ - 0.5) > 0.45;
-        color.setHex(0xa9b3bd).offsetHSL(0, -0.02, slabTone * 0.05);
+        color.setHex(0x9aa5b1).offsetHSL(0, -0.02, slabTone * 0.05 - 0.03);
         if (joint) color.multiplyScalar(0.9);
-      } else if (roadDist < 3.6) {
-        // Compacted limestone road with aggregate variation and tar seams.
+      } else if (roadDist < 3.6 + jitter * 0.22) {
+        // CI CRAFT 6.2 — roads now read as *paved*: a dark compacted asphalt
+        // crown, a lighter aggregate shoulder band and tar seams. Previously
+        // they were a tan almost identical to the beach, so the road network
+        // was invisible from eye level.
         const aggregate = this.stoneTone(Math.floor(vx * 1.4), Math.floor(vz * 1.4));
-        color.setHex(0xb08f63).offsetHSL(0, 0.02 * aggregate, aggregate * 0.055);
+        const crown = 1 - Math.min(1, roadDist / 3.0);
+        color.setHex(0x6b6f76).offsetHSL(0, 0.01 * aggregate, aggregate * 0.05 - 0.02);
+        // Wheel-track polish: two faint lighter bands either side of centre.
+        const track = Math.exp(-((roadDist - 1.35) ** 2) / 0.16);
+        color.offsetHSL(0, -0.01, track * 0.035);
+        // Aggregate shoulder at the very edge of the roadway.
+        color.lerp(new THREE.Color(0x9a9384), (1 - crown) * 0.55);
         const seam = Math.abs(((vx + vz) * 0.35) % 1 - 0.5) < 0.02;
-        if (seam) color.multiplyScalar(0.88);
-      } else if (roadDist < 5.1) {
+        if (seam) color.multiplyScalar(0.86);
+        // Painted edge line where the kerb is (outside the driving surface).
+        if (roadDist > 3.15) color.lerp(new THREE.Color(0xd8d2c4), 0.5);
+      } else if (roadDist < 5.1 + jitter * 0.5) {
         // Smooth dirt road shoulder transition into surrounding meadow
         const shoulderT = Math.min(1, Math.max(0, (roadDist - 3.6) / 1.5));
         color.copy(dirtShoulderColor).lerp(new THREE.Color(0x4d7c42), shoulderT * 0.65);
@@ -682,6 +765,26 @@ export class TerrainGenerator {
           .lerp(new THREE.Color(0x5e8e50), (microNoise * 0.5 + 0.5) * 0.72);
       }
 
+      // Wide tonal patches: dry grass, damp hollows and exposed soil drift
+      // across the meadows so no field is ever one flat colour.
+      if (vy > 1.6 && vyJ > 2.0 && roadDist > 5.0 && slope < 0.36 && shoreJ > 0.9) {
+        const dry = Math.max(0, patch - 0.52) * 1.9;
+        const damp = Math.max(0, 0.46 - patch) * 1.7;
+        color.lerp(new THREE.Color(0x8a9550), Math.min(0.52, dry));
+        color.lerp(new THREE.Color(0x35603a), Math.min(0.42, damp));
+      }
+      // Sand grain ripples: fine tonal banding across the beach and dunes.
+      if (shoreJ >= 0.08 && shoreJ < 2.0) {
+        const ripple = Math.sin(vx * 1.35 + vz * 0.85 + macro * 6.0) * 0.5 + 0.5;
+        color.offsetHSL(0, 0, (ripple - 0.5) * 0.035);
+        color.lerp(new THREE.Color(0xbda57d), Math.max(0, patch - 0.62) * 0.35);
+      }
+      // Rock strata and scree on the mountains.
+      if (vyJ > 6.5) {
+        const strata = Math.sin(vy * 3.1 + macro * 4.2) * 0.5 + 0.5;
+        color.offsetHSL(0, 0, (strata - 0.5) * 0.05 + (patch - 0.5) * 0.04);
+      }
+
       // Slope-based cliff & escarpment rock blending on steep terrain
       if (vy > 1.8 && vy < 15.8 && slope > 0.42) {
         const rockWeight = Math.min(1, (slope - 0.42) / 0.44);
@@ -689,7 +792,7 @@ export class TerrainGenerator {
       }
 
       // Smooth, deterministic tonal variation softens biome transitions
-      color.offsetHSL(0, 0, microNoise * 0.028);
+      color.offsetHSL(0, 0, microNoise * 0.028 + (patch - 0.5) * 0.05);
 
       colors.push(color.r, color.g, color.b);
     }
@@ -716,6 +819,7 @@ export class TerrainGenerator {
       metalness: 0.02,
       envMapIntensity: 0.55,
     });
+    applyTerrainGroundDetail(terrainMat);
 
     this.terrainMesh = new THREE.Mesh(geo, terrainMat);
     this.terrainMesh.receiveShadow = true;
@@ -769,8 +873,24 @@ export class TerrainGenerator {
       opacity: 0.92,
       flatShading: false,
     });
+    // CI CRAFT 7.0 — per-vertex water depth. `aOceanDepth` is the vertical gap
+    // between the water surface and the actual terrain heightfield, baked once
+    // here. The ocean shader uses it to grade colour by depth, fade the water
+    // out into translucency at the waterline and place shoreline foam exactly
+    // where the seabed meets the surface, instead of drawing a hard colour ring.
+    const depthArray = new Float32Array(waterPosAttr.count);
+    const surfaceY = -0.28;
+    for (let i = 0; i < waterPosAttr.count; i++) {
+      const wx = waterPosAttr.getX(i);
+      const wz = waterPosAttr.getZ(i);
+      const groundY = this.getTerrainHeight(wx, wz);
+      depthArray[i] = surfaceY - groundY;
+    }
+    waterGeo.setAttribute('aOceanDepth', new THREE.BufferAttribute(depthArray, 1));
+    applyOceanShader(waterMat, { waveHeight: 0.16, foamDepth: 0.85 });
+
     this.waterMesh = new THREE.Mesh(waterGeo, waterMat);
-    this.waterMesh.position.y = -0.28;
+    this.waterMesh.position.y = surfaceY;
     this.waterMesh.receiveShadow = true;
     scene.add(this.waterMesh);
 
@@ -833,20 +953,12 @@ export class TerrainGenerator {
     this.skyGroup.name = 'CameraCentredSky';
     scene.add(this.skyGroup);
 
-    const skyGeo = new THREE.SphereGeometry(SKY_DOME_RADIUS, 40, 24);
-    const pos = skyGeo.attributes.position;
-    const skyColors: number[] = [];
-    for (let i = 0; i < pos.count; i++) {
-      skyColors.push(0.2, 0.7, 0.98);
-    }
-    skyGeo.setAttribute('color', new THREE.Float32BufferAttribute(skyColors, 3));
-
-    const skyMat = new THREE.MeshBasicMaterial({
-      vertexColors: true,
-      side: THREE.BackSide,
-      depthWrite: false,
-      fog: false,
-    });
+    // 8.0: an analytic shader dome instead of a 40x24 vertex-coloured sphere.
+    // The old dome interpolated three colours across ~1k vertices, which bands
+    // visibly across the gradient and could not carry clouds or a real sun.
+    const skyGeo = new THREE.SphereGeometry(SKY_DOME_RADIUS, 64, 36);
+    const skyMat = createSkyMaterial(SKY_DOME_RADIUS);
+    this.skyMaterial = skyMat;
     this.skyDome = new THREE.Mesh(skyGeo, skyMat);
     this.skyDome.name = 'AtmosphericSkyDome';
     this.skyDome.frustumCulled = false;
@@ -886,34 +998,9 @@ export class TerrainGenerator {
     this.starfieldPoints.renderOrder = -99;
     this.skyGroup.add(this.starfieldPoints);
 
-    // Sun Disc + Glowing Corona Halo, positioned by applyTimeOfDaySky on
-    // the same directional-light vector used for scene shadows.
-    const sunGeo = new THREE.CircleGeometry(13, 28);
-    const sunMat = new THREE.MeshBasicMaterial({
-      color: 0xfef08a,
-      side: THREE.DoubleSide,
-      fog: false,
-    });
-    this.sunMesh = new THREE.Mesh(sunGeo, sunMat);
-    this.sunMesh.name = 'AtmosphericSun';
-    this.sunMesh.frustumCulled = false;
-    this.sunMesh.renderOrder = -98;
-    this.skyGroup.add(this.sunMesh);
-
-    const haloGeo = new THREE.RingGeometry(13.4, 26, 28);
-    const haloMat = new THREE.MeshBasicMaterial({
-      color: 0xfde047,
-      side: THREE.DoubleSide,
-      transparent: true,
-      opacity: 0.24,
-      depthWrite: false,
-      fog: false,
-    });
-    this.sunHaloMesh = new THREE.Mesh(haloGeo, haloMat);
-    this.sunHaloMesh.name = 'AtmosphericSunHalo';
-    this.sunHaloMesh.frustumCulled = false;
-    this.sunHaloMesh.renderOrder = -98;
-    this.skyGroup.add(this.sunHaloMesh);
+    // The sun is drawn by the sky shader (disc, limb darkening, corona and
+    // forward scatter) rather than as a flat circle mesh with a ring around it.
+    // One light source, one definition, no mismatched hard edge against the sky.
 
     this.applyTimeOfDaySky('day');
 
@@ -1027,100 +1114,73 @@ export class TerrainGenerator {
 
   public applyTimeOfDaySky(preset: TimeOfDayPreset): void {
     if (!this.skyDome) return;
-    const pos = this.skyDome.geometry.attributes.position;
-    const colAttr = this.skyDome.geometry.attributes.color as THREE.BufferAttribute;
+    this.airPreset = preset;
 
-    // One authored palette for the visible sky and PMREM lighting. Updating
-    // presets paints vertex colors once; no sky shader or per-frame uploads.
+    const palette = SKY_PALETTES[preset];
     const environment = getEnvironmentPreset(preset);
-    const cZenith = new THREE.Color(environment.zenith);
-    const cHorizon = new THREE.Color(environment.horizon);
-    const cMid = cZenith.clone().lerp(cHorizon,.45);
-    const cGround = new THREE.Color(environment.ground);
-    const cSunGlow = new THREE.Color(
-      preset === 'day' ? 0xfef3c7 : preset === 'sunset' ? 0xffd9a0 : 0xbfdbfe
-    );
     const sunDirection = getSunDirection(preset);
-    const sunHorizontalLength = Math.hypot(sunDirection.x, sunDirection.z) || 1;
-    const sunAzimuthX = sunDirection.x / sunHorizontalLength;
-    const sunAzimuthZ = sunDirection.z / sunHorizontalLength;
-    const sunGlowStrength =
-      preset === 'sunset' ? 0.42 : preset === 'day' ? 0.18 : 0.06;
-    const tmp = new THREE.Color();
+    const sunVector = new THREE.Vector3(
+      sunDirection.x,
+      sunDirection.y,
+      sunDirection.z
+    );
 
-    for (let i = 0; i < pos.count; i++) {
-      const x = pos.getX(i);
-      const y = pos.getY(i);
-      const z = pos.getZ(i);
-      const elevation = THREE.MathUtils.clamp(y / SKY_DOME_RADIUS, -1, 1);
-      if (elevation >= 0.28) {
-        tmp.lerpColors(cMid, cZenith, (elevation - 0.28) / 0.72);
-      } else if (elevation >= 0) {
-        tmp.lerpColors(cHorizon, cMid, elevation / 0.28);
-      } else {
-        tmp.lerpColors(cHorizon, cGround, Math.min(1, -elevation / 0.42));
-      }
-
-      // A broad sun-side atmospheric glow ties the visible sun, directional
-      // light, and horizon together without a post-processing pass.
-      const horizontalLength = Math.hypot(x, z) || 1;
-      const azimuthDot = Math.max(
-        0,
-        (x / horizontalLength) * sunAzimuthX +
-          (z / horizontalLength) * sunAzimuthZ
-      );
-      const horizonBand = Math.max(0, 1 - Math.abs(elevation + 0.03) / 0.48);
-      tmp.lerp(
-        cSunGlow,
-        Math.pow(azimuthDot, 3) * horizonBand * sunGlowStrength
-      );
-      colAttr.setXYZ(i, tmp.r, tmp.g, tmp.b);
+    if (this.skyMaterial) {
+      applySkyPreset(this.skyMaterial, palette, sunVector);
     }
-    colAttr.needsUpdate = true;
 
     if (this.starfieldPoints) {
+      // The shader also draws stars, but the point field still gives the night
+      // sky its depth; both are faded by the same preset value.
       const starMat = this.starfieldPoints.material as THREE.PointsMaterial;
-      starMat.opacity = preset === 'night' ? 0.92 : preset === 'sunset' ? 0.42 : 0.0;
+      starMat.opacity = preset === 'night' ? 0.55 : preset === 'sunset' ? 0.16 : 0.0;
     }
 
-    if (this.sunMesh) {
-      const sunMat = this.sunMesh.material as THREE.MeshBasicMaterial;
-      sunMat.color.setHex(
-        preset === 'day' ? 0xfef08a : preset === 'sunset' ? 0xfb923c : 0xe2e8f0
-      );
-      const sunPosition = new THREE.Vector3(
-        sunDirection.x,
-        sunDirection.y,
-        sunDirection.z
-      ).multiplyScalar(SUN_DISTANCE);
-      const facing = sunPosition.clone().multiplyScalar(-1).normalize();
-      const orientation = new THREE.Quaternion().setFromUnitVectors(
-        new THREE.Vector3(0, 0, 1),
-        facing
-      );
-      this.sunMesh.position.copy(sunPosition);
-      this.sunMesh.quaternion.copy(orientation);
-      if (this.sunHaloMesh) {
-        const haloMat = this.sunHaloMesh.material as THREE.MeshBasicMaterial;
-        haloMat.color.setHex(
-          preset === 'day' ? 0xfde047 : preset === 'sunset' ? 0xfb923c : 0x93c5fd
-        );
-        haloMat.opacity = preset === 'sunset' ? 0.32 : 0.22;
-        this.sunHaloMesh.position.copy(sunPosition);
-        this.sunHaloMesh.quaternion.copy(orientation);
-      }
-    }
+    // The horizon colour the sky actually shows, reused for fog so distant
+    // geometry dissolves into the right tone instead of a fixed blue.
+    this.airColor.setHex(environment.horizon);
+  }
+
+  /**
+   * 8.0 aerial perspective.
+   *
+   * Fog used to be one constant colour for the whole scene, so looking toward
+   * the sun and looking away from it produced identical haze. Real air scatters
+   * forward: the horizon is warm and bright toward the light and cool away from
+   * it. Blending the fog colour per frame against the sun-influenced horizon
+   * colour costs two vector ops and makes distance read correctly.
+   */
+  public updateAerialPerspective(
+    cameraDirection: THREE.Vector3,
+    fog: THREE.FogExp2 | null
+  ): void {
+    if (!fog) return;
+    const palette = SKY_PALETTES[this.airPreset];
+    const sunDirection = getSunDirection(this.airPreset);
+    const sun = new THREE.Vector3(sunDirection.x, sunDirection.y, sunDirection.z);
+    horizonAirColor(palette, sun, cameraDirection, this.airColor);
+    // Keep the haze slightly cooler and less saturated than the sky itself so
+    // it never looks like a coloured sheet laid over the world.
+    fog.color.copy(this.airColor).lerp(new THREE.Color(palette.zenith), 0.18);
+  }
+
+  /** LOW/MEDIUM skip the second cloud layer in the sky shader. */
+  public setSkyQuality(detailedClouds: boolean): void {
+    if (this.skyMaterial) setSkyCloudDetail(this.skyMaterial, detailedClouds ? 1 : 0);
   }
 
   public update(dt: number, cameraPosition?: THREE.Vector3): void {
     this.time += dt;
+    if (this.skyMaterial) setSkyTime(this.skyMaterial, this.time);
     if (cameraPosition) {
       // Sky, sun, and stars are directional backdrop elements. Following the
       // camera prevents parallax/clipping as the player crosses the island.
       this.skyGroup.position.copy(cameraPosition);
     }
     if (this.waterMesh) {
-      this.waterMesh.position.y = -0.28 + Math.sin(this.time * 1.8) * 0.12;
+      // The surface now waves per-vertex in the shader; moving the whole plane
+      // up and down (the old behaviour) made the entire ocean pump as one slab.
+      setOceanTime(this.waterMesh.material as THREE.Material, this.time);
       if (this.waterTexture) {
         this.waterTexture.offset.x = (this.time * 0.032) % 1;
         this.waterTexture.offset.y = (this.time * 0.02) % 1;

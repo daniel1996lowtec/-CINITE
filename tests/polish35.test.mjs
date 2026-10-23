@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { measureQualityTiers, auditTreeLod } from './helpers/sceneStats.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -98,7 +99,28 @@ test('3.5 navigation paint follows existing supported surfaces; landmark light i
   // (cornices, mullions, rooftop plant, street furniture) stays inside the
   // shared instanced batches and is dropped on the reduced-detail tier; the
   // draw-call/mesh count and the exact collider fingerprint are unchanged.
-  assert.ok(decals>20);assert.ok(triangles<=340000);
+  assert.ok(decals>20);
+// CI CRAFT 7.0 tiered budgets (shared helper): what LOW/MEDIUM and HIGH/ULTRA
+// actually draw, factoring out hidden LOD twins and the decorative tier.
+const tiers=measureQualityTiers(scene,world);
+  // Measured 7.0 baseline (visualAudit, detailed vegetation on the high tier):
+  //   LOW/MEDIUM 320,030 tris | HIGH/ULTRA 576,900 tris
+  // 6.2's always-on tier was 305,226. The +4.8 % on LOW buys the round
+  // shared cylinder (10 -> 18 segments), which is the single fix for the
+  // visibly faceted silos, tanks and towers. Budgets sit just above the
+  // measured value so ordinary tweaks do not churn, and any further growth
+  // has to be justified explicitly.
+  // Measured 8.0 tier totals (visualAudit / measureQualityTiers):
+  //   LOW/MEDIUM 327,640 tris | HIGH/ULTRA 609,542 tris
+  // The 8.0 delta over 7.2 (+2.6k LOW, +24.5k HIGH) is the clustered ground
+  // cover: 6,400 grass tufts at 6 triangles plus 1,400 flowers, in four
+  // instanced draw calls. LOW keeps one band and no flowers; HIGH/ULTRA show
+  // all of it with a taller/tighter band layout. Nothing else was added, and
+  // no existing geometry was made heavier to reach these numbers.
+assert.ok(tiers.low.triangles<=330000,`LOW/MEDIUM triangle budget ${tiers.low.triangles}`);
+assert.ok(tiers.high.triangles<=620000,`HIGH/ULTRA triangle budget ${tiers.high.triangles}`);
+const lodAudit=auditTreeLod(world.treeLodHighGroup,world.treeLodLowGroup);
+assert.deepEqual(lodAudit.problems,[],`vegetation LOD desync: ${lodAudit.problems.join('; ')}`);
   const light=scene.getObjectByName('LegendaryTowerVaultLight');world.update(.1,new THREE.Vector3(500,50,500));assert.equal(light.visible,false);
   world.setLandmarkDetail(false);world.update(.1,new THREE.Vector3(0,55,0));assert.equal(light.visible,false);
   world.setLandmarkDetail(true);world.update(.1,new THREE.Vector3(0,55,0));assert.equal(light.visible,true);assert.ok(light.intensity>=71&&light.intensity<=85);
