@@ -152,10 +152,18 @@ test('7.0 vegetation: LOW/MEDIUM draws materially fewer triangles than HIGH/ULTR
   // The 8.2 delta (+5.9k LOW, +7.0k HIGH) is the road surface mesh (1,274
   // triangles of carriageway ribbons and junction discs) plus kerbs split into
   // two sub-spans each so they follow the ground instead of hovering over it.
+  // CI CRAFT 9.0 raised this budget because the road surface is now a real
+  // conforming mesh instead of a 2-vertex strip. Measured: the old strip cost
+  // 1,274 triangles and let the ground burst through the asphalt in 14.6 % of
+  // samples; the 9.0 surface costs 23,148 and leaves 1.02 %. Adaptive width and
+  // length decimation already removed 51 % of its first draft (47,762 -> 23,148)
+  // and the cheaper disc tessellation another 4,000, with no change in
+  // conformance. Nothing else in the world grew: this is the measured price of
+  // the defect fix, not extra scenery.
   // All of it is essential-tier: a road cannot be quality-gated away without
   // removing the road network on LOW, so both tiers carry it.
-  assert.ok(tiers.low.triangles <= 338000, `LOW/MEDIUM budget: ${tiers.low.triangles}`);
-  assert.ok(tiers.high.triangles <= 622000, `HIGH/ULTRA budget: ${tiers.high.triangles}`);
+  assert.ok(tiers.low.triangles <= 360000, `LOW/MEDIUM budget: ${tiers.low.triangles}`);
+  assert.ok(tiers.high.triangles <= 640000, `HIGH/ULTRA budget: ${tiers.high.triangles}`);
 });
 
 /* ------------------------------------------------------------------ */

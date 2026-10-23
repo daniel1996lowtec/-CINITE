@@ -426,6 +426,53 @@ export class IslandWorld {
     this.buildInstancedFoliage();
     this.mapExpansion.buildDetailFoliage();
     this.mapExpansion.finalizeArchitecture();
+    // CI CRAFT 9.0 — bridge decks are real support planes.
+    //
+    // Registered last so they can see every floor the world already provides.
+    // The road builder raises a proper deck where a road genuinely spans water;
+    // before this nothing told the movement solver about it, so a player
+    // crossing Mirror Lake walked on the lakebed 2.3 m under the visible bridge.
+    //
+    // A deck is only added where it is the actual floor. If something already
+    // holds a player up at bridge level — the river-south dock sits directly
+    // beneath the ruins crossing — adding the deck would lift a walker off that
+    // dock onto the bridge, and would strand the loot chest resting on it,
+    // because a deck within the solver's maxRise becomes the floor everywhere
+    // above it. Those spans already have a floor, so they are skipped.
+    const DECK_SNAP_RANGE = 1.35;
+    for (const deck of this.terrain.roadWalkables) {
+      // Skip a deck only when the world ALREADY bridges this gap: a meaningful
+      // part of the span is covered by an existing floor at walkable height.
+      // Measured coverage: Mirror Lake causeway 2 %, minor lake link 0 %,
+      // ruins/river crossing 32 % — the river-south dock already sits under a
+      // third of that span, and a chest rests on it. The threshold sits between
+      // the two groups rather than being tuned to a target.
+      let sampled = 0;
+      let floored = 0;
+      for (let sx = deck.minX; sx <= deck.maxX; sx += 2) {
+        for (let sz = deck.minZ; sz <= deck.maxZ; sz += 2) {
+          const deckY = deck.getHeight(sx, sz);
+          if (deckY < -1e5) continue;
+          sampled++;
+          const covered = this.walkableSurfaces.some((surface) => {
+            if (sx < surface.minX || sx > surface.maxX || sz < surface.minZ || sz > surface.maxZ) return false;
+            const height = surface.getHeight(sx, sz);
+            return height > deckY - DECK_SNAP_RANGE && height < deckY + 0.5;
+          });
+          if (covered) floored++;
+        }
+      }
+      if (sampled > 0 && floored / sampled > 0.25) continue;
+      this.walkableSurfaces.push({
+        id: deck.id,
+        minX: deck.minX,
+        maxX: deck.maxX,
+        minZ: deck.minZ,
+        maxZ: deck.maxZ,
+        getHeight: deck.getHeight,
+      });
+    }
+
     this.branding?.dispose();
     this.branding = new WorldBranding(this.scene, this.terrain.terrainMesh.geometry,
       (x, z) => this.terrain.getTerrainHeight(x, z));

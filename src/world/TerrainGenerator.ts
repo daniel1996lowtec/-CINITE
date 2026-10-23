@@ -21,6 +21,7 @@ import {
   setSkyTime,
   SKY_PRESETS as SKY_PALETTES,
 } from './SkySystem';
+import { buildRoadNetwork, type RoadWalkable } from './RoadNetwork';
 import {
   EXPANSION_BUILDINGS,
   EXPANSION_LANDMARKS,
@@ -31,6 +32,9 @@ import {
   getBuildingFootprint,
   getLandmarkFootprint,
 } from './WorldLayout';
+
+/** Ocean surface height. Single source of truth for road/bridge elevation. */
+export const WATER_SURFACE_Y = -0.28;
 
 export interface POIDefinition {
   id: string;
@@ -173,8 +177,19 @@ export class TerrainGenerator {
   public lakeFoamRing!: THREE.Mesh;
   public lakeInnerRippleRing!: THREE.Mesh;
   public terrainMesh!: THREE.Mesh;
-  /** CI CRAFT 8.2 — merged carriageway ribbons + junction discs. */
+  /** CI CRAFT 9.0 — conforming road surface from RoadNetwork.buildRoadNetwork(). */
   public roadSurfaceMesh: THREE.Mesh | null = null;
+  /** Support planes for genuine bridge decks, consumed by IslandWorld. */
+  public roadWalkables: RoadWalkable[] = [];
+  public roadStats: {
+    segments: number;
+    nodes: number;
+    triangles: number;
+    vertices: number;
+    waterCrossings: number;
+    spanLength: number;
+    longestEdge: number;
+  } | null = null;
   /** CI CRAFT 8.2 — parapets and piers for elevated road spans. */
   public roadBridgeMesh: THREE.Mesh | null = null;
   /** Rendered terrain heights, row-major over the (segments+1)^2 lattice. */
@@ -637,278 +652,6 @@ export class TerrainGenerator {
     return this.getRoadDistance(x, z) < 3.9;
   }
 
-  /**
-   * CI CRAFT 8.2 — carriageway geometry.
-   *
-   * One merged BufferGeometry for the whole network:
-   *   - a quad strip per road segment, subdivided every ~6 m so it follows the
-   *     terrain instead of cutting through hills,
-   *   - a paved disc at every node where segments meet, sized to the
-   *     carriageway, so junctions are properly closed,
-   *   - each ribbon is trimmed by that radius at both ends and the disc fills
-   *     the middle, so nothing overlaps and nothing leaves a gap.
-   *
-   * Heights come from the same `getTerrainHeight` used by collision, so the
-   * road can never float above or sink into the surface the player walks on.
-   * No colliders are added: the road is a visible surface on existing terrain.
-   */
-  private buildRoadSurfaceGeometry(): THREE.Mesh {
-    const positions: number[] = [];
-    const uvs: number[] = [];
-    const colors: number[] = [];
-    const indices: number[] = [];
-    // Bridge structure (parapets, piers) is kept in a separate buffer set and
-    // becomes its own mesh: it is solid geometry with downward faces, while the
-    // deck is a surface that must face up and carry a depth offset.
-    const sPositions: number[] = [];
-    const sUvs: number[] = [];
-    const sColors: number[] = [];
-    const sIndices: number[] = [];
-    const tint = new THREE.Color();
-
-    // Carriageway half-width. Must match the asphalt band painted into the
-    // terrain sub-base (3.6 m) so the ribbon edge is exactly the road edge.
-    const halfWidth = 3.6;
-    // Sit just above the terrain to avoid coincident-surface flicker. Small
-    // enough that a player never sees a step at the kerb.
-    const lift = 0.035;
-    // CI CRAFT 8.2 — the primary road (0,0)-(-105,95) crosses Mirror Lake,
-    // where the lakebed is at -1.65 m, well under the -0.28 m water plane. The
-    // carriageway used to follow the bed down and disappear underwater, leaving
-    // the navy seabed paint showing across the route. A road never goes below
-    // its own deck: where the ground drops away the ribbon spans the gap as a
-    // causeway. `Math.max` keeps this continuous — the deck meets the ground
-    // exactly where the ground rises through it, so there is no step.
-    const WATER_SURFACE_Y = -0.28;
-    const BRIDGE_DECK_Y = WATER_SURFACE_Y + 0.95;
-
-    const pushVertex = (x: number, z: number, u: number, v: number, shade: number): number => {
-      const ground = this.getRenderedTerrainHeight(x, z);
-      const y = Math.max(ground + lift, BRIDGE_DECK_Y);
-      positions.push(x, y, z);
-      uvs.push(u, v);
-      tint.setRGB(shade, shade, shade);
-      colors.push(tint.r, tint.g, tint.b);
-      return positions.length / 3 - 1;
-    };
-
-    /**
-     * Appends a box into the merged buffers. Used for the bridge structure.
-     * BoxGeometry is correctly wound and the transforms used here have a
-     * positive determinant, so the winding survives.
-     */
-    const pushBox = (
-      cx: number,
-      cy: number,
-      cz: number,
-      sx: number,
-      sy: number,
-      sz: number,
-      yaw: number,
-      shade: number
-    ): void => {
-      const box = new THREE.BoxGeometry(sx, sy, sz);
-      box.rotateY(yaw);
-      box.translate(cx, cy, cz);
-      const bp = box.getAttribute('position');
-      const bn = box.getAttribute('normal');
-      const start = sPositions.length / 3;
-      for (let i = 0; i < bp.count; i++) {
-        sPositions.push(bp.getX(i), bp.getY(i), bp.getZ(i));
-        sUvs.push(bp.getX(i) * 0.35, bp.getZ(i) * 0.35);
-        // Simple directional shading so box faces do not read as one flat tone.
-        const ny = bn.getY(i);
-        const shadeHere = shade * (0.88 + Math.max(0, ny) * 0.16);
-        sColors.push(shadeHere, shadeHere, shadeHere);
-      }
-      const bi = box.getIndex();
-      if (bi) {
-        for (let i = 0; i < bi.count; i++) sIndices.push(start + bi.getX(i));
-      } else {
-        for (let i = 0; i < bp.count; i++) sIndices.push(start + i);
-      }
-      box.dispose();
-    };
-
-    // ---- nodes: every unique segment endpoint ------------------------------
-    const nodes = new Map<string, { x: number; z: number; radius: number }>();
-    const noteNode = (x: number, z: number, radius: number): void => {
-      const key = `${x.toFixed(2)}|${z.toFixed(2)}`;
-      const existing = nodes.get(key);
-      if (existing) existing.radius = Math.max(existing.radius, radius);
-      else nodes.set(key, { x, z, radius });
-    };
-    for (const segment of ISLAND_ROAD_SEGMENTS) {
-      noteNode(segment.fromX, segment.fromZ, halfWidth);
-      noteNode(segment.toX, segment.toZ, halfWidth);
-    }
-
-    // ---- ribbons -----------------------------------------------------------
-    for (const segment of ISLAND_ROAD_SEGMENTS) {
-      const dx = segment.toX - segment.fromX;
-      const dz = segment.toZ - segment.fromZ;
-      const length = Math.hypot(dx, dz);
-      if (length < 1) continue;
-
-      // Trim by the junction radius so the disc owns the junction.
-      const trim = Math.min(halfWidth, length * 0.45);
-      const usable = length - trim * 2;
-      if (usable <= 0.5) continue;
-
-      const dirX = dx / length;
-      const dirZ = dz / length;
-      // Perpendicular in the XZ plane.
-      const perpX = -dirZ;
-      const perpZ = dirX;
-
-      const steps = Math.max(2, Math.ceil(usable / 6));
-      const base = positions.length / 3;
-      // Bridge bookkeeping: where the deck is above the ground, the span needs
-      // parapets and piers or it reads as a slab floating over the water.
-      const spanStep = usable / steps;
-      let pierAccum = 0;
-      for (let step = 0; step <= steps; step++) {
-        const along = trim + usable * (step / steps);
-        const cx = segment.fromX + dirX * along;
-        const cz = segment.fromZ + dirZ * along;
-        // Edge samples sit very slightly lower than the crown would; keeping
-        // both at the same height keeps the strip planar per cross-section and
-        // avoids pinching on sloped ground.
-        const leftEdge = pushVertex(cx - perpX * halfWidth, cz - perpZ * halfWidth, 0, along * 0.16, 0.95);
-        pushVertex(cx + perpX * halfWidth, cz + perpZ * halfWidth, 1, along * 0.16, 0.95);
-
-        // CI CRAFT 8.3 — measure clearance under the SAME point the deck height
-        // was sampled from. This previously compared the deck's left edge
-        // elevation against the terrain under the *centreline*, so any ordinary
-        // cross-slope on a cambered road exceeded the 0.15 m threshold and grew
-        // a full bridge parapet alongside it. That is what produced the long
-        // grey walls running down both sides of flat roads.
-        const edgeX = cx - perpX * halfWidth;
-        const edgeZ = cz - perpZ * halfWidth;
-        const deckY = positions[leftEdge * 3 + 1];
-        const groundY = this.getRenderedTerrainHeight(edgeX, edgeZ);
-        const clearance = deckY - groundY;
-        // A real span needs headroom a player could not walk under; a road on
-        // gently rolling ground never qualifies.
-        const onBridge = clearance > 0.9;
-
-        if (onBridge) {
-          const yaw = Math.atan2(dirX, dirZ);
-          // Parapets: low walls along both deck edges, only over the span.
-          for (const side of [-1, 1] as const) {
-            pushBox(
-              cx + perpX * (halfWidth + 0.11) * side,
-              deckY + 0.42,
-              cz + perpZ * (halfWidth + 0.11) * side,
-              0.22,
-              0.84,
-              spanStep * 1.05,
-              yaw,
-              0.82
-            );
-          }
-          // Piers every ~7 m, from the bed up to the deck.
-          pierAccum += spanStep;
-          if (pierAccum >= 7) {
-            pierAccum = 0;
-            const pierHeight = clearance + 0.6;
-            pushBox(
-              cx,
-              deckY - pierHeight / 2,
-              cz,
-              1.7,
-              pierHeight,
-              1.25,
-              yaw,
-              0.7
-            );
-          }
-        } else {
-          pierAccum = 0;
-        }
-      }
-
-      // Two triangles per quad. Winding is (a, b, c) / (b, d, c) so the
-      // geometric normal points +Y; the opposite order faces the ground and the
-      // road vanishes under backface culling.
-      for (let step = 0; step < steps; step++) {
-        const a = base + step * 2;
-        const b = a + 1;
-        const c = a + 2;
-        const d = a + 3;
-        indices.push(a, b, c, b, d, c);
-      }
-    }
-
-    // ---- junction discs ----------------------------------------------------
-    for (const node of nodes.values()) {
-      const radius = node.radius + 0.02;
-      const around = 18;
-      const centre = pushVertex(node.x, node.z, 0.5, 0.5, 1.0);
-      const ring: number[] = [];
-      for (let i = 0; i < around; i++) {
-        const angle = (i / around) * Math.PI * 2;
-        const px = node.x + Math.cos(angle) * radius;
-        const pz = node.z + Math.sin(angle) * radius;
-        ring.push(
-          pushVertex(px, pz, Math.cos(angle) * 0.5 + 0.5, Math.sin(angle) * 0.5 + 0.5, 1.0)
-        );
-      }
-      for (let i = 0; i < around; i++) {
-        // Reversed against the naive (centre, ring[i], ring[i+1]) order, which
-        // produces a downward normal.
-        indices.push(centre, ring[(i + 1) % around], ring[i]);
-      }
-    }
-
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-    geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-    geo.setIndex(indices);
-    geo.computeVertexNormals();
-
-    const material = new THREE.MeshStandardMaterial({
-      color: 0x63676e,
-      vertexColors: true,
-      roughness: 0.94,
-      metalness: 0.02,
-      envMapIntensity: 0.4,
-      // Draw above the terrain in the depth buffer rather than fighting it.
-      polygonOffset: true,
-      polygonOffsetFactor: -2,
-      polygonOffsetUnits: -2,
-    });
-    material.name = 'CiCraftRoadSurface';
-
-    const mesh = new THREE.Mesh(geo, material);
-    mesh.name = 'RoadSurface';
-    mesh.receiveShadow = true;
-    mesh.castShadow = false;
-
-    if (sPositions.length > 0) {
-      const sGeo = new THREE.BufferGeometry();
-      sGeo.setAttribute('position', new THREE.Float32BufferAttribute(sPositions, 3));
-      sGeo.setAttribute('uv', new THREE.Float32BufferAttribute(sUvs, 2));
-      sGeo.setAttribute('color', new THREE.Float32BufferAttribute(sColors, 3));
-      sGeo.setIndex(sIndices);
-      sGeo.computeVertexNormals();
-      const sMat = new THREE.MeshStandardMaterial({
-        color: 0x8d8a83,
-        vertexColors: true,
-        roughness: 0.92,
-        metalness: 0.02,
-        envMapIntensity: 0.4,
-      });
-      sMat.name = 'CiCraftBridgeStructure';
-      this.roadBridgeMesh = new THREE.Mesh(sGeo, sMat);
-      this.roadBridgeMesh.name = 'RoadBridgeStructure';
-      this.roadBridgeMesh.receiveShadow = true;
-      this.roadBridgeMesh.castShadow = true;
-    }
-    return mesh;
-  }
-
   public buildTerrain(scene: THREE.Scene): void {
     const segments = 208;
     const geo = new THREE.PlaneGeometry(this.worldSize, this.worldSize, segments, segments);
@@ -1227,9 +970,16 @@ export class TerrainGenerator {
     // every junction by a paved disc. Ribbons are trimmed by one carriageway
     // radius at each end, so segments meeting at a node join through the disc
     // instead of overlapping — no gaps and no coplanar z-fighting.
-    this.roadSurfaceMesh = this.buildRoadSurfaceGeometry();
-    scene.add(this.roadSurfaceMesh);
-    if (this.roadBridgeMesh) scene.add(this.roadBridgeMesh);
+    // CI CRAFT 9.0 — the whole road network comes from one deterministic
+    // builder that conforms the asphalt across its full width. See
+    // src/world/RoadNetwork.ts for why the previous two-vertex strip tore.
+    const roadNetwork = buildRoadNetwork(ISLAND_ROAD_SEGMENTS, this, WATER_SURFACE_Y);
+    this.roadSurfaceMesh = roadNetwork.surface;
+    this.roadBridgeMesh = roadNetwork.structures;
+    this.roadWalkables = roadNetwork.walkables;
+    this.roadStats = roadNetwork.stats;
+    scene.add(roadNetwork.surface);
+    if (roadNetwork.structures) scene.add(roadNetwork.structures);
 
     // Stylized Ocean, Mirror Lake & Winding River Water Plane with Coastal Depth Gradient
     const waterGeo = new THREE.PlaneGeometry(1600, 1600, 64, 64);
