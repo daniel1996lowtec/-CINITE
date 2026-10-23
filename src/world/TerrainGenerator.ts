@@ -14,6 +14,14 @@ import {
   getSurfaceVariation,
 } from './VisualAtmosphere';
 import {
+  applySkyPreset,
+  createSkyMaterial,
+  horizonAirColor,
+  setSkyCloudDetail,
+  setSkyTime,
+  SKY_PRESETS as SKY_PALETTES,
+} from './SkySystem';
+import {
   EXPANSION_BUILDINGS,
   EXPANSION_LANDMARKS,
   ISLAND_ROAD_SEGMENTS,
@@ -171,8 +179,11 @@ export class TerrainGenerator {
   public starfieldPoints!: THREE.Points;
   public atmosphereMotes!: THREE.Points;
   public skyDome!: THREE.Mesh;
-  public sunMesh!: THREE.Mesh;
-  public sunHaloMesh!: THREE.Mesh;
+  /** Shader material driven by SkySystem; null until the sky is built. */
+  public skyMaterial: THREE.ShaderMaterial | null = null;
+  /** Reused scratch colour for aerial perspective, never allocated per frame. */
+  private readonly airColor = new THREE.Color();
+  private airPreset: TimeOfDayPreset = 'day';
   public waterfallMesh!: THREE.Mesh;
   private waterTexture: THREE.CanvasTexture | null = null;
   private waterBumpTexture: THREE.CanvasTexture | null = null;
@@ -641,13 +652,29 @@ export class TerrainGenerator {
         // Wet shoreline sand
         color.setHex(0xc49f6c).lerp(new THREE.Color(0xdcc59a), (shoreJ - 0.08) / 0.44);
       } else if (
-        vyJ < 1.85 ||
-        distCenter > this.islandRadius * 0.88 + jitter * 3.5 ||
-        (riverDist < 6.4 + jitter * 1.4 && vyJ < 2.5) ||
-        (lakeDist > 20 + jitter * 2 && lakeDist < 26.5 + jitter * 2 && vyJ < 2.6)
+        // CI CRAFT 8.0 — sand belongs next to water, not everywhere below 1.85 m.
+        // The old condition treated *all* low ground as beach, so every flat
+        // valley on the island rendered as one enormous beige field with no
+        // grass, no soil and no colour break: the single flattest, least
+        // authored-looking surface in the game.
+        //
+        // Sand is now gated on actual proximity to the sea, a river or a lake,
+        // plus a noise mask so the dune/meadow border is organic rather than a
+        // contour line. Height still has to be low; it just is not sufficient.
+        (vyJ < 2.05 &&
+          (distCenter > this.islandRadius * 0.8 + jitter * 3.5 ||
+            riverDist < 8.5 + jitter * 1.4 ||
+            (lakeDist > 17 + jitter * 2 && lakeDist < 30 + jitter * 2))) ||
+        (vyJ < 1.15 && macro > 0.66)
       ) {
-        // Warm Mediterranean coastal sand & riverbank pebble-sand
+        // Warm Mediterranean coastal sand & riverbank pebble-sand, with the
+        // dune inland edge breaking up through patches of dry marram grass.
         color.setHex(0xdcc59a).lerp(new THREE.Color(0xe8d7b4), fineVariation * 0.65);
+        const duneEdge = Math.min(1, Math.max(0, (vyJ - 1.15) / 0.9));
+        color.lerp(
+          new THREE.Color(0x9aa05e),
+          duneEdge * Math.max(0, patch - 0.34) * 1.15
+        );
       } else if (Math.hypot(vx, vz) < 30) {
         // Pipeline Plaza paving: individual travertine slabs with mortar
         // joints and per-slab tonal variation instead of a two-tone checker.
@@ -926,20 +953,12 @@ export class TerrainGenerator {
     this.skyGroup.name = 'CameraCentredSky';
     scene.add(this.skyGroup);
 
-    const skyGeo = new THREE.SphereGeometry(SKY_DOME_RADIUS, 40, 24);
-    const pos = skyGeo.attributes.position;
-    const skyColors: number[] = [];
-    for (let i = 0; i < pos.count; i++) {
-      skyColors.push(0.2, 0.7, 0.98);
-    }
-    skyGeo.setAttribute('color', new THREE.Float32BufferAttribute(skyColors, 3));
-
-    const skyMat = new THREE.MeshBasicMaterial({
-      vertexColors: true,
-      side: THREE.BackSide,
-      depthWrite: false,
-      fog: false,
-    });
+    // 8.0: an analytic shader dome instead of a 40x24 vertex-coloured sphere.
+    // The old dome interpolated three colours across ~1k vertices, which bands
+    // visibly across the gradient and could not carry clouds or a real sun.
+    const skyGeo = new THREE.SphereGeometry(SKY_DOME_RADIUS, 64, 36);
+    const skyMat = createSkyMaterial(SKY_DOME_RADIUS);
+    this.skyMaterial = skyMat;
     this.skyDome = new THREE.Mesh(skyGeo, skyMat);
     this.skyDome.name = 'AtmosphericSkyDome';
     this.skyDome.frustumCulled = false;
@@ -979,34 +998,9 @@ export class TerrainGenerator {
     this.starfieldPoints.renderOrder = -99;
     this.skyGroup.add(this.starfieldPoints);
 
-    // Sun Disc + Glowing Corona Halo, positioned by applyTimeOfDaySky on
-    // the same directional-light vector used for scene shadows.
-    const sunGeo = new THREE.CircleGeometry(13, 28);
-    const sunMat = new THREE.MeshBasicMaterial({
-      color: 0xfef08a,
-      side: THREE.DoubleSide,
-      fog: false,
-    });
-    this.sunMesh = new THREE.Mesh(sunGeo, sunMat);
-    this.sunMesh.name = 'AtmosphericSun';
-    this.sunMesh.frustumCulled = false;
-    this.sunMesh.renderOrder = -98;
-    this.skyGroup.add(this.sunMesh);
-
-    const haloGeo = new THREE.RingGeometry(13.4, 26, 28);
-    const haloMat = new THREE.MeshBasicMaterial({
-      color: 0xfde047,
-      side: THREE.DoubleSide,
-      transparent: true,
-      opacity: 0.24,
-      depthWrite: false,
-      fog: false,
-    });
-    this.sunHaloMesh = new THREE.Mesh(haloGeo, haloMat);
-    this.sunHaloMesh.name = 'AtmosphericSunHalo';
-    this.sunHaloMesh.frustumCulled = false;
-    this.sunHaloMesh.renderOrder = -98;
-    this.skyGroup.add(this.sunHaloMesh);
+    // The sun is drawn by the sky shader (disc, limb darkening, corona and
+    // forward scatter) rather than as a flat circle mesh with a ring around it.
+    // One light source, one definition, no mismatched hard edge against the sky.
 
     this.applyTimeOfDaySky('day');
 
@@ -1120,93 +1114,64 @@ export class TerrainGenerator {
 
   public applyTimeOfDaySky(preset: TimeOfDayPreset): void {
     if (!this.skyDome) return;
-    const pos = this.skyDome.geometry.attributes.position;
-    const colAttr = this.skyDome.geometry.attributes.color as THREE.BufferAttribute;
+    this.airPreset = preset;
 
-    // One authored palette for the visible sky and PMREM lighting. Updating
-    // presets paints vertex colors once; no sky shader or per-frame uploads.
+    const palette = SKY_PALETTES[preset];
     const environment = getEnvironmentPreset(preset);
-    const cZenith = new THREE.Color(environment.zenith);
-    const cHorizon = new THREE.Color(environment.horizon);
-    const cMid = cZenith.clone().lerp(cHorizon,.45);
-    const cGround = new THREE.Color(environment.ground);
-    const cSunGlow = new THREE.Color(
-      preset === 'day' ? 0xfef3c7 : preset === 'sunset' ? 0xffd9a0 : 0xbfdbfe
-    );
     const sunDirection = getSunDirection(preset);
-    const sunHorizontalLength = Math.hypot(sunDirection.x, sunDirection.z) || 1;
-    const sunAzimuthX = sunDirection.x / sunHorizontalLength;
-    const sunAzimuthZ = sunDirection.z / sunHorizontalLength;
-    const sunGlowStrength =
-      preset === 'sunset' ? 0.42 : preset === 'day' ? 0.18 : 0.06;
-    const tmp = new THREE.Color();
+    const sunVector = new THREE.Vector3(
+      sunDirection.x,
+      sunDirection.y,
+      sunDirection.z
+    );
 
-    for (let i = 0; i < pos.count; i++) {
-      const x = pos.getX(i);
-      const y = pos.getY(i);
-      const z = pos.getZ(i);
-      const elevation = THREE.MathUtils.clamp(y / SKY_DOME_RADIUS, -1, 1);
-      if (elevation >= 0.28) {
-        tmp.lerpColors(cMid, cZenith, (elevation - 0.28) / 0.72);
-      } else if (elevation >= 0) {
-        tmp.lerpColors(cHorizon, cMid, elevation / 0.28);
-      } else {
-        tmp.lerpColors(cHorizon, cGround, Math.min(1, -elevation / 0.42));
-      }
-
-      // A broad sun-side atmospheric glow ties the visible sun, directional
-      // light, and horizon together without a post-processing pass.
-      const horizontalLength = Math.hypot(x, z) || 1;
-      const azimuthDot = Math.max(
-        0,
-        (x / horizontalLength) * sunAzimuthX +
-          (z / horizontalLength) * sunAzimuthZ
-      );
-      const horizonBand = Math.max(0, 1 - Math.abs(elevation + 0.03) / 0.48);
-      tmp.lerp(
-        cSunGlow,
-        Math.pow(azimuthDot, 3) * horizonBand * sunGlowStrength
-      );
-      colAttr.setXYZ(i, tmp.r, tmp.g, tmp.b);
+    if (this.skyMaterial) {
+      applySkyPreset(this.skyMaterial, palette, sunVector);
     }
-    colAttr.needsUpdate = true;
 
     if (this.starfieldPoints) {
+      // The shader also draws stars, but the point field still gives the night
+      // sky its depth; both are faded by the same preset value.
       const starMat = this.starfieldPoints.material as THREE.PointsMaterial;
-      starMat.opacity = preset === 'night' ? 0.92 : preset === 'sunset' ? 0.42 : 0.0;
+      starMat.opacity = preset === 'night' ? 0.55 : preset === 'sunset' ? 0.16 : 0.0;
     }
 
-    if (this.sunMesh) {
-      const sunMat = this.sunMesh.material as THREE.MeshBasicMaterial;
-      sunMat.color.setHex(
-        preset === 'day' ? 0xfef08a : preset === 'sunset' ? 0xfb923c : 0xe2e8f0
-      );
-      const sunPosition = new THREE.Vector3(
-        sunDirection.x,
-        sunDirection.y,
-        sunDirection.z
-      ).multiplyScalar(SUN_DISTANCE);
-      const facing = sunPosition.clone().multiplyScalar(-1).normalize();
-      const orientation = new THREE.Quaternion().setFromUnitVectors(
-        new THREE.Vector3(0, 0, 1),
-        facing
-      );
-      this.sunMesh.position.copy(sunPosition);
-      this.sunMesh.quaternion.copy(orientation);
-      if (this.sunHaloMesh) {
-        const haloMat = this.sunHaloMesh.material as THREE.MeshBasicMaterial;
-        haloMat.color.setHex(
-          preset === 'day' ? 0xfde047 : preset === 'sunset' ? 0xfb923c : 0x93c5fd
-        );
-        haloMat.opacity = preset === 'sunset' ? 0.32 : 0.22;
-        this.sunHaloMesh.position.copy(sunPosition);
-        this.sunHaloMesh.quaternion.copy(orientation);
-      }
-    }
+    // The horizon colour the sky actually shows, reused for fog so distant
+    // geometry dissolves into the right tone instead of a fixed blue.
+    this.airColor.setHex(environment.horizon);
+  }
+
+  /**
+   * 8.0 aerial perspective.
+   *
+   * Fog used to be one constant colour for the whole scene, so looking toward
+   * the sun and looking away from it produced identical haze. Real air scatters
+   * forward: the horizon is warm and bright toward the light and cool away from
+   * it. Blending the fog colour per frame against the sun-influenced horizon
+   * colour costs two vector ops and makes distance read correctly.
+   */
+  public updateAerialPerspective(
+    cameraDirection: THREE.Vector3,
+    fog: THREE.FogExp2 | null
+  ): void {
+    if (!fog) return;
+    const palette = SKY_PALETTES[this.airPreset];
+    const sunDirection = getSunDirection(this.airPreset);
+    const sun = new THREE.Vector3(sunDirection.x, sunDirection.y, sunDirection.z);
+    horizonAirColor(palette, sun, cameraDirection, this.airColor);
+    // Keep the haze slightly cooler and less saturated than the sky itself so
+    // it never looks like a coloured sheet laid over the world.
+    fog.color.copy(this.airColor).lerp(new THREE.Color(palette.zenith), 0.18);
+  }
+
+  /** LOW/MEDIUM skip the second cloud layer in the sky shader. */
+  public setSkyQuality(detailedClouds: boolean): void {
+    if (this.skyMaterial) setSkyCloudDetail(this.skyMaterial, detailedClouds ? 1 : 0);
   }
 
   public update(dt: number, cameraPosition?: THREE.Vector3): void {
     this.time += dt;
+    if (this.skyMaterial) setSkyTime(this.skyMaterial, this.time);
     if (cameraPosition) {
       // Sky, sun, and stars are directional backdrop elements. Following the
       // camera prevents parallax/clipping as the player crosses the island.

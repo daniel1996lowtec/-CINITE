@@ -286,11 +286,18 @@ test('generated world: deterministic expansion, safe loot/props, and performance
   // visibly faceted silos, tanks and towers. Budgets sit just above the
   // measured value so ordinary tweaks do not churn, and any further growth
   // has to be justified explicitly.
-    tiers.low.triangles <= 325000,
+  // Measured 8.0 tier totals (visualAudit / measureQualityTiers):
+  //   LOW/MEDIUM 327,640 tris | HIGH/ULTRA 609,542 tris
+  // The 8.0 delta over 7.2 (+2.6k LOW, +24.5k HIGH) is the clustered ground
+  // cover: 6,400 grass tufts at 6 triangles plus 1,400 flowers, in four
+  // instanced draw calls. LOW keeps one band and no flowers; HIGH/ULTRA show
+  // all of it with a taller/tighter band layout. Nothing else was added, and
+  // no existing geometry was made heavier to reach these numbers.
+    tiers.low.triangles <= 330000,
     `LOW/MEDIUM triangle budget exceeded: ${tiers.low.triangles}`
   );
   assert.ok(
-    tiers.high.triangles <= 585000,
+    tiers.high.triangles <= 620000,
     `HIGH/ULTRA triangle budget exceeded: ${tiers.high.triangles}`
   );
   const lodAudit = auditTreeLod(world.treeLodHighGroup, world.treeLodLowGroup);
@@ -304,9 +311,22 @@ test('generated world: deterministic expansion, safe loot/props, and performance
   );
 
   const skyDome = first.scene.getObjectByName('AtmosphericSkyDome');
-  const skySun = first.scene.getObjectByName('AtmosphericSun');
   assert.ok(skyDome, 'expected a generated atmospheric sky dome');
-  assert.ok(skySun, 'expected a generated atmospheric sun');
+  // 8.0: the sun is drawn by the sky shader (disc + limb darkening + corona +
+  // forward scatter) rather than as a flat circle mesh plus a ring. Assert the
+  // shader contract instead of a mesh that no longer exists.
+  assert.equal(skyDome.material.name, 'CiCraftSkyMaterial');
+  const skyUniforms = skyDome.material.uniforms;
+  assert.ok(skyUniforms.uSunDirection, 'sky shader lost its sun direction');
+  assert.ok(skyUniforms.uSunIntensity.value > 0, 'sky shader sun is not emitting');
+  assert.ok(skyUniforms.uCloudCoverage.value > 0, 'sky shader has no cloud deck');
+  assert.ok(
+    String(skyDome.material.fragmentShader).includes('uSunRadius'),
+    'sky shader lost the sun disc'
+  );
+  // The visible sun and the shadow-casting light must agree.
+  const sunDir = skyUniforms.uSunDirection.value;
+  assert.ok(sunDir.length() > 0.99 && sunDir.length() < 1.01, 'sun direction not normalised');
   skyDome.geometry.computeBoundingSphere();
   approx(skyDome.geometry.boundingSphere.radius, 285, 0.01, 'sky dome radius');
   assert.equal(skyDome.material.fog, false);

@@ -64,6 +64,7 @@ export class GameEngine {
   private renderer: THREE.WebGLRenderer;
   private scene: THREE.Scene;
   private tpCamera: ThirdPersonCamera;
+  private readonly cameraForwardScratch = new THREE.Vector3();
   /** Dev-only overlay, enabled with `?aimdebug=1`; inert otherwise. */
   private aimDiagnostics = new AimDiagnostics();
   private dirLight!: THREE.DirectionalLight;
@@ -1051,6 +1052,14 @@ export class GameEngine {
     // CI CRAFT 7.0 — vegetation quality tiers. HIGH/ULTRA use the detailed
     // canopies, LOW/MEDIUM swap to the coarse twins over the same instances.
     const detailedTrees = quality === 'ultra' || quality === 'high';
+    // 8.0: LOW/MEDIUM evaluate one cloud layer instead of two. The sky is the
+    // largest single fill-rate surface in an outdoor frame, so this is the first
+    // thing to trim rather than the geometry the player is looking at.
+    this.world.terrain.setSkyQuality(detailedTrees && !reduced);
+    // Ground cover: LOW keeps one band, MEDIUM two, HIGH/ULTRA all three.
+    this.world.setGroundCoverQuality(
+      reduced ? 'low' : (quality as 'low' | 'medium' | 'high' | 'ultra')
+    );
     if (this.world.treeLodHighGroup) {
       this.world.treeLodHighGroup.visible = detailedTrees;
       this.world.treeLodLowGroup.visible = !detailedTrees;
@@ -1775,7 +1784,8 @@ export class GameEngine {
     this.perfMonitor.beginFrame();
 
     this.perfMonitor.beginSubsystem();
-    this.world.update(dt, this.tpCamera.camera.position);
+    this.tpCamera.camera.getWorldDirection(this.cameraForwardScratch);
+    this.world.update(dt, this.tpCamera.camera.position, this.cameraForwardScratch);
     this.perfMonitor.endSubsystem('world');
 
     this.perfMonitor.beginSubsystem();

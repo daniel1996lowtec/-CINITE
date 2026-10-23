@@ -194,7 +194,10 @@ test('6.2 shading: terrain ground-detail shader and the offline renderer use ide
     'utf8'
   );
   const rendererSource = fs.readFileSync(path.join(ROOT_DIR, 'scripts/offlineRender.mjs'), 'utf8');
-  const constants = [3.1, 0.62, 17, 0.11, 41, 9.5, 0.085];
+  // 8.0 replaced the brightness-only ground detail with a layered material
+  // blend (turf / soil / gravel / damp / dry). These are the noise scales that
+  // must stay identical between the shader and the preview rasteriser.
+  const constants = [1.7, 0.09, 17, 0.012, 41, 6.3, 0.31];
   const numbersIn = (source) =>
     new Set(
       (source.match(/(?<![\w.])-?\d+(?:\.\d+)?/g) ?? []).map((value) => Number(value))

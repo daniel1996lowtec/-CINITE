@@ -1228,56 +1228,95 @@ float cicraftValueNoise(vec2 p) {
   return mix(mix(cicraftHash(i), cicraftHash(i + vec2(1.0, 0.0)), u.x),
              mix(cicraftHash(i + vec2(0.0, 1.0)), cicraftHash(i + vec2(1.0, 1.0)), u.x), u.y);
 }
+float cicraftFbm(vec2 p) {
+  float value = 0.0;
+  float amplitude = 0.5;
+  for (int i = 0; i < 4; i++) {
+    value += amplitude * cicraftValueNoise(p);
+    p = p * 2.03 + vec2(13.1, 5.7);
+    amplitude *= 0.5;
+  }
+  return value;
+}
 ${shader.fragmentShader}`.replace(
       '#include <map_fragment>',
       `#include <map_fragment>
       {
         vec2 gp = vCicraftGroundPos.xz;
-        // Three detail scales: gravel/pebbles, soil mottling, grass clumps.
-        float nFine = cicraftValueNoise(gp * 3.1);
-        float nMid = cicraftValueNoise(gp * 0.62 + 17.0);
-        float nCoarse = cicraftValueNoise(gp * 0.11 + 41.0);
-        float nSpeck = cicraftValueNoise(gp * 9.5 + 5.0);
-
         float upness = clamp(vCicraftGroundNormal.y, 0.0, 1.0);
         float slope = 1.0 - upness;
+        float altitude = vCicraftGroundPos.y;
 
-        // Grass / soil grain: subtle luminance break-up that survives mipmaps
-        // because it is generated per fragment, not per vertex.
-        float grain = (nFine - 0.5) * 0.085 + (nMid - 0.5) * 0.10;
-        diffuseColor.rgb *= 1.0 + grain;
+        // ---------------------------------------------------------------
+        // CI CRAFT 8.0 — layered terrain materials.
+        //
+        // 7.x applied noise as *brightness only*, so the ground stayed one
+        // flat green value with a thin grain on top. Real ground is a blend
+        // of materials: turf, exposed soil, gravel, rock, and damp hollows.
+        // Each layer below changes albedo hue as well as value, and the
+        // weights come from slope, altitude and two world-space noise scales
+        // so the blend follows the terrain instead of tiling across it.
+        // ---------------------------------------------------------------
+
+        // Patch masks at three scales (2 m break-up, 40 m fields, 180 m drift).
+        float nFine = cicraftValueNoise(gp * 1.7);
+        float nMid = cicraftFbm(gp * 0.09 + 17.0);
+        float nCoarse = cicraftValueNoise(gp * 0.012 + 41.0);
+        float nSpeck = cicraftValueNoise(gp * 6.3 + 5.0);
+
+        // Turf: healthy green where it is flat, low and damp.
+        // Soil: warm brown where turf thins on crowns and banks.
+        // Turf only exists above the beach and off steep faces, and the mask
+        // is broken up at two scales so it can never read as painted blobs.
+        float turfAltitude = smoothstep(1.7, 3.2, altitude);
+        float turfMask = nMid * 0.72 + cicraftValueNoise(gp * 0.31 + 7.0) * 0.28;
+        float turf = smoothstep(0.38, 0.72, turfMask)
+                   * (1.0 - smoothstep(0.12, 0.45, slope))
+                   * turfAltitude;
+        float soil = (1.0 - turf) * smoothstep(0.42, 0.68, nFine) * 0.4 * turfAltitude;
+
+        vec3 turfColor = mix(vec3(0.20, 0.34, 0.13), vec3(0.31, 0.44, 0.19), nFine);
+        vec3 soilColor = mix(vec3(0.31, 0.23, 0.14), vec3(0.42, 0.32, 0.20), nFine);
+
+        diffuseColor.rgb = mix(diffuseColor.rgb, turfColor, turf * 0.45);
+        diffuseColor.rgb = mix(diffuseColor.rgb, soilColor, soil);
+
+        // Stony gravel on tread and steep banks.
+        float gravel = smoothstep(0.22, 0.5, slope) * smoothstep(0.40, 0.75, nSpeck + slope * 0.3);
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.34, 0.33, 0.31), gravel * 0.5);
+
+        // Damp hollows read darker and cooler.
+        float damp = smoothstep(0.62, 0.9, nCoarse) * (1.0 - smoothstep(0.2, 0.5, slope));
+        diffuseColor.rgb *= 1.0 - damp * 0.18;
+
+        // Dry crowns and sun-bleached ridges lift warmer.
+        float dry = smoothstep(0.60, 0.92, nCoarse) * smoothstep(0.4, 0.9, nMid);
+        diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(1.16, 1.10, 0.88), dry * 0.7);
 
         // Fine speckle: reads as gravel, shell fragments and grass blades.
         float speck = smoothstep(0.82, 0.99, nSpeck);
-        diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 0.82 + vec3(0.04), speck * 0.42);
+        diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 0.84 + vec3(0.03), speck * 0.4);
 
-        // Dry patches and damp hollows at the 10 m scale.
-        float patch = smoothstep(0.58, 0.92, nCoarse);
-        diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(1.11, 1.06, 0.90), patch * 0.30);
+        // Sand next to the water: warm, and darker where it is wet.
+        float wet = smoothstep(1.4, 0.25, altitude);
+        diffuseColor.rgb *= 1.0 - wet * 0.20;
 
-        // Exposed rock chips on steep ground and dark scree in the crevices.
-        float rock = smoothstep(0.28, 0.72, slope) * smoothstep(0.45, 0.85, nMid + slope * 0.35);
-        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.30, 0.31, 0.32) * (0.7 + nFine * 0.6), rock * 0.55);
-
-        // Beach grain: wet, slightly darker and glossier right at the shoreline.
-        float wet = smoothstep(0.30, 0.05, vCicraftGroundPos.y);
-        diffuseColor.rgb *= 1.0 - wet * 0.16;
-
-        // Normal perturbation from the same noise gives the ground real relief.
-        float e = 0.08;
-        float nx = cicraftValueNoise((gp + vec2(e, 0.0)) * 3.1) - nFine;
-        float nz = cicraftValueNoise((gp + vec2(0.0, e)) * 3.1) - nFine;
-        vec3 groundBump = vec3(nx * 2.2, 1.0, nz * 2.2);
-        normal = normalize(mix(normal, normalize(normal + groundBump * 0.35), 0.55));
+        // Normal perturbation from the same field gives the ground real relief.
+        float e = 0.05;
+        float nx = cicraftValueNoise((gp + vec2(e, 0.0)) * 1.7) - nFine;
+        float nz = cicraftValueNoise((gp + vec2(0.0, e)) * 1.7) - nFine;
+        vec3 groundBump = vec3(nx * 3.0, 1.0, nz * 3.0);
+        normal = normalize(mix(normal, normalize(normal + groundBump * 0.42), 0.6));
       }`
     ).replace(
       '#include <roughnessmap_fragment>',
       `#include <roughnessmap_fragment>
       {
         vec2 gp2 = vCicraftGroundPos.xz;
-        float wetMask = smoothstep(0.32, 0.04, vCicraftGroundPos.y);
-        float damp = smoothstep(0.55, 0.95, cicraftValueNoise(gp2 * 0.11 + 41.0));
-        roughnessFactor *= 1.0 - wetMask * 0.45 - damp * 0.10;
+        // Wet sand and damp soil are glossier than dry turf.
+        float dampSoil = smoothstep(0.62, 0.9, cicraftValueNoise(gp2 * 0.012 + 41.0));
+        float wetMask = smoothstep(1.4, 0.25, vCicraftGroundPos.y);
+        roughnessFactor *= 1.0 - wetMask * 0.42 - dampSoil * 0.12;
       }`
     );
   };

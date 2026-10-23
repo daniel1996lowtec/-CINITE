@@ -259,9 +259,168 @@ function pushGeometry(geometry, worldMatrix, material, instanceColor, vertexColo
   }
 }
 
+/**
+ * Approximates the CI CRAFT 8.0 sky shader for the offline preview.
+ *
+ * This is deliberately a faithful-in-composition, not pixel-exact, port: it
+ * reproduces the three-stop gradient, the sun scatter and one procedural cloud
+ * layer. It exists so previews do not show a black dome or a fake flat gradient
+ * — it is NOT evidence of what the browser renders.
+ */
+function paintSkyBackground(pixels, camera) {
+  const skyMesh = scene.getObjectByName('AtmosphericSkyDome');
+  const material = skyMesh?.material;
+  const u = material?.uniforms;
+  const toLinear = (hex) => {
+    const c = new THREE.Color(hex);
+    c.convertSRGBToLinear?.();
+    return [c.r, c.g, c.b];
+  };
+  const lin = (uniform) =>
+    uniform ? [uniform.value.r, uniform.value.g, uniform.value.b] : [0, 0, 0];
+
+  const zenith = u ? lin(u.uZenith) : toLinear(0x2f6f9e);
+  const horizon = u ? lin(u.uHorizon) : toLinear(0xd6e6ec);
+  const groundC = u ? lin(u.uGround) : toLinear(0x5d6650);
+  const sunC = u ? lin(u.uSunColor) : toLinear(0xfff4d0);
+  const cloudShade = u ? lin(u.uCloudShade) : toLinear(0x8fa6bd);
+  const cloudLit = u ? lin(u.uCloudLit) : toLinear(0xffffff);
+  const sunDir = u
+    ? u.uSunDirection.value.clone().normalize()
+    : new THREE.Vector3(0.5, 0.5, 0.5).normalize();
+  const coverage = u ? u.uCloudCoverage.value : 0.46;
+  const sunRadius = u ? u.uSunRadius.value : 0.016;
+  const sunIntensity = u ? u.uSunIntensity.value : 2.4;
+  const starAmount = u ? u.uStarAmount.value : 0;
+
+  const forward = new THREE.Vector3();
+  camera.getWorldDirection(forward);
+  const up = new THREE.Vector3(0, 1, 0);
+  const right = new THREE.Vector3().crossVectors(forward, up).normalize();
+  const trueUp = new THREE.Vector3().crossVectors(right, forward).normalize();
+  const tanHalf = Math.tan((camera.fov * Math.PI) / 360);
+  const aspect = WIDTH / HEIGHT;
+
+  const hash = (x, y) => {
+    const v = Math.sin(x * 127.1 + y * 311.7) * 43758.5453123;
+    return v - Math.floor(v);
+  };
+  const noise = (x, y) => {
+    const ix = Math.floor(x);
+    const iy = Math.floor(y);
+    const fx = x - ix;
+    const fy = y - iy;
+    const ux = fx * fx * (3 - 2 * fx);
+    const uy = fy * fy * (3 - 2 * fy);
+    const a = hash(ix, iy);
+    const b = hash(ix + 1, iy);
+    const c = hash(ix, iy + 1);
+    const d = hash(ix + 1, iy + 1);
+    return (a * (1 - ux) + b * ux) * (1 - uy) + (c * (1 - ux) + d * ux) * uy;
+  };
+  const fbm = (x, y, octaves) => {
+    let value = 0;
+    let amplitude = 0.5;
+    for (let i = 0; i < octaves; i++) {
+      value += amplitude * noise(x, y);
+      x = x * 2.03 + 11.3;
+      y = y * 2.03 + 7.7;
+      amplitude *= 0.5;
+    }
+    return value;
+  };
+
+  const dir = new THREE.Vector3();
+  for (let y = 0; y < HEIGHT; y++) {
+    const ndcY = 1 - (2 * (y + 0.5)) / HEIGHT;
+    for (let x = 0; x < WIDTH; x++) {
+      const ndcX = (2 * (x + 0.5)) / WIDTH - 1;
+      dir
+        .copy(forward)
+        .addScaledVector(right, ndcX * tanHalf * aspect)
+        .addScaledVector(trueUp, ndcY * tanHalf)
+        .normalize();
+
+      const elevation = dir.y;
+      const skyMix = Math.pow(Math.max(0, Math.min(1, elevation)), 0.42);
+      let r = horizon[0] + (zenith[0] - horizon[0]) * skyMix;
+      let g = horizon[1] + (zenith[1] - horizon[1]) * skyMix;
+      let b = horizon[2] + (zenith[2] - horizon[2]) * skyMix;
+      const down = Math.max(0, Math.min(1, -elevation / 0.22));
+      r += (groundC[0] - r) * down;
+      g += (groundC[1] - g) * down;
+      b += (groundC[2] - b) * down;
+
+      const cosSun = dir.dot(sunDir);
+      const sunDot = Math.max(0, cosSun);
+      const scatterWidth = 6 + 20 * Math.max(0, Math.min(1, 1 - sunDir.y));
+      const scatter = Math.pow(sunDot, scatterWidth);
+      const corona = Math.pow(sunDot, 900);
+      r += sunC[0] * (scatter * 0.55 + corona * 0.9);
+      g += sunC[1] * (scatter * 0.55 + corona * 0.9);
+      b += sunC[2] * (scatter * 0.55 + corona * 0.9);
+
+      if (cosSun > Math.cos(sunRadius)) {
+        const disc = Math.min(
+          1,
+          (cosSun - Math.cos(sunRadius)) / (Math.cos(sunRadius * 0.72) - Math.cos(sunRadius))
+        );
+        r += sunC[0] * disc * sunIntensity;
+        g += sunC[1] * disc * sunIntensity;
+        b += sunC[2] * disc * sunIntensity;
+      }
+
+      if (elevation > -0.02) {
+        const projScale = 1.35 * Math.max(elevation, 0.02) + 0.18;
+        const px = (dir.x / projScale) * 0.55;
+        const pz = (dir.z / projScale) * 0.55;
+        const base = fbm(px, pz, 3);
+        const shape = fbm(px * 0.47 + 29.1, pz * 0.47 + 5.3, 2);
+        const threshold = 0.72 + (0.34 - 0.72) * coverage;
+        const raw = (base * 0.72 + shape * 0.42 - threshold) / 0.26;
+        const density = Math.max(0, Math.min(1, raw));
+        const alpha =
+          density * Math.min(1, Math.max(0, elevation / 0.16)) * 0.92;
+        if (alpha > 0.001) {
+          const facing = Math.pow(sunDot, 3);
+          const litR = cloudLit[0] * (1 + 0.25 * facing) + sunC[0] * 0.35 * facing;
+          const litG = cloudLit[1] * (1 + 0.25 * facing) + sunC[1] * 0.35 * facing;
+          const litB = cloudLit[2] * (1 + 0.25 * facing) + sunC[2] * 0.35 * facing;
+          const mixAmt = Math.min(1, Math.max(0, base * 1.25));
+          const cr = cloudShade[0] + (litR - cloudShade[0]) * mixAmt;
+          const cg = cloudShade[1] + (litG - cloudShade[1]) * mixAmt;
+          const cb = cloudShade[2] + (litB - cloudShade[2]) * mixAmt;
+          r += (cr - r) * alpha;
+          g += (cg - g) * alpha;
+          b += (cb - b) * alpha;
+        }
+      }
+
+      if (starAmount > 0.01 && elevation > 0.05) {
+        const star = hash(Math.floor(x * 0.7), Math.floor(y * 0.7));
+        if (star > 0.9993) {
+          const s = starAmount * 0.9;
+          r += s;
+          g += s;
+          b += s;
+        }
+      }
+
+      const o = (y * WIDTH + x) * 3;
+      pixels[o] = r;
+      pixels[o + 1] = g;
+      pixels[o + 2] = b;
+    }
+  }
+}
+
 scene.traverse((object) => {
   if (!object.isMesh || !object.visible) return;
   if (object.material?.visible === false) return;
+  // The 8.0 sky is an analytic dome shader; the rasteriser reproduces it as a
+  // background function instead of drawing its triangles.
+  if (object.material?.name === 'CiCraftSkyMaterial') return;
+  if (object.name === 'AtmosphericSun' || object.name === 'AtmosphericSunHalo') return;
   const geometry = object.geometry;
   const materials = Array.isArray(object.material) ? object.material : [object.material];
   if (object.isInstancedMesh) {
@@ -362,18 +521,7 @@ function render(name, eye, target, fov = 58) {
   }
   const depth = new Float32Array(WIDTH * HEIGHT).fill(Infinity);
   const pixels = new Float32Array(WIDTH * HEIGHT * 3);
-  // Sky gradient background (sRGB, converted to linear below).
-  for (let y = 0; y < HEIGHT; y++) {
-    const t = y / HEIGHT;
-    const horizon = [0.72, 0.82, 0.89];
-    const zenith = [0.22, 0.42, 0.62];
-    for (let x = 0; x < WIDTH; x++) {
-      const o = (y * WIDTH + x) * 3;
-      pixels[o] = horizon[0] + (zenith[0] - horizon[0]) * (1 - t);
-      pixels[o + 1] = horizon[1] + (zenith[1] - horizon[1]) * (1 - t);
-      pixels[o + 2] = horizon[2] + (zenith[2] - horizon[2]) * (1 - t);
-    }
-  }
+  paintSkyBackground(pixels, camera);
 
   const sa = new THREE.Vector4();
   const sb = new THREE.Vector4();
@@ -443,8 +591,17 @@ function render(name, eye, target, fov = 58) {
       const cy = C.y;
       // Screen Y is flipped relative to NDC, so a front-facing (CCW) triangle
       // has a NEGATIVE signed area here. Positive areas are back faces.
+      //
+      // Double-sided materials must draw both. Crossed grass/foliage billboards
+      // are three triangles at 60 degrees: from half of all view azimuths every
+      // one of them is back-facing, so ignoring `side` culled entire ground
+      // cover layers and made authored vegetation look missing.
       const area = (bx - ax) * (cy - ay) - (cx - ax) * (by - ay);
-      if (area >= 0) continue;
+      if (!tri.info.doubleSided && area >= 0) continue;
+      if (Math.abs(area) < 1e-9) continue;
+      // Double-sided faces seen from behind must still shade with a normal
+      // pointing at the camera, as Three does by flipping it.
+      const facingCamera = area < 0;
       const minX = Math.max(0, Math.floor(Math.min(ax, bx, cx)));
       const maxX = Math.min(WIDTH - 1, Math.ceil(Math.max(ax, bx, cx)));
       const minY = Math.max(0, Math.floor(Math.min(ay, by, cy)));
@@ -492,6 +649,13 @@ function render(name, eye, target, fov = 58) {
             nx /= len;
             ny /= len;
             nz /= len;
+          }
+          // A double-sided surface seen from behind must flip its normal, the
+          // same way Three's DoubleSide does, or foliage goes black.
+          if (tri.info.doubleSided && !facingCamera) {
+            nx = -nx;
+            ny = -ny;
+            nz = -nz;
           }
           const lambert = Math.max(0, nx * sun.x + ny * sun.y + nz * sun.z);
           const skyUp = ny * 0.5 + 0.5;
@@ -611,36 +775,85 @@ function render(name, eye, target, fov = 58) {
               const d = hash2(ix + 1, iy + 1);
               return (a * (1 - ux) + b * ux) * (1 - uy) + (c * (1 - ux) + d * ux) * uy;
             };
-            const nFine = noise2(wx * 3.1, wz * 3.1);
-            const nMid = noise2(wx * 0.62 + 17, wz * 0.62 + 17);
-            const nCoarse = noise2(wx * 0.11 + 41, wz * 0.11 + 41);
-            const nSpeck = noise2(wx * 9.5 + 5, wz * 9.5 + 5);
+            // Mirrors applyTerrainGroundDetail in VisualAtmosphere.ts:
+            // layered turf/soil/gravel blend, damp hollows, dry crowns,
+            // speckle and wet shore darkening.
+            const fbm2 = (px2, py2) => {
+              let v = 0;
+              let amp = 0.5;
+              let x2 = px2;
+              let y2 = py2;
+              for (let i = 0; i < 4; i++) {
+                v += amp * noise2(x2, y2);
+                x2 = x2 * 2.03 + 13.1;
+                y2 = y2 * 2.03 + 5.7;
+                amp *= 0.5;
+              }
+              return v;
+            };
+            const nFine = noise2(wx * 1.7, wz * 1.7);
+            const nMid = fbm2(wx * 0.09 + 17, wz * 0.09 + 17);
+            const nCoarse = noise2(wx * 0.012 + 41, wz * 0.012 + 41);
+            const nSpeck = noise2(wx * 6.3 + 5, wz * 6.3 + 5);
             const upness = Math.max(0, Math.min(1, faceNormal.y));
             const slope = 1 - upness;
-            const grain = (nFine - 0.5) * 0.085 + (nMid - 0.5) * 0.1;
-            let dr = albedo[0] * tint[0] * light;
-            let dg = albedo[1] * tint[1] * light;
-            let db = albedo[2] * tint[2] * light;
-            dr *= 1 + grain;
-            dg *= 1 + grain;
-            db *= 1 + grain;
-            const speck = Math.max(0, Math.min(1, (nSpeck - 0.82) / 0.17));
-            dr = dr * (1 - speck * 0.42) + (dr * 0.82 + 0.04) * speck * 0.42;
-            dg = dg * (1 - speck * 0.42) + (dg * 0.82 + 0.04) * speck * 0.42;
-            db = db * (1 - speck * 0.42) + (db * 0.82 + 0.04) * speck * 0.42;
-            const patchW = Math.max(0, Math.min(1, (nCoarse - 0.58) / 0.34));
-            dr *= 1 + patchW * 0.3 * 0.11;
-            dg *= 1 + patchW * 0.3 * 0.06;
-            db *= 1 - patchW * 0.3 * 0.1;
-            const rock = Math.max(0, Math.min(1, (slope - 0.28) / 0.44)) *
-              Math.max(0, Math.min(1, (nMid + slope * 0.35 - 0.45) / 0.4));
-            dr = dr * (1 - rock * 0.55) + 0.3 * (0.7 + nFine * 0.6) * light * rock * 0.55;
-            dg = dg * (1 - rock * 0.55) + 0.31 * (0.7 + nFine * 0.6) * light * rock * 0.55;
-            db = db * (1 - rock * 0.55) + 0.32 * (0.7 + nFine * 0.6) * light * rock * 0.55;
-            const wet = Math.max(0, Math.min(1, (0.3 - wy) / 0.25));
-            dr *= 1 - wet * 0.16;
-            dg *= 1 - wet * 0.16;
-            db *= 1 - wet * 0.16;
+            const smooth = (e0, e1, v) => {
+              const t = Math.max(0, Math.min(1, (v - e0) / (e1 - e0)));
+              return t * t * (3 - 2 * t);
+            };
+
+            let dr = albedo[0] * tint[0];
+            let dg = albedo[1] * tint[1];
+            let db = albedo[2] * tint[2];
+
+            const turfAltitude = smooth(1.7, 3.2, wy);
+            const turfMask = nMid * 0.72 + noise2(wx * 0.31 + 7, wz * 0.31 + 7) * 0.28;
+            const turf =
+              smooth(0.38, 0.72, turfMask) * (1 - smooth(0.12, 0.45, slope)) * turfAltitude;
+            const soil = (1 - turf) * smooth(0.42, 0.68, nFine) * 0.4 * turfAltitude;
+            const turfR = 0.2 + (0.31 - 0.2) * nFine;
+            const turfG = 0.34 + (0.44 - 0.34) * nFine;
+            const turfB = 0.13 + (0.19 - 0.13) * nFine;
+            const soilR = 0.31 + (0.42 - 0.31) * nFine;
+            const soilG = 0.23 + (0.32 - 0.23) * nFine;
+            const soilB = 0.14 + (0.2 - 0.14) * nFine;
+            const mix = (a, b2, t) => a + (b2 - a) * t;
+            dr = mix(dr, turfR, turf * 0.45);
+            dg = mix(dg, turfG, turf * 0.45);
+            db = mix(db, turfB, turf * 0.45);
+            dr = mix(dr, soilR, soil);
+            dg = mix(dg, soilG, soil);
+            db = mix(db, soilB, soil);
+
+            const gravel = smooth(0.22, 0.5, slope) * smooth(0.4, 0.75, nSpeck + slope * 0.3);
+            dr = mix(dr, 0.34, gravel * 0.5);
+            dg = mix(dg, 0.33, gravel * 0.5);
+            db = mix(db, 0.31, gravel * 0.5);
+
+            const dampHollow = smooth(0.62, 0.9, nCoarse) * (1 - smooth(0.2, 0.5, slope));
+            dr *= 1 - dampHollow * 0.18;
+            dg *= 1 - dampHollow * 0.18;
+            db *= 1 - dampHollow * 0.18;
+
+            const dryW = smooth(0.6, 0.92, nCoarse) * smooth(0.4, 0.9, nMid);
+            dr = mix(dr, dr * 1.16, dryW * 0.7);
+            dg = mix(dg, dg * 1.1, dryW * 0.7);
+            db = mix(db, db * 0.88, dryW * 0.7);
+
+            const speck = smooth(0.82, 0.99, nSpeck);
+            dr = mix(dr, dr * 0.84 + 0.03, speck * 0.4);
+            dg = mix(dg, dg * 0.84 + 0.03, speck * 0.4);
+            db = mix(db, db * 0.84 + 0.03, speck * 0.4);
+
+            const wet = smooth(0.25, 1.4, 1.4 - (wy - 0.25)) * 0;
+            const shoreWet = Math.max(0, Math.min(1, (1.4 - wy) / 1.15));
+            dr *= 1 - shoreWet * 0.2;
+            dg *= 1 - shoreWet * 0.2;
+            db *= 1 - shoreWet * 0.2;
+
+            dr *= light;
+            dg *= light;
+            db *= light;
             albedo = [dr, dg, db];
             tint = [1, 1, 1];
             r = albedo[0];

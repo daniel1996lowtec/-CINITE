@@ -282,7 +282,13 @@ export function createBroadleafCanopyGeometry(seed = 17): THREE.BufferGeometry {
 export function createBroadleafTrunkGeometry(seed = 5): THREE.BufferGeometry {
   const radial = 10;
   const heightSegs = 4;
-  const trunk = new THREE.CylinderGeometry(0.17, 0.32, 1, radial, heightSegs, true);
+  // CI CRAFT 8.0 — trunk radii were 0.17 / 0.32 in unit-height space, and the
+  // instance only scaled Y by trunk height. That left the radius *absolute*, so
+  // a 5.4 m tree carried a 0.82 m trunk: a fat brown cone with a blob on top,
+  // which is exactly the "lollipop" read. These radii give a ~0.22 m base
+  // radius on a 4.2 m tree — a real young hardwood — and the instance now
+  // scales XZ with height so taller trees are proportionally thicker.
+  const trunk = new THREE.CylinderGeometry(0.125, 0.21, 1, radial, heightSegs, true);
   const pos = trunk.getAttribute('position');
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i);
@@ -331,9 +337,9 @@ export function createBroadleafTrunkGeometry(seed = 5): THREE.BufferGeometry {
     const startY = 0.28 + hash3(b, 2, 9, seed) * 0.08;
     const rise = 0.06 + hash3(b, 5, 1, seed) * 0.06;
     const reach = 0.26 + hash3(b, 8, 4, seed) * 0.12;
-    const a = new THREE.Vector3(Math.cos(angle) * 0.07, startY, Math.sin(angle) * 0.07);
+    const a = new THREE.Vector3(Math.cos(angle) * 0.05, startY, Math.sin(angle) * 0.05);
     const tip = new THREE.Vector3(Math.cos(angle) * reach, startY + rise, Math.sin(angle) * reach);
-    const limb = limbGeometry(a, tip, 0.062, 0.026, 6);
+    const limb = limbGeometry(a, tip, 0.045, 0.018, 6);
     paintAll(limb, 0.78, 0.76, 0.72);
     applySphericalUv(limb, 1.4);
     limb.computeVertexNormals();

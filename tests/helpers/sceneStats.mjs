@@ -90,12 +90,20 @@ export function measureQualityTiers(scene, world) {
   remember(world.detailFoliageGroup);
   remember(world.treeLodHighGroup);
   remember(world.treeLodLowGroup);
+  // 8.0 ground cover: LOW keeps the first band only and hides the flowers.
+  const groundBands = world.groundCoverBands ?? [];
+  for (const band of groundBands) remember(band);
+  remember(world.groundFlowers);
 
   if (world.expansionDetailGroup) world.expansionDetailGroup.visible = false;
   if (world.houseDetailGroup) world.houseDetailGroup.visible = false;
   if (world.detailFoliageGroup) world.detailFoliageGroup.visible = false;
   if (world.treeLodHighGroup) world.treeLodHighGroup.visible = false;
   if (world.treeLodLowGroup) world.treeLodLowGroup.visible = true;
+  groundBands.forEach((band, index) => {
+    band.visible = index === 0;
+  });
+  if (world.groundFlowers) world.groundFlowers.visible = false;
 
   const lowTier = visibleSceneStats(scene);
 

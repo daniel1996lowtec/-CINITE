@@ -145,6 +145,13 @@ export class IslandWorld {
   public readonly expansionGroup: THREE.Group;
   public readonly expansionDetailGroup: THREE.Group;
   public readonly detailFoliageGroup: THREE.Group;
+  /**
+   * Ground-cover bands, densest first. LOW/MEDIUM keeps band 0 only; HIGH/ULTRA
+   * show all of them. Public so the quality tier can drive them without a
+   * rebuild.
+   */
+  public groundCoverBands: THREE.InstancedMesh[] = [];
+  public groundFlowers: THREE.InstancedMesh | null = null;
   private activeAnimatedProps: Set<DestructibleProp> = new Set();
   private sharedMaterials: Map<string, THREE.MeshStandardMaterial> = new Map();
 
@@ -1490,6 +1497,11 @@ export class IslandWorld {
       const treeZ = poi.z + Math.sin(angle) * r;
       // The additive Grove cabins and secondary roads now occupy a few of
       // the original decorative ring positions; skip only those trees.
+      //
+      // CI CRAFT 8.0 — the forecourt "saplings" were never trees: they were
+      // over-tall ground-cover tufts on the paving, fixed in scatterGrass.
+      // Tree positions are deliberately left byte-identical to 7.2 because
+      // every tree owns a collision cylinder.
       if (this.mapExpansion.isInsideStructure(treeX, treeZ, 1.0) || this.terrain.isOnRoad(treeX, treeZ)) {
         continue;
       }
@@ -2077,68 +2089,202 @@ export class IslandWorld {
       return (seed - 1) / 2147483646;
     };
 
+    // CI CRAFT 8.0 — clustered ground cover.
+    //
+    // 520 flat-coloured tufts on a 400,000 m² island is one tuft every 770 m²:
+    // the ground read as a painted surface with nothing on it. Real ground
+    // cover is *clustered* — it grows in patches where water and soil allow,
+    // and is absent on roads, sand and rock.
+    //
+    // This builds three density bands around the play space (dense close to the
+    // camera, sparser toward the horizon) from a handful of authored clump
+    // centres, with per-instance colour and lean. All three bands are single
+    // instanced draw calls, and every tuft is 6 triangles.
     const grassGeo = createCrossedGrassTuftGeometry(0.34, 0.68);
     const grassMat = applyFoliageWind(
       new THREE.MeshStandardMaterial({
-        color: 0x347442,
+        color: 0xffffff,
+        vertexColors: false,
         flatShading: false,
-        roughness: 0.78,
+        roughness: 0.82,
+        metalness: 0,
         side: THREE.DoubleSide,
       }),
       { strength: 0.06, baseY: 0, height: 0.68 }
     );
-    const grassCount = 520;
-    const grassInst = new THREE.InstancedMesh(grassGeo, grassMat, grassCount);
+
     const dummy = new THREE.Object3D();
+    const grassTint = new THREE.Color();
 
-    let placedG = 0;
-    for (let i = 0; i < grassCount * 2 && placedG < grassCount; i++) {
-      const a = rand() * Math.PI * 2;
-      const r = 18 + Math.sqrt(rand()) * 182;
-      const gx = Math.cos(a) * r;
-      const gz = Math.sin(a) * r;
-      const gy = this.terrain.getTerrainHeight(gx, gz);
-      if (gy < 2.0 || gy > 11.0 || this.terrain.isOnRoad(gx, gz) || this.mapExpansion.isInsideStructure(gx, gz, 0.7)) continue;
+    // Palette samples: young green, deep meadow green, dry straw, shaded fern.
+    const GRASS_TINTS = [0x356b32, 0x3f7b39, 0x4f8a42, 0x6b8f3e, 0x8a9a4e, 0x2c5c2e];
 
-      dummy.position.set(gx, gy, gz);
-      dummy.rotation.set(0, rand() * Math.PI, 0);
-      const s = 0.75 + rand() * 0.65;
-      dummy.scale.set(s, s, s);
-      dummy.updateMatrix();
-      grassInst.setMatrixAt(placedG++, dummy.matrix);
+    /**
+     * Scatters tufts around `centre` with a gaussian falloff, rejecting anything
+     * on a road, inside a structure, on sand, or on a steep face.
+     */
+    const scatterGrass = (
+      mesh: THREE.InstancedMesh,
+      capacity: number,
+      startIndex: number,
+      centre: THREE.Vector2,
+      spread: number,
+      scaleRange: [number, number]
+    ): number => {
+      // Writes start where the previous clump stopped. Restarting at 0 here
+      // left every earlier clump as an identity matrix, which piles invisible
+      // degenerate tufts at the world origin.
+      const end = Math.min(mesh.instanceMatrix.count, startIndex + capacity);
+      let placed = startIndex;
+      for (let attempt = 0; attempt < capacity * 8 && placed < end; attempt++) {
+        // Box-Muller-free approximation: average of two uniforms pulls toward
+        // the centre, which is exactly the clustering we want.
+        const a = rand() * Math.PI * 2;
+        const r = (rand() + rand()) * 0.5 * spread;
+        const gx = centre.x + Math.cos(a) * r;
+        const gz = centre.y + Math.sin(a) * r;
+        if (Math.hypot(gx, gz) > 232) continue;
+        const gy = this.terrain.getTerrainHeight(gx, gz);
+        // Turf grows on low, gentle, non-sandy ground. Below 1.6 m is beach.
+        if (gy < 1.6 || gy > 13.5) continue;
+        if (this.terrain.isOnRoad(gx, gz)) continue;
+        if (this.mapExpansion.isInsideStructure(gx, gz, 0.6)) continue;
+        if (this.terrain.getTerrainSlope(gx, gz) > 0.5) continue;
+        // CI CRAFT 8.0 — never on a paved plaza. `isOnRoad` only knows about
+        // the road network, so tufts were sprouting out of the shop forecourt
+        // slabs, which reads as weed-filled paving and adds props right where
+        // players walk to a door. POI zones and settlements are the paved set.
+        if (this.isInsidePOIBuildingZone(gx, gz)) continue;
+
+        dummy.position.set(gx, gy - 0.03, gz);
+        dummy.rotation.set(
+          (rand() - 0.5) * 0.18,
+          rand() * Math.PI,
+          (rand() - 0.5) * 0.18
+        );
+        const s = scaleRange[0] + rand() * (scaleRange[1] - scaleRange[0]);
+        dummy.scale.set(s, s * (0.85 + rand() * 0.45), s);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(placed, dummy.matrix);
+        grassTint.setHex(GRASS_TINTS[Math.floor(rand() * GRASS_TINTS.length)]);
+        grassTint.offsetHSL((rand() - 0.5) * 0.03, (rand() - 0.5) * 0.12, (rand() - 0.5) * 0.1);
+        mesh.setColorAt(placed, grassTint);
+        placed++;
+      }
+      return placed - startIndex;
+    };
+
+    // Clump centres come from a jittered grid rather than free random points.
+    // 190 random centres covered roughly a third of the island, so large areas
+    // of meadow had no ground cover at all — visible as bald patches next to
+    // densely tufted ground. A 16 m jittered grid covers the whole play space,
+    // and a low-frequency noise mask makes the coverage patchy in the way real
+    // turf is, instead of a uniform carpet.
+    const clumpCentres: THREE.Vector2[] = [];
+    const GRID = 16;
+    for (let gx = -224; gx <= 224; gx += GRID) {
+      for (let gz = -224; gz <= 224; gz += GRID) {
+        const cx = gx + (rand() - 0.5) * GRID * 0.85;
+        const cz = gz + (rand() - 0.5) * GRID * 0.85;
+        const radius = Math.hypot(cx, cz);
+        if (radius > 226) continue;
+        // Patchiness: some cells are bare, most carry a clump, a few are dense.
+        // Two cheap deterministic octaves: a broad 40 m patch scale and a
+        // fine 8 m break-up. No dependency on the terrain generator's internals.
+        const broad =
+          Math.sin(cx * 0.043 + 1.7) * Math.cos(cz * 0.051 - 0.6) * 0.5 + 0.5;
+        const fine =
+          Math.sin(cx * 0.29 + cz * 0.17) * Math.cos(cz * 0.23 - cx * 0.11) * 0.5 + 0.5;
+        const mask = 0.42 + broad * 0.46 + fine * 0.24;
+        if (rand() > mask) continue;
+        clumpCentres.push(new THREE.Vector2(cx, cz));
+      }
     }
-    grassInst.count = placedG;
-    this.foliageGroup.add(grassInst);
 
+    // Three bands, all instanced, all single draw calls.
+    // 6 triangles per tuft. Three bands keep the cost measurable: ~39k tris at
+    // HIGH/ULTRA in three draw calls, dropped to a single band on LOW.
+    // Scale ranges are in units of the 0.68 m tuft. The old 1.3–2.4 band made
+    // 1.6 m grass, which read as a row of conifer saplings. Real mown meadow
+    // sits at 6–35 cm, with a few taller seed heads.
+    const bands: { count: number; spread: number; scale: [number, number] }[] = [
+      { count: 2400, spread: 5.5, scale: [0.34, 0.6] },
+      { count: 2500, spread: 8.5, scale: [0.44, 0.78] },
+      { count: 1500, spread: 14.0, scale: [0.55, 0.95] },
+    ];
+    let bandIndex = 0;
+    for (const band of bands) {
+      const mesh = new THREE.InstancedMesh(grassGeo, grassMat, band.count);
+      mesh.name = `ground_cover_${bandIndex}`;
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      let placed = 0;
+      // Walk clump centres round-robin so the bands cover the whole island
+      // instead of exhausting the first few clumps.
+      const perClump = Math.ceil(band.count / Math.max(1, clumpCentres.length));
+      for (let c = 0; c < clumpCentres.length && placed < band.count; c++) {
+        const centre = clumpCentres[(c + bandIndex * 41) % clumpCentres.length];
+        placed += scatterGrass(
+          mesh,
+          Math.min(perClump, band.count - placed),
+          placed,
+          centre,
+          band.spread,
+          band.scale
+        );
+      }
+      mesh.count = placed;
+      mesh.castShadow = false;
+      mesh.receiveShadow = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      this.foliageGroup.add(mesh);
+      this.groundCoverBands.push(mesh);
+      bandIndex++;
+    }
+
+    // Wildflowers: same clustering, warmer palette, shorter.
     const flowerGeo = createCrossedGrassTuftGeometry(0.26, 0.32);
     const flowerMat = applyFoliageWind(
       new THREE.MeshStandardMaterial({
-        color: 0xf472b6,
-        emissive: 0xdb2777,
-        emissiveIntensity: 0.12,
+        color: 0xffffff,
         flatShading: false,
+        roughness: 0.7,
         side: THREE.DoubleSide,
+        emissive: 0x2a0a1a,
+        emissiveIntensity: 0.25,
       }),
       { strength: 0.032, baseY: 0.05, height: 0.4 }
     );
-    const flowerCount = 180;
+    const FLOWER_TINTS = [0xf0abfc, 0xfda4af, 0xfef08a, 0xe9d5ff, 0xfbcfe8];
+    const flowerCount = 1400;
     const flowerInst = new THREE.InstancedMesh(flowerGeo, flowerMat, flowerCount);
+    flowerInst.name = 'ground_flowers';
     let placedF = 0;
-    for (let i = 0; i < flowerCount * 2 && placedF < flowerCount; i++) {
-      const a = rand() * Math.PI * 2;
-      const r = 24 + Math.sqrt(rand()) * 170;
-      const fx = Math.cos(a) * r;
-      const fz = Math.sin(a) * r;
-      const fy = this.terrain.getTerrainHeight(fx, fz);
-      if (fy < 2.2 || fy > 10.5 || this.terrain.isOnRoad(fx, fz) || this.mapExpansion.isInsideStructure(fx, fz, 0.7)) continue;
-
-      dummy.position.set(fx, fy, fz);
-      dummy.scale.setScalar(0.8 + rand() * 0.5);
-      dummy.updateMatrix();
-      flowerInst.setMatrixAt(placedF++, dummy.matrix);
+    for (let c = 0; c < clumpCentres.length && placedF < flowerCount; c++) {
+      const centre = clumpCentres[c];
+      for (let attempt = 0; attempt < 40 && placedF < flowerCount; attempt++) {
+        const a = rand() * Math.PI * 2;
+        const r = (rand() + rand()) * 0.5 * 7;
+        const fx = centre.x + Math.cos(a) * r;
+        const fz = centre.y + Math.sin(a) * r;
+        const fy = this.terrain.getTerrainHeight(fx, fz);
+        if (fy < 1.8 || fy > 11) continue;
+        if (this.terrain.isOnRoad(fx, fz)) continue;
+        if (this.mapExpansion.isInsideStructure(fx, fz, 0.6)) continue;
+        dummy.position.set(fx, fy, fz);
+        dummy.rotation.set(0, rand() * Math.PI, 0);
+        const s = 0.8 + rand() * 0.7;
+        dummy.scale.set(s, s, s);
+        dummy.updateMatrix();
+        flowerInst.setMatrixAt(placedF, dummy.matrix);
+        grassTint.setHex(FLOWER_TINTS[Math.floor(rand() * FLOWER_TINTS.length)]);
+        flowerInst.setColorAt(placedF, grassTint);
+        placedF++;
+      }
     }
     flowerInst.count = placedF;
+    if (flowerInst.instanceColor) flowerInst.instanceColor.needsUpdate = true;
     this.foliageGroup.add(flowerInst);
+    this.groundFlowers = flowerInst;
 
     // Instanced Coastal & Highland Pebbles (220 instances in 1 draw call)
     const pebbleGeo = weldAndSmoothGeometry(new THREE.OctahedronGeometry(0.28, 0));
@@ -2594,7 +2740,10 @@ export class IslandWorld {
           : style === 'palm'
           ? 0x2a7b3e
           : 0x2e6f3e;
-      const trunkH = style === 'palm' ? 3.4 : 2.6;
+      // Per-tree trunk height: a 0.9–1.15 spread stops a stand of trees from
+      // reading as a row of identical sticks. Broadleaf trees are taller than
+      // they were in 7.x so the crown clears the player's eyeline.
+      const trunkH = style === 'palm' ? 4.1 : 4.3;
       const variationSeed = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453;
       const variation = variationSeed - Math.floor(variationSeed);
       const baseTreeScale = 0.84 + variation * 0.44;
@@ -2672,6 +2821,10 @@ export class IslandWorld {
         // Trunk
         childDummy.position.set(0, trunkH / 2, 0);
         childDummy.rotation.set(0, 0, style === 'palm' ? 0.12 : 0);
+        // NOTE: XZ must stay at 1. The geometry is unit-height, so a radius of
+        // 0.21 already means "21 % of trunk height" and it grows with the tree
+        // automatically. Scaling XZ by trunkH again squares the ratio and gives
+        // a barrel-thick trunk — that mistake produced the last render.
         childDummy.scale.set(1, trunkH, 1);
         childDummy.updateMatrix();
         childDummy.matrix.premultiply(dummy.matrix);
@@ -2681,9 +2834,13 @@ export class IslandWorld {
         if (style === 'pine') {
           // One whorl-carved conifer body per tree. Wider at the base, tapering
           // to a leader, with a per-tree yaw so silhouettes never repeat.
-          childDummy.position.set(0, 3.35, 0);
+          childDummy.position.set(0, 4.55, 0);
           childDummy.rotation.set(0, variation * Math.PI * 2, 0);
-          childDummy.scale.set(2.0 * (0.9 + variation * 0.2), 6.7, 2.0 * (0.9 + variation * 0.2));
+          childDummy.scale.set(
+            1.62 * (0.9 + variation * 0.2),
+            7.0,
+            1.62 * (0.9 + variation * 0.2)
+          );
           childDummy.updateMatrix();
           childDummy.matrix.premultiply(dummy.matrix);
           pineConeInst.setMatrixAt(coneBaseIdx, childDummy.matrix);
@@ -2693,7 +2850,7 @@ export class IslandWorld {
             const angle = (f / 5) * Math.PI * 2;
             childDummy.position.set(
               -0.2 + Math.cos(angle) * 0.9,
-              3.35,
+              4.05,
               Math.sin(angle) * 0.9
             );
             childDummy.rotation.set(0.35, -angle + Math.PI / 2, 0);
@@ -2707,9 +2864,24 @@ export class IslandWorld {
           // One authored multi-lobe canopy, yaw-randomised per tree so the same
           // silhouette never repeats. Sits lower and wider than the old blob
           // pair, which read as a balloon on top of a stick.
-          childDummy.position.set(0, 3.5, 0);
-          childDummy.rotation.set(0, variation * Math.PI * 2, 0);
-          childDummy.scale.set(2.35 * (0.93 + variation * 0.14), 2.0, 2.35);
+          // Crown sits just below the leader and is only ~2.2x the trunk radius,
+          // with a per-tree scale and a slight lateral offset so the silhouette
+          // is irregular rather than a symmetric ball balanced on a stick.
+          childDummy.position.set(
+            (variation - 0.5) * 0.7,
+            3.95 + variation * 0.3,
+            (variation - 0.5) * 0.7
+          );
+          childDummy.rotation.set(
+            (variation - 0.5) * 0.18,
+            variation * Math.PI * 2,
+            (variation - 0.5) * 0.18
+          );
+          childDummy.scale.set(
+            1.62 * (0.9 + variation * 0.24),
+            1.42 * (0.92 + variation * 0.2),
+            1.62 * (0.9 + variation * 0.24)
+          );
           childDummy.updateMatrix();
           childDummy.matrix.premultiply(dummy.matrix);
           leafCrownInst.setMatrixAt(crownBaseIdx, childDummy.matrix);
@@ -3711,10 +3883,37 @@ export class IslandWorld {
     };
   }
 
-  public update(dt: number, cameraPos?: THREE.Vector3): void {
+  /**
+   * CI CRAFT 8.0 — ground-cover density tiers.
+   *
+   * Every band is a *separate instanced mesh* rather than a per-instance scale,
+   * so switching tiers is a visibility flip: no rebuild, no instance buffer
+   * upload, and the player's collision state is untouched (ground cover has no
+   * colliders at all — you can walk through grass).
+   */
+  public setGroundCoverQuality(level: 'low' | 'medium' | 'high' | 'ultra'): void {
+    const bandsToShow = level === 'low' ? 1 : level === 'medium' ? 2 : 3;
+    this.groundCoverBands.forEach((band, index) => {
+      band.visible = index < bandsToShow;
+    });
+    if (this.groundFlowers) {
+      this.groundFlowers.visible = level !== 'low';
+    }
+  }
+
+  public update(
+    dt: number,
+    cameraPos?: THREE.Vector3,
+    cameraDirection?: THREE.Vector3
+  ): void {
     this.animTime += dt;
     setFoliageWindTime(this.animTime);
     this.terrain.update(dt, cameraPos);
+    if (cameraDirection) {
+      // 8.0 aerial perspective: fog takes the colour of the sky behind it.
+      const fog = this.scene.fog instanceof THREE.FogExp2 ? this.scene.fog : null;
+      this.terrain.updateAerialPerspective(cameraDirection, fog);
+    }
 
     if (this.monumentCrystal) {
       this.monumentCrystal.rotation.y += dt * 1.1;

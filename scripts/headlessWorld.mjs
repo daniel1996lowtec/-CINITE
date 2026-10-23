@@ -22,6 +22,7 @@ export async function loadWorldModules() {
       ["from './WorldBrandingLayout'", "from './WorldBrandingLayout.mjs'"],
     ]);
     emit('src/world/VisualAtmosphere.ts', 'VisualAtmosphere.mjs');
+    emit('src/world/SkySystem.ts', 'SkySystem.mjs');
     emit('src/world/ArchitecturalMaterials.ts', 'ArchitecturalMaterials.mjs');
     emit('src/world/VegetationGeometry.ts', 'VegetationGeometry.mjs');
     emit('src/world/BuildingKit.ts', 'BuildingKit.mjs', [
@@ -31,6 +32,7 @@ export async function loadWorldModules() {
     emit('src/world/TerrainGenerator.ts', 'TerrainGenerator.mjs', [
       [/import\s+\{\s*TimeOfDayPreset\s*\}\s+from\s+['"]\.\.\/network\/schemas['"];?\n?/, ''],
       ["from './VisualAtmosphere'", "from './VisualAtmosphere.mjs'"],
+      ["from './SkySystem'", "from './SkySystem.mjs'"],
       ["from './WorldLayout'", "from './WorldLayout.mjs'"],
     ]);
     emit('src/world/MapExpansionBuilder.ts', 'MapExpansionBuilder.mjs', [
@@ -66,6 +68,7 @@ export async function loadWorldModules() {
       pathToFileURL(path.join(tmpDir, 'ArchitecturalMaterials.mjs')).href
     );
     const atmosphere = await import(pathToFileURL(path.join(tmpDir, 'VisualAtmosphere.mjs')).href);
+    const skySystem = await import(pathToFileURL(path.join(tmpDir, 'SkySystem.mjs')).href);
     const buildingKit = await import(pathToFileURL(path.join(tmpDir, 'BuildingKit.mjs')).href);
     return {
       THREE,
@@ -75,6 +78,7 @@ export async function loadWorldModules() {
       brandingModule,
       archMaterials,
       atmosphere,
+      skySystem,
       buildingKit,
       IslandWorld: worldModule.IslandWorld,
     };
