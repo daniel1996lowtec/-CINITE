@@ -293,11 +293,17 @@ test('generated world: deterministic expansion, safe loot/props, and performance
   // instanced draw calls. LOW keeps one band and no flowers; HIGH/ULTRA show
   // all of it with a taller/tighter band layout. Nothing else was added, and
   // no existing geometry was made heavier to reach these numbers.
-    tiers.low.triangles <= 330000,
+  // Measured 8.2 tier totals: LOW/MEDIUM 333,510 | HIGH/ULTRA 612,122.
+  // The 8.2 delta (+5.9k LOW, +7.0k HIGH) is the road surface mesh (1,274
+  // triangles of carriageway ribbons and junction discs) plus kerbs split into
+  // two sub-spans each so they follow the ground instead of hovering over it.
+  // All of it is essential-tier: a road cannot be quality-gated away without
+  // removing the road network on LOW, so both tiers carry it.
+    tiers.low.triangles <= 338000,
     `LOW/MEDIUM triangle budget exceeded: ${tiers.low.triangles}`
   );
   assert.ok(
-    tiers.high.triangles <= 620000,
+    tiers.high.triangles <= 622000,
     `HIGH/ULTRA triangle budget exceeded: ${tiers.high.triangles}`
   );
   const lodAudit = auditTreeLod(world.treeLodHighGroup, world.treeLodLowGroup);
