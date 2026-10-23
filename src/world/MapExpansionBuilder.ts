@@ -2901,38 +2901,77 @@ export class MapExpansionBuilder {
         const cx = segment.fromX + dx * t;
         const cz = segment.fromZ + dz * t;
         const y = this.world.terrain.getTerrainHeight(cx, cz);
+        // CI CRAFT 8.2 — no kerbs, poles or verge strips out over open water.
+        // The road spans Mirror Lake on a causeway deck; furniture belongs on
+        // land, so any step whose ground is at or below the water plane is left
+        // bare rather than planting a 6 m pole on the lakebed.
+        if (y <= -0.28) continue;
         // Skip road furniture where a building or POI platform occupies the
         // verge (kerbs would otherwise cut through foundations).
         if (this.isInsideStructure(cx + dirZ * halfWidth, cz - dirX * halfWidth, 0.3)) {
           continue;
         }
+        // CI CRAFT 8.2 — kerbs follow the ground instead of hovering over it.
+        //
+        // Each kerb used to be ONE rigid 6.12 m box placed at a single midpoint
+        // height, so on undulating ground its ends lifted clear of the terrain:
+        // measured at 98 % of spans floating, worst 5.78 m. That is what read
+        // as "disconnected road edges" and roadside objects detached from the
+        // road.
+        //
+        // Now each kerb is split into KERB_SUBSPANS shorter boxes, each set from
+        // the terrain height beneath itself. The underside sits KERB_BURY below
+        // the surface, so small dips never expose it, and a span whose ground
+        // rises or falls more than KERB_MAX_FLOAT across its length is skipped
+        // entirely — a kerb does not belong on a bank that steep.
+        const KERB_SUBSPANS = 2;
+        const KERB_BURY = 0.35;
+        const KERB_MAX_FLOAT = 0.12;
+        const kerbHeight = averageKerbHeight + KERB_BURY;
+        const subSpanLength = (kerbStep * 1.02) / KERB_SUBSPANS;
+
         for (const side of [-1, 1] as const) {
           const kx = cx + dirZ * halfWidth * side;
           const kz = cz - dirX * halfWidth * side;
-          const ky = this.world.terrain.getTerrainHeight(kx, kz);
-          this.addShapeWorld(
-            roadBatchId,
-            kx,
-            Math.max(ky, y) + averageKerbHeight / 2 - 0.02,
-            kz,
-            averageKerbWidth,
-            averageKerbHeight,
-            kerbStep * 1.02,
-            0xc8c2b4,
-            { shape: 'stone', yaw }
-          );
-          // Verge gravel strip just outside the kerb.
-          this.addShapeWorld(
-            roadBatchId,
-            kx + dirZ * 0.42 * side,
-            Math.max(ky, y) + 0.012,
-            kz - dirX * 0.42 * side,
-            0.62,
-            0.03,
-            kerbStep * 1.02,
-            0x9c9484,
-            { shape: 'decal', yaw }
-          );
+          for (let k = 0; k < KERB_SUBSPANS; k++) {
+            const offset = -kerbStep * 0.51 + subSpanLength * (k + 0.5);
+            const sx = kx + dirX * offset;
+            const sz = kz + dirZ * offset;
+            const centreHeight = this.world.terrain.getTerrainHeight(sx, sz);
+            const underside = centreHeight + averageKerbHeight - KERB_BURY;
+            const endA = this.world.terrain.getTerrainHeight(
+              sx + dirX * subSpanLength * 0.5,
+              sz + dirZ * subSpanLength * 0.5
+            );
+            const endB = this.world.terrain.getTerrainHeight(
+              sx - dirX * subSpanLength * 0.5,
+              sz - dirZ * subSpanLength * 0.5
+            );
+            if (Math.max(underside - endA, underside - endB) > KERB_MAX_FLOAT) continue;
+            this.addShapeWorld(
+              roadBatchId,
+              sx,
+              underside + kerbHeight / 2,
+              sz,
+              averageKerbWidth,
+              kerbHeight,
+              subSpanLength * 1.02,
+              0xc8c2b4,
+              { shape: 'stone', yaw }
+            );
+            // Verge gravel strip just outside the kerb.
+            this.addShapeWorld(
+              roadBatchId,
+              sx + dirZ * 0.42 * side,
+              centreHeight + 0.012,
+              sz - dirX * 0.42 * side,
+              0.62,
+              0.03,
+              subSpanLength * 1.02,
+              0x9c9484,
+              { shape: 'decal', yaw }
+            );
+          }
         }
 
         // Reflective delineator posts every third kerb step.

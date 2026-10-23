@@ -1207,17 +1207,29 @@ export function applyTerrainGroundDetail(
     shader.vertexShader = `
 varying vec3 vCicraftGroundPos;
 varying vec3 vCicraftGroundNormal;
+varying float vCicraftPaved;
+#ifdef CICRAFT_PAVED_MASK
+attribute float aPavedMask;
+#endif
 ${shader.vertexShader}`.replace(
       '#include <begin_vertex>',
       `#include <begin_vertex>
       vec4 cicraftGroundWorld = modelMatrix * vec4(transformed, 1.0);
       vCicraftGroundPos = cicraftGroundWorld.xyz;
-      vCicraftGroundNormal = normalize(mat3(modelMatrix) * objectNormal);`
+      vCicraftGroundNormal = normalize(mat3(modelMatrix) * objectNormal);
+      // CI CRAFT 8.2 — 1 on asphalt/paving, 0 on natural ground. Optional so the
+      // material still works on meshes that do not carry the attribute.
+      #ifdef CICRAFT_PAVED_MASK
+        vCicraftPaved = aPavedMask;
+      #else
+        vCicraftPaved = 0.0;
+      #endif`
     );
 
     shader.fragmentShader = `
 varying vec3 vCicraftGroundPos;
 varying vec3 vCicraftGroundNormal;
+varying float vCicraftPaved;
 float cicraftHash(vec2 p) {
   return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
 }
@@ -1264,6 +1276,12 @@ ${shader.fragmentShader}`.replace(
         float nCoarse = cicraftValueNoise(gp * 0.012 + 41.0);
         float nSpeck = cicraftValueNoise(gp * 6.3 + 5.0);
 
+        // CI CRAFT 8.2 — paved surfaces keep their authored colour. Without
+        // this, turf (45 %) and soil (up to 40 %) were blended straight over
+        // the asphalt, turning a #77787a carriageway into #696d5c and covering
+        // it in 1.7 m noise bands that read as stripes along the road.
+        float natural = 1.0 - clamp(vCicraftPaved, 0.0, 1.0);
+
         // Turf: healthy green where it is flat, low and damp.
         // Soil: warm brown where turf thins on crowns and banks.
         // Turf only exists above the beach and off steep faces, and the mask
@@ -1272,8 +1290,8 @@ ${shader.fragmentShader}`.replace(
         float turfMask = nMid * 0.72 + cicraftValueNoise(gp * 0.31 + 7.0) * 0.28;
         float turf = smoothstep(0.38, 0.72, turfMask)
                    * (1.0 - smoothstep(0.12, 0.45, slope))
-                   * turfAltitude;
-        float soil = (1.0 - turf) * smoothstep(0.42, 0.68, nFine) * 0.4 * turfAltitude;
+                   * turfAltitude * natural;
+        float soil = (1.0 - turf) * smoothstep(0.42, 0.68, nFine) * 0.4 * turfAltitude * natural;
 
         vec3 turfColor = mix(vec3(0.20, 0.34, 0.13), vec3(0.31, 0.44, 0.19), nFine);
         vec3 soilColor = mix(vec3(0.31, 0.23, 0.14), vec3(0.42, 0.32, 0.20), nFine);
@@ -1282,19 +1300,19 @@ ${shader.fragmentShader}`.replace(
         diffuseColor.rgb = mix(diffuseColor.rgb, soilColor, soil);
 
         // Stony gravel on tread and steep banks.
-        float gravel = smoothstep(0.22, 0.5, slope) * smoothstep(0.40, 0.75, nSpeck + slope * 0.3);
+        float gravel = smoothstep(0.22, 0.5, slope) * smoothstep(0.40, 0.75, nSpeck + slope * 0.3) * natural;
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.34, 0.33, 0.31), gravel * 0.5);
 
         // Damp hollows read darker and cooler.
-        float damp = smoothstep(0.62, 0.9, nCoarse) * (1.0 - smoothstep(0.2, 0.5, slope));
+        float damp = smoothstep(0.62, 0.9, nCoarse) * (1.0 - smoothstep(0.2, 0.5, slope)) * natural;
         diffuseColor.rgb *= 1.0 - damp * 0.18;
 
         // Dry crowns and sun-bleached ridges lift warmer.
-        float dry = smoothstep(0.60, 0.92, nCoarse) * smoothstep(0.4, 0.9, nMid);
+        float dry = smoothstep(0.60, 0.92, nCoarse) * smoothstep(0.4, 0.9, nMid) * natural;
         diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(1.16, 1.10, 0.88), dry * 0.7);
 
         // Fine speckle: reads as gravel, shell fragments and grass blades.
-        float speck = smoothstep(0.82, 0.99, nSpeck);
+        float speck = smoothstep(0.82, 0.99, nSpeck) * natural;
         diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 0.84 + vec3(0.03), speck * 0.4);
 
         // Sand next to the water: warm, and darker where it is wet.
@@ -1333,10 +1351,13 @@ ${shader.fragmentShader}`.replace(
         float nx = cicraftValueNoise((gp3 + vec2(e, 0.0)) * 1.7) - nBase;
         float nz = cicraftValueNoise((gp3 + vec2(0.0, e)) * 1.7) - nBase;
         vec3 groundBump = vec3(nx * 3.0, 1.0, nz * 3.0);
-        normal = normalize(mix(normal, normalize(normal + groundBump * 0.42), 0.6));
+        normal = normalize(mix(normal, normalize(normal + groundBump * 0.42), 0.6 * natural));
       }`
     );
   };
+  // Enables the optional aPavedMask attribute. Set per material so meshes
+  // without the attribute still compile a valid shader.
+  material.defines = { ...(material.defines ?? {}), CICRAFT_PAVED_MASK: '' };
   material.customProgramCacheKey = () => 'cicraft-terrain-ground-detail';
   return material;
 }

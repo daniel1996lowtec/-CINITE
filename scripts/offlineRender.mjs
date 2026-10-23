@@ -17,7 +17,7 @@
  *
  * Usage:
  *   node scripts/offlineRender.mjs [--out dir] [--width 1280] [--height 720]
- *                                  [--scene all|plaza|docks|keep|farms|tower|street]
+ *                                  [--scene all|plaza|docks|keep|farms|tower|street|roads]
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -965,6 +965,17 @@ const viewpoints = {
   street: [[eyeAt(-66, 16, 1.75), look(-118, groundAt(-118, 16) + 2.2, 16), 64]],
   grove: [[eyeAt(-102, -68, 1.75), look(-121, groundAt(-121, -80) + 2.6, -80), 62]],
   terrain: [[eyeAt(152, 58, 14.0), look(96, groundAt(96, 20) + 2.0, 20), 68]],
+  // CI CRAFT 8.2 — kept so road geometry can be inspected reproducibly:
+  // surface continuity, kerb contact, junction closure and the Mirror Lake
+  // causeway. --scene roads
+  roads: [
+    [eyeAt(-8, -38, 1.7), look(-23, groundAt(-23, -95) + 1.2, -95), 68],
+    [eyeAt(-22, 46, 2.0), look(-58, groundAt(-58, 52) + 1.6, 52), 68],
+    [eyeAt(-8, 72, 18), look(-56, groundAt(-56, 46) + 0.5, 46), 62],
+    [eyeAt(120, -78, 6), look(150, groundAt(150, -100) + 1.0, -100), 64],
+    [eyeAt(-58, 46, 14), look(-30, groundAt(-30, 6) + 1.0, 6), 62],
+    [eyeAt(-78, 122, 1.7), look(-101, groundAt(-101, 98) + 1.4, 98), 68],
+  ],
 };
 
 const chosen = SCENE_FILTER === 'all' ? Object.keys(viewpoints) : [SCENE_FILTER];
