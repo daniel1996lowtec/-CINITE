@@ -324,30 +324,47 @@ export class ThirdPersonCamera {
     const aimTarget = this.scratchAimTarget
       .copy(pivot)
       .addScaledVector(forward, 32);
-    this.currentLookAt.lerp(aimTarget, Math.min(1, dt * 26));
+    // The look-at used to be low-pass filtered (dt * 26), which meant the
+    // rendered crosshair trailed the player's actual view direction by ~100 ms.
+    // Firing used the instantaneous yaw/pitch, so a flick shot left the
+    // crosshair pointing one way and the bullet going another. The crosshair has
+    // to be exact, so the orientation now snaps and only the *position* is
+    // smoothed.
+    this.currentLookAt.copy(aimTarget);
     this.camera.lookAt(this.currentLookAt);
   }
 
-  public getAimRay(): { origin: THREE.Vector3; direction: THREE.Vector3 } {
-    const effYaw = this.yaw + this.recoilYawOffset;
-    const effPitch = THREE.MathUtils.clamp(
-      this.pitch + this.recoilPitchOffset,
-      -1.15,
-      1.15
-    );
-
-    const direction = new THREE.Vector3(
-      -Math.sin(effYaw) * Math.cos(effPitch),
-      Math.sin(effPitch),
-      -Math.cos(effYaw) * Math.cos(effPitch)
-    ).normalize();
-
-    const origin = new THREE.Vector3(
-      this.lastTargetPos.x,
-      this.lastTargetPos.y + 1.55,
-      this.lastTargetPos.z
-    ).addScaledVector(direction, 0.55);
-
+  /**
+   * The true aim ray: straight out of the rendered camera, through the centre of
+   * the screen. This is what the crosshair draws, so it is the only ray the
+   * shooting code may use to decide what the player is pointing at.
+   *
+   * It intentionally reads back from the camera transform rather than
+   * recomputing yaw/pitch. Any future smoothing, shake or FOV change is then
+   * automatically part of the aim instead of silently diverging from it.
+   */
+  public getCameraRay(): { origin: THREE.Vector3; direction: THREE.Vector3 } {
+    const origin = this.camera.position.clone();
+    const direction = new THREE.Vector3();
+    this.camera.getWorldDirection(direction);
+    if (direction.lengthSq() < 1e-8) direction.set(0, 0, -1);
+    direction.normalize();
     return { origin, direction };
+  }
+
+  /**
+   * @deprecated Use {@link getCameraRay}. Kept for callers that still want a
+   * chest-height ray, but note it does NOT pass through the crosshair.
+   */
+  public getAimRay(): { origin: THREE.Vector3; direction: THREE.Vector3 } {
+    const ray = this.getCameraRay();
+    return {
+      origin: new THREE.Vector3(
+        this.lastTargetPos.x,
+        this.lastTargetPos.y + 1.55,
+        this.lastTargetPos.z
+      ).addScaledVector(ray.direction, 0.55),
+      direction: ray.direction,
+    };
   }
 }

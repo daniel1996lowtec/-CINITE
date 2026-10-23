@@ -54,6 +54,7 @@ import { StormSystem } from '../systems/StormSystem';
 import { ParticleSystem } from '../systems/ParticleSystem';
 import { SoundManager } from '../audio/SoundManager';
 import { HUDManager } from '../ui/HUDManager';
+import { AimDiagnostics } from '../debug/AimDiagnostics';
 import { ProgressionSystem } from '../systems/ProgressionSystem';
 import { PerfMonitor, PerfSnapshot } from '../systems/PerfMonitor';
 import { createWeaponStats, RARITY_COLORS } from '../weapons/WeaponDefinitions';
@@ -63,6 +64,8 @@ export class GameEngine {
   private renderer: THREE.WebGLRenderer;
   private scene: THREE.Scene;
   private tpCamera: ThirdPersonCamera;
+  /** Dev-only overlay, enabled with `?aimdebug=1`; inert otherwise. */
+  private aimDiagnostics = new AimDiagnostics();
   private dirLight!: THREE.DirectionalLight;
   private dirLightTarget!: THREE.Object3D;
   private fillLight!: THREE.DirectionalLight;
@@ -461,7 +464,13 @@ export class GameEngine {
     };
 
     // Outgoing local player actions -> Room Server & Bot Sound Investigation
-    this.playerController.onLocalWeaponFired = (category, muzzlePos, hitPoint, rarity) => {
+    this.playerController.onLocalWeaponFired = (
+      category,
+      muzzlePos,
+      hitPoint,
+      rarity,
+      aim
+    ) => {
       if (category !== 'harvester') {
         this.botController.notifySoundEvent(muzzlePos.x, muzzlePos.z, 95);
       }
@@ -469,7 +478,8 @@ export class GameEngine {
         category,
         { x: muzzlePos.x, y: muzzlePos.y, z: muzzlePos.z },
         { x: hitPoint.x, y: hitPoint.y, z: hitPoint.z },
-        rarity
+        rarity,
+        aim
       );
     };
 
@@ -714,6 +724,13 @@ export class GameEngine {
         : state.players.get(ev.victimId);
 
       if (!victim) return;
+
+      if (isLocalAttacker && !isLocalVictim) {
+        this.aimDiagnostics.reportServerResult(
+          true,
+          `${ev.damage} dmg${ev.isHeadshot ? ' head' : ''}`
+        );
+      }
 
       const hadShield = victim.shield > 0;
       victim.health = ev.victimHealth;
@@ -1821,6 +1838,7 @@ export class GameEngine {
     // The new opaque menu does not need a hidden full-island draw every frame.
     // Keep rendering for gameplay (including pause) and the live Locker preview.
     if (this.isRunningMatch || previewWindow) this.renderer.render(this.scene, this.tpCamera.camera);
+    this.aimDiagnostics.render(this.tpCamera.camera);
     this.perfMonitor.endSubsystem('render');
 
     const snap = this.perfMonitor.endFrame(
@@ -2017,7 +2035,9 @@ export class GameEngine {
     this.pendingBuild = null;
     this.mobileJump = false;
 
-    const aimRay = this.tpCamera.getAimRay();
+    // The crosshair is the centre of the screen, so the ray that decides what
+    // the player is aiming at has to come out of the rendered camera.
+    const aimRay = this.tpCamera.getCameraRay();
 
     if (localPlayer.alive) {
       this.playerController.updateLocalPlayer(
@@ -2044,6 +2064,9 @@ export class GameEngine {
           );
         }
       );
+
+      this.aimDiagnostics.setSolution(this.playerController.lastAimSolution);
+      this.hud.setAimObstructed(this.playerController.isAimBlocked());
 
       this.network.sendInput(inputPacket);
 
