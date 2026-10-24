@@ -8,30 +8,8 @@ import type {
 } from './IslandWorld';
 import { ISLAND_POIS } from './TerrainGenerator';
 import {
-  KitBuilder,
-  addBalcony,
-  addBench,
-  addBollard,
-  addDoorPortal,
-  addFencePanel,
-  addFlatRoofDetail,
-  addGableRoof,
-  addPlanter,
-  addPlinthAndCornice,
-  addRainwaterGoods,
-  addShopfront,
-  addStreetLamp,
-  addWindowUnit,
-  mergeKitParts,
-  type KitSlot,
-} from './BuildingKit';
-import {
-  applyArchitectureSurfaceShader,
   applyFoliageWind,
   createArchitectureTextures,
-  createBotanicalShrubGeometry,
-  createCrossedGrassTuftGeometry,
-  weldAndSmoothGeometry,
   type FoliageWindOptions,
 } from './VisualAtmosphere';
 import type {
@@ -41,7 +19,6 @@ import type {
   LandmarkPlacement,
   LegendaryTowerSide,
 } from './WorldLayout';
-import { roadHalfWidth } from './RoadNetwork';
 import {
   AURORA_HEIGHTS_SKYBRIDGE,
   EXISTING_MAJOR_FOOTPRINTS,
@@ -69,18 +46,7 @@ import {
   isPointInFootprint,
 } from './WorldLayout';
 
-type ArchitectureShape =
-  | 'box'
-  | 'glass'
-  | 'cone'
-  | 'cylinder'
-  | 'glow'
-  | 'metal'
-  | 'paint'
-  | 'contact'
-  | 'decal'
-  | 'stone'
-  | 'wood';
+type ArchitectureShape = 'box' | 'glass' | 'cone' | 'cylinder' | 'glow' | 'metal' | 'paint' | 'contact' | 'decal';
 type ArchitectureTier = 'essential' | 'detail';
 
 interface InstanceSpec {
@@ -102,19 +68,7 @@ interface ShapeOptions {
   rotationZ?: number;
 }
 
-const ARCHITECTURE_SHAPES: ArchitectureShape[] = [
-  'box',
-  'glass',
-  'cone',
-  'cylinder',
-  'glow',
-  'metal',
-  'paint',
-  'contact',
-  'decal',
-  'stone',
-  'wood',
-];
+const ARCHITECTURE_SHAPES: ArchitectureShape[] = ['box', 'glass', 'cone', 'cylinder', 'glow', 'metal', 'paint', 'contact', 'decal'];
 
 /**
  * Builds the additive island districts around the original IslandWorld.
@@ -131,8 +85,6 @@ export class MapExpansionBuilder {
   public readonly detailFoliageGroup = new THREE.Group();
 
   private readonly world: IslandWorld;
-  /** Authored facade/roof geometry for every district building. */
-  private readonly kit: KitBuilder;
   private readonly instances = new Map<string, InstanceSpec[]>();
   private readonly dummy = new THREE.Object3D();
   private readonly childDummy = new THREE.Object3D();
@@ -150,7 +102,6 @@ export class MapExpansionBuilder {
 
   constructor(world: IslandWorld, scene: THREE.Scene) {
     this.world = world;
-    this.kit = new KitBuilder(world.architecturalMaterials);
     this.expansionGroup.name = 'MapExpansionArchitecture';
     this.expansionDetailGroup.name = 'MapExpansionDetail';
     this.detailFoliageGroup.name = 'MapExpansionDetailFoliage';
@@ -164,7 +115,6 @@ export class MapExpansionBuilder {
     }
     this.buildAuroraHeightsSkybridge();
     this.buildSettlementInfrastructure();
-    this.buildRoadFurniture();
     for (const landmark of EXPANSION_LANDMARKS) {
       this.createLandmark(landmark);
     }
@@ -1687,16 +1637,11 @@ export class MapExpansionBuilder {
         );
       }
 
-      // Stair-opening guard detail: a brushed-metal nosing plus a painted key
-      // line. It keeps the atriums readable without drawing saturated neon
-      // piping across every floor of every tower.
+      // A bright stair-opening edge makes the vertical route legible in the
+      // open atrium without adding a movement collider across the landing.
       const openingEdgeX = arrivalLane === westLane ? westLane.max : eastLane.min;
-      box(openingEdgeX, top + 0.06, 1.1, 0.16, 0.1, placement.depth - 5.2, 0x8b98a6, {
-        shape: 'metal',
-        tier: 'detail',
-      });
-      box(openingEdgeX, top + 0.02, 1.1, 0.09, 0.02, placement.depth - 5.6, placement.accentColor, {
-        shape: 'decal',
+      box(openingEdgeX, top + 0.06, 1.1, 0.14, 0.12, placement.depth - 5.2, placement.accentColor, {
+        shape: 'glass',
         tier: 'detail',
       });
     }
@@ -1834,31 +1779,12 @@ export class MapExpansionBuilder {
       const top = floorTop(level);
       const windowY = top + 2.55;
       for (const side of [-1, 1]) {
-        // Front/rear spandrel band: same treatment as the side bands below.
-        box(
-          0,
-          top + 0.24,
-          side * (hd + 0.05),
-          placement.width + 0.18,
-          0.2,
-          0.14,
-          new THREE.Color(placement.roofColor).lerp(new THREE.Color(0xb9c2cc), 0.82).getHex(),
-          { tier: 'detail' }
-        );
-        // CI CRAFT 6.2 — the projecting slab edge used the district roof colour
-        // straight from the layout, so a violet or rust roof drew a saturated
-        // neon stripe around every storey. Real spandrel bands are cast
-        // concrete; keep only a trace of the district hue.
-        box(
-          side * (hw + 0.05),
-          top + 0.24,
-          0,
-          0.14,
-          0.2,
-          placement.depth + 0.18,
-          new THREE.Color(placement.roofColor).lerp(new THREE.Color(0xb9c2cc), 0.82).getHex(),
-          { tier: 'detail' }
-        );
+        box(0, top + 0.24, side * (hd + 0.05), placement.width + 0.18, 0.2, 0.14, placement.roofColor, {
+          tier: 'detail',
+        });
+        box(side * (hw + 0.05), top + 0.24, 0, 0.14, 0.2, placement.depth + 0.18, placement.roofColor, {
+          tier: 'detail',
+        });
 
         for (const fraction of [-0.66, -0.33, 0, 0.33, 0.66]) {
           const isDoorBay =
@@ -1867,33 +1793,21 @@ export class MapExpansionBuilder {
               (side < 0 && placement.rearDoor && level === 0));
           if (isDoorBay) continue;
           const wx = fraction * hw;
-          // Warm interior light / cool sky reflection, desaturated so the
-          // glazing reads as glass rather than an emissive neon panel.
-          box(
-            wx,
-            windowY,
-            side * (hd + 0.06),
-            1.62,
-            2.18,
-            0.07,
-            (level + Math.round(wx)) % 3 === 0 ? 0xc9bda0 : 0x9fb4c4,
-            { shape: 'glass', tier: 'detail' }
-          );
+          box(wx, windowY, side * (hd + 0.06), 1.62, 2.18, 0.07,
+            (level + Math.round(wx)) % 3 === 0 ? 0xfde68a : 0x7dd3fc, {
+            shape: 'glass',
+            tier: 'detail',
+          });
         }
         for (const fraction of [-0.3, 0, 0.3]) {
           const wz = fraction * hd;
-          box(side * (hw + 0.06), windowY, wz, 0.07, 2.1, 1.5, 0x9fb4c4, {
+          box(side * (hw + 0.06), windowY, wz, 0.07, 2.1, 1.5, 0x7dd3fc, {
             shape: 'glass',
             tier: 'detail',
           });
         }
       }
     }
-    // CI CRAFT 6.2 — these vertical bands were the district accent colour, which
-    // at full saturation drew bright neon piping around every tower. They are
-    // structural pilasters: cast-concrete colour with a thin accent keyline at
-    // the base and head only, which reads as architecture rather than a
-    // highlight. Geometry, instancing and tier are unchanged.
     for (const side of [-1, 1]) {
       for (const fraction of [-0.58, 0.58]) {
         box(
@@ -1903,16 +1817,6 @@ export class MapExpansionBuilder {
           0.3,
           wallHeight,
           0.22,
-          0xb9c2cc,
-          { tier: 'detail' }
-        );
-        box(
-          fraction * hw,
-          floorTop(0) + 0.7,
-          side * (hd + 0.16),
-          0.36,
-          1.4,
-          0.24,
           placement.accentColor,
           { tier: 'detail' }
         );
@@ -1923,16 +1827,6 @@ export class MapExpansionBuilder {
           0.22,
           wallHeight,
           0.3,
-          0xb9c2cc,
-          { tier: 'detail' }
-        );
-        box(
-          side * (hw + 0.16),
-          floorTop(0) + 0.7,
-          fraction * hd,
-          0.24,
-          1.4,
-          0.36,
           placement.accentColor,
           { tier: 'detail' }
         );
@@ -2322,31 +2216,44 @@ export class MapExpansionBuilder {
       // A branded fascia must remain a real mounting surface on Low/adaptive tiers.
       // Reclassify the existing five panels; no new geometry or colliders.
       const brandedFascia = BUILDING_BRANDING.some(sign => sign.buildingId === placement.id && sign.support === 'shop-fascia');
-      // A fascia is a painted signboard, not a glowing strip: desaturate toward
-      // the accent so it reads as signwritten timber at eye level.
-      box(
-        0,
-        3.52,
-        hd + 0.18,
-        placement.width * 0.72,
-        0.68,
-        0.2,
-        new THREE.Color(placement.accentColor).lerp(new THREE.Color(0x1f2937), 0.34).getHex(),
-        { tier: brandedFascia ? 'essential' : 'detail' }
-      );
+      box(0, 3.52, hd + 0.18, placement.width * 0.72, 0.68, 0.2, placement.accentColor, { tier: brandedFascia ? 'essential' : 'detail' });
       box(0, 3.08, hd + 0.58, placement.width * 0.7, 0.14, 1.15, placement.roofColor, { rotationX: 0.18 });
     } else if (kind === 'house' || kind === 'cabin') {
       box(0, 3.08, hd + 0.5, doorWidth + 1.4, 0.14, 1.0, placement.roofColor, { rotationX: 0.16, tier: 'detail' });
     }
 
-    // CI CRAFT 6.2 — authored facade kit (windows, doors, shopfronts,
-    // balconies, plinth, cornice, rainwater goods) replaces the flat decals.
-    this.addBuildingFacadeKit(placement, baseY, {
-      doorWidth,
-      frontSideWidth,
-      floorTop,
-      midFloorY,
-    });
+    // Windows on every occupied level.
+    const floorHeight = placement.floors === 2 ? midFloorY : placement.height;
+    for (let level = 0; level < placement.floors; level++) {
+      const windowY = floorTop + level * floorHeight + 1.78;
+      if (windowY > placement.height - 0.55) continue;
+      for (const wx of [-placement.width * 0.25, placement.width * 0.25]) {
+        box(wx, windowY, -hd - 0.035, 1.45, 1.18, 0.09, 0x7dd3fc, { shape: 'glass', tier: 'detail' });
+        box(wx, windowY - 0.68, -hd - 0.02, 1.65, 0.12, 0.14, 0xf8fafc, { tier: 'detail' });
+      }
+      for (const side of [-1, 1]) {
+        for (const wz of [-placement.depth * 0.2, placement.depth * 0.22]) {
+          box(side * (hw + 0.035), windowY, wz, 0.09, 1.14, 1.35, 0x7dd3fc, { shape: 'glass', tier: 'detail' });
+        }
+      }
+      if (kind === 'shop' && level === 0) {
+        for (const side of [-1, 1]) {
+          box(side * (doorWidth / 2 + 1.35), 1.85, hd + 0.035, 2.0, 1.45, 0.09, 0x7dd3fc, { shape: 'glass', tier: 'detail' });
+        }
+      } else {
+        // Front glazing beside the doorway gives older one/two-storey
+        // buildings the same inhabited read as their side/rear facades.
+        for (const side of [-1, 1]) {
+          const wx = side * (doorWidth / 2 + 1.3);
+          if (Math.abs(wx) + 0.75 < hw - 0.2) {
+            box(wx, windowY, hd + 0.035, 1.35, 1.1, 0.09, 0x7dd3fc, {
+              shape: 'glass',
+              tier: 'detail',
+            });
+          }
+        }
+      }
+    }
 
     // Interiors: one partial partition and kind-specific, mostly
     // non-blocking furniture. Counters/shelves that provide cover collide.
@@ -2456,27 +2363,16 @@ export class MapExpansionBuilder {
       () => placement.height + 0.34
     );
 
-    // CI CRAFT 6.2 — real roofs. Gable houses get two tiled slopes with an
-    // eaves overhang, soffit, fascia, bargeboards, ridge cap, chimney and a
-    // dormer instead of a four-sided cone. Flat roofs keep their collidable
-    // parapets (so the tactical roof route is unchanged) but gain stone coping,
-    // perimeter skylights, plant and downpipes.
-    this.kit.pushFrame(this.buildingFrame(placement, baseY));
-    this.kit.wallTint = new THREE.Color(placement.wallColor);
     if (placement.roof === 'gable') {
-      addGableRoof(this.kit, {
-        width: placement.width,
-        depth: placement.depth,
-        height: placement.height + 0.08,
-        overhang: 0.62,
-        pitch: 0.58,
-        // Keep the district's hue but never let a dark wall colour turn the
-        // tiles black: roofs read as fired clay with a local tint.
-        tint: new THREE.Color(0xf2e2d0)
-          .lerp(new THREE.Color(placement.roofColor), 0.34)
-          .multiplyScalar(1.12),
+      box(0, placement.height + 1.62, 0, placement.width + 1.0, 2.9, placement.depth + 1.0, placement.roofColor, {
+        shape: 'cone',
+        rotationY: Math.PI / 4,
       });
+      box(0, placement.height + 3.08, 0, 0.5, 0.28, placement.depth * 0.55, placement.accentColor, { tier: 'detail' });
     } else {
+      if (placement.roof === 'shed') {
+        box(0, placement.height + 0.58, 0, placement.width + 0.9, 0.2, placement.depth + 0.9, placement.accentColor, { rotationX: 0.12 });
+      }
       const parapetY = placement.height + 0.72;
       const parapetSegments: Array<[string, number, number, number, number]> = [
         ['front', 0, hd + 0.18, placement.width + 0.5, 0.28],
@@ -2491,54 +2387,16 @@ export class MapExpansionBuilder {
       for (const [suffix, lx, lz, sx, sz] of parapetSegments) {
         box(lx, parapetY, lz, sx, 0.78, sz, 0xf8fafc);
         collider(`parapet_${suffix}`, lx, parapetY, lz, sx, 0.78, sz);
-        // Projecting stone coping with a drip groove.
-        this.kit.addBox('stone', lx, parapetY + 0.44, lz, sx + 0.16, 0.12, sz + 0.16, { ao: 1 });
-        this.kit.addBox('detailTrim', lx, parapetY + 0.34, lz, sx + 0.06, 0.06, sz + 0.06, {
-          ao: 0.55,
-        });
       }
-      addFlatRoofDetail(this.kit, {
-        width: placement.width,
-        depth: placement.depth,
-        deckY: placement.height + 0.34,
-        parapetTopY: parapetY + 0.39,
-        variant: Math.abs(Math.round(placement.x + placement.z * 3)),
-        coping: false,
-        tint: placement.accentColor,
-      });
+      box(-hw * 0.45, placement.height + 0.82, -hd * 0.38, 1.45, 0.95, 1.2, 0x64748b, { tier: 'detail' });
+      box(hw * 0.42, placement.height + 0.5, hd * 0.22, placement.width * 0.28, 0.14, 0.65, placement.accentColor, { tier: 'detail' });
     }
-    this.kit.wallTint = null;
-    this.kit.popFrame();
 
     if (hasExteriorRoofAccess(placement)) {
       const rampRun = placement.depth + 0.3;
       const rampRise = placement.height + 0.34 - floorTop;
       const rampAngle = Math.atan2(rampRise, rampRun);
-      // Ramp deck with real treads and handrails instead of one bare plank.
-      box(hw + 1.58, (floorTop + placement.height + 0.34) / 2, 0, 2.45, 0.24, Math.hypot(rampRun, rampRise), 0x8a6a45, { rotationX: rampAngle });
-      const treadCount = Math.max(6, Math.round(rampRun / 0.42));
-      for (let tread = 0; tread < treadCount; tread++) {
-        const tt = (tread + 0.5) / treadCount;
-        const treadZ = (rampRun / 2 - tt * rampRun);
-        const treadY = floorTop + tt * (placement.height + 0.34 - floorTop);
-        box(hw + 1.58, treadY + 0.14, treadZ, 2.4, 0.06, 0.09, 0x5f4526, {
-          tier: 'detail',
-        });
-      }
-      for (const railSide of [-1, 1] as const) {
-        box(hw + 1.58 + railSide * 1.18, (floorTop + placement.height + 0.34) / 2 + 0.62, 0, 0.08, 0.08, Math.hypot(rampRun, rampRise), 0x3b4450, {
-          rotationX: rampAngle,
-          tier: 'detail',
-        });
-        for (let post = 0; post <= 4; post++) {
-          const pt = post / 4;
-          const postZ = (rampRun / 2 - pt * rampRun);
-          const postY = floorTop + pt * (placement.height + 0.34 - floorTop);
-          box(hw + 1.58 + railSide * 1.18, postY + 0.34, postZ, 0.07, 0.7, 0.07, 0x3b4450, {
-            tier: 'detail',
-          });
-        }
-      }
+      box(hw + 1.58, (floorTop + placement.height + 0.34) / 2, 0, 2.45, 0.24, Math.hypot(rampRun, rampRise), wood, { rotationX: rampAngle });
       box(hw + 1.58, placement.height / 2, -hd + 0.35, 0.32, placement.height, 0.32, darkTrim, { shape: 'cylinder' });
       box(hw + 1.58, placement.height / 4, hd * 0.35, 0.3, placement.height / 2, 0.3, darkTrim, { shape: 'cylinder', tier: 'detail' });
       this.addBuildingWalkable(
@@ -2589,203 +2447,6 @@ export class MapExpansionBuilder {
     }
 
     this.addBuildingLoot(placement, baseY, midFloorY);
-  }
-
-  private buildingFrame(placement: ExpansionBuildingPlacement, baseY: number): THREE.Matrix4 {
-    const axes = getCardinalAxes(placement.facing);
-    return new THREE.Matrix4().compose(
-      new THREE.Vector3(placement.x, baseY, placement.z),
-      new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), axes.yaw),
-      new THREE.Vector3(1, 1, 1)
-    );
-  }
-
-  /**
-   * Emits the authored facade for one building: punched windows on every
-   * occupied facade, an entrance portal, a shopfront for retail, a balustraded
-   * balcony for apartments, plinth, string course, cornice, rainwater goods
-   * and street-facing signage hardware.
-   *
-   * All geometry is structural detail only — it never adds colliders, changes
-   * walkable surfaces or blocks a doorway, so collision, loot and routes stay
-   * byte-identical to the pre-6.2 map.
-   */
-  private addBuildingFacadeKit(
-    placement: ExpansionBuildingPlacement,
-    baseY: number,
-    params: {
-      doorWidth: number;
-      frontSideWidth: number;
-      floorTop: number;
-      midFloorY: number;
-    }
-  ): void {
-    const { width, depth, height, floors, kind } = placement;
-    const hw = width / 2;
-    const hd = depth / 2;
-    const { doorWidth, frontSideWidth, floorTop, midFloorY } = params;
-    const floorHeight = floors === 2 ? midFloorY : height;
-    const isShop = kind === 'shop';
-    const isIndustrial = kind === 'warehouse' || kind === 'garage';
-    const isRustic = kind === 'house' || kind === 'cabin' || kind === 'barn';
-    const variant = Math.abs(Math.round(placement.x * 7 + placement.z * 13));
-
-    this.kit.pushFrame(this.buildingFrame(placement, baseY));
-    this.kit.wallTint = new THREE.Color(placement.wallColor);
-
-    addPlinthAndCornice(this.kit, {
-      width,
-      depth,
-      height,
-      floors,
-      midFloorY: floors === 2 ? midFloorY : undefined,
-    });
-
-    for (let level = 0; level < floors; level++) {
-      const y = floorTop + level * floorHeight + 1.82;
-      if (y > height - 0.85) continue;
-      const upper = level > 0;
-
-      // Rear elevation.
-      for (const wx of [-width * 0.25, width * 0.25]) {
-        addWindowUnit(this.kit, {
-          x: wx,
-          y,
-          z: -hd,
-          width: 1.5,
-          height: 1.28,
-          facing: 'back',
-          style: 'punched',
-          shutters: isRustic && !upper,
-          lit: (variant + level + Math.round(wx)) % 3 === 0,
-        });
-      }
-
-      // Side elevations.
-      for (const side of [-1, 1] as const) {
-        for (const wz of [-depth * 0.2, depth * 0.22]) {
-          addWindowUnit(this.kit, {
-            x: side * hw,
-            y,
-            z: wz,
-            width: 1.34,
-            height: 1.24,
-            facing: side < 0 ? 'left' : 'right',
-            style: 'punched',
-            shutters: isRustic && !upper && variant % 2 === 0,
-            planter: isRustic && !upper && variant % 3 === 0,
-            lit: (variant + Math.round(wz * 3)) % 4 === 0,
-          });
-        }
-      }
-
-      // Front elevation. Ground-floor shops get a full shopfront instead.
-      if (!(level === 0 && isShop)) {
-        const canFit = frontSideWidth >= 1.7 || upper;
-        if (canFit) {
-          const fwx = upper ? width * 0.26 : doorWidth / 2 + Math.min(1.4, frontSideWidth * 0.45);
-          for (const side of [-1, 1] as const) {
-            if (!upper && side > 0 && frontSideWidth < 2.1) continue;
-            addWindowUnit(this.kit, {
-              x: side * fwx,
-              y,
-              z: hd,
-              width: upper ? 1.42 : 1.4,
-              height: upper ? 1.2 : 1.26,
-              facing: 'front',
-              style: 'punched',
-              planter: side > 0 && variant % 2 === 0,
-              shutters: isRustic && !upper && variant % 3 === 1,
-              lit: (variant + level + side) % 3 === 0,
-            });
-          }
-        }
-      }
-    }
-
-    // Ground-floor shopfront with display glazing and a fascia band.
-    if (isShop) {
-      addShopfront(this.kit, {
-        x: 0,
-        y: 0,
-        z: hd,
-        width: width - 0.5,
-        doorWidth,
-        facing: 'front',
-        accent: placement.accentColor,
-        awning: true,
-      });
-    }
-
-    // Entrance portal in the structural doorway.
-    addDoorPortal(this.kit, {
-      x: 0,
-      y: 0,
-      z: hd,
-      width: doorWidth - 0.24,
-      height: kind === 'barn' ? 3.0 : 2.78,
-      facing: 'front',
-      style: isShop ? 'shop' : isIndustrial ? 'industrial' : kind === 'barn' ? 'barn' : 'residential',
-      steps: isIndustrial ? 1 : 2,
-      canopy: !isShop,
-      lantern: true,
-      tint: isRustic ? 0x4b2e1a : isIndustrial ? placement.accentColor : 0x243447,
-    });
-
-    // Rear service door.
-    if (placement.rearDoor) {
-      addDoorPortal(this.kit, {
-        x: 0,
-        y: 0,
-        z: -hd,
-        width: 2.5,
-        height: 2.7,
-        facing: 'back',
-        style: isIndustrial ? 'industrial' : 'residential',
-        steps: 1,
-        canopy: false,
-        lantern: true,
-        tint: 0x2f3a45,
-      });
-    }
-
-    // Upper-floor balcony for apartments (the slab itself stays functional).
-    if (kind === 'apartment' && floors === 2) {
-      addBalcony(this.kit, {
-        x: 0,
-        y: midFloorY + 0.2,
-        z: hd - 0.1,
-        width: width * 0.66,
-        facing: 'front',
-        depth: 2.2,
-        slabExists: true,
-      });
-      addDoorPortal(this.kit, {
-        x: 0,
-        y: midFloorY + 0.14,
-        z: hd,
-        width: doorWidth - 0.4,
-        height: 2.15,
-        facing: 'front',
-        style: 'residential',
-        steps: 0,
-        canopy: false,
-        lantern: false,
-        tint: 0x273142,
-      });
-    }
-
-    // Rainwater goods: gutters at the eaves plus downpipes at the corners.
-    addRainwaterGoods(this.kit, {
-      width,
-      depth,
-      height: height + (placement.roof === 'gable' ? 0.1 : 0.3),
-      gutterY: height + 0.3,
-      downpipes: 2,
-    });
-
-    this.kit.wallTint = null;
-    this.kit.popFrame();
   }
 
   private addBuildingLoot(
@@ -2856,231 +2517,6 @@ export class MapExpansionBuilder {
           )
         );
       }
-    }
-  }
-
-  /**
-   * CI CRAFT 6.2 — roadside infrastructure along every real road segment.
-   *
-   * The island's roads were only painted into the terrain vertex colours, so
-   * from eye level they had no edges: no kerb, no verge, no height. This adds
-   * raised stone kerbs on both sides, reflective delineator posts and timber
-   * utility poles with catenary wires, instanced through the same shared
-   * batches as the architecture.
-   *
-   * Purely visual: no colliders, no walkable surfaces, no navigation change.
-   * Deterministic (fixed seed) so the world stays reproducible.
-   */
-  private buildRoadFurniture(): void {
-    let seed = 20241;
-    const rand = (): number => {
-      seed = (seed * 16807) % 2147483647;
-      return (seed - 1) / 2147483646;
-    };
-    // All roads share one batch id: 33 road segments would otherwise create 66
-    // separate instanced draw calls for identical geometry and materials.
-    const roadBatchId = 'roadside';
-    const kerbStep = 6;
-    const averageKerbWidth = 0.34;
-    const averageKerbHeight = 0.17;
-
-    for (const segment of ISLAND_ROAD_SEGMENTS) {
-      const dx = segment.toX - segment.fromX;
-      const dz = segment.toZ - segment.fromZ;
-      const length = Math.hypot(dx, dz);
-      if (length < 8) continue;
-      const dirX = dx / length;
-      const dirZ = dz / length;
-      // CI CRAFT 9.0 — one source of truth. The asphalt mesh, the terrain
-      // sub-base paint and these kerbs all read ROAD_HALF_WIDTH, so the kerb
-      // line can no longer drift away from the edge of the road it belongs to.
-      const halfWidth = roadHalfWidth(segment.kind);
-      const yaw = Math.atan2(dirX, dirZ);
-      const steps = Math.max(2, Math.floor(length / kerbStep));
-
-      let previousPole: THREE.Vector3 | null = null;
-      for (let i = 0; i < steps; i++) {
-        const t = (i + 0.5) / steps;
-        const cx = segment.fromX + dx * t;
-        const cz = segment.fromZ + dz * t;
-        const y = this.world.terrain.getTerrainHeight(cx, cz);
-        // CI CRAFT 8.2 — no kerbs, poles or verge strips out over open water.
-        // The road spans Mirror Lake on a causeway deck; furniture belongs on
-        // land, so any step whose ground is at or below the water plane is left
-        // bare rather than planting a 6 m pole on the lakebed.
-        if (y <= -0.28) continue;
-        // Skip road furniture where a building or POI platform occupies the
-        // verge (kerbs would otherwise cut through foundations).
-        if (this.isInsideStructure(cx + dirZ * halfWidth, cz - dirX * halfWidth, 0.3)) {
-          continue;
-        }
-        // CI CRAFT 8.2 — kerbs follow the ground instead of hovering over it.
-        //
-        // Each kerb used to be ONE rigid 6.12 m box placed at a single midpoint
-        // height, so on undulating ground its ends lifted clear of the terrain:
-        // measured at 98 % of spans floating, worst 5.78 m. That is what read
-        // as "disconnected road edges" and roadside objects detached from the
-        // road.
-        //
-        // Now each kerb is split into KERB_SUBSPANS shorter boxes, each set from
-        // the terrain height beneath itself. The underside sits KERB_BURY below
-        // the surface, so small dips never expose it, and a span whose ground
-        // rises or falls more than KERB_MAX_FLOAT across its length is skipped
-        // entirely — a kerb does not belong on a bank that steep.
-        const KERB_SUBSPANS = 2;
-        const KERB_BURY = 0.35;
-        const KERB_MAX_FLOAT = 0.12;
-        const kerbHeight = averageKerbHeight + KERB_BURY;
-        const subSpanLength = (kerbStep * 1.02) / KERB_SUBSPANS;
-
-        for (const side of [-1, 1] as const) {
-          const kx = cx + dirZ * halfWidth * side;
-          const kz = cz - dirX * halfWidth * side;
-          for (let k = 0; k < KERB_SUBSPANS; k++) {
-            const offset = -kerbStep * 0.51 + subSpanLength * (k + 0.5);
-            const sx = kx + dirX * offset;
-            const sz = kz + dirZ * offset;
-            const centreHeight = this.world.terrain.getTerrainHeight(sx, sz);
-            // CI CRAFT 8.3 — the underside used to be computed as
-            // `centreHeight + averageKerbHeight - KERB_BURY`, which adds the
-            // kerb height back before subtracting the burial. That double-count
-            // made every kerb stand 0.34 m proud instead of 0.17 m, so the whole
-            // network read as a continuous grey barrier wall alongside the road.
-            const underside = centreHeight - KERB_BURY;
-            const endA = this.world.terrain.getTerrainHeight(
-              sx + dirX * subSpanLength * 0.5,
-              sz + dirZ * subSpanLength * 0.5
-            );
-            const endB = this.world.terrain.getTerrainHeight(
-              sx - dirX * subSpanLength * 0.5,
-              sz - dirZ * subSpanLength * 0.5
-            );
-            if (Math.max(underside - endA, underside - endB) > KERB_MAX_FLOAT) continue;
-            this.addShapeWorld(
-              roadBatchId,
-              sx,
-              underside + kerbHeight / 2,
-              sz,
-              averageKerbWidth,
-              kerbHeight,
-              subSpanLength * 1.02,
-              0xc8c2b4,
-              { shape: 'stone', yaw }
-            );
-            // Verge gravel strip just outside the kerb.
-            this.addShapeWorld(
-              roadBatchId,
-              sx + dirZ * 0.42 * side,
-              centreHeight + 0.012,
-              sz - dirX * 0.42 * side,
-              0.62,
-              0.03,
-              subSpanLength * 1.02,
-              0x9c9484,
-              { shape: 'decal', yaw }
-            );
-          }
-        }
-
-        // Reflective delineator posts every third kerb step.
-        if (i % 3 === 0) {
-          const side = i % 2 === 0 ? 1 : -1;
-          const px = cx + dirZ * (halfWidth + 0.55) * side;
-          const pz = cz - dirX * (halfWidth + 0.55) * side;
-          const py = this.world.terrain.getTerrainHeight(px, pz);
-          this.addShapeWorld(roadBatchId, px, py + 0.42, pz, 0.1, 0.84, 0.1, 0xf8fafc, {
-            shape: 'cylinder',
-            tier: 'detail',
-          });
-          this.addShapeWorld(roadBatchId, px, py + 0.74, pz, 0.12, 0.12, 0.12, 0xb91c1c, {
-            shape: 'decal',
-            tier: 'detail',
-          });
-        }
-
-        // Timber utility poles with crossarms, every 5th kerb step, alternating.
-        if (i % 5 === 2) {
-          const side = (Math.floor(i / 5) % 2 === 0) ? 1 : -1;
-          const px = cx + dirZ * (halfWidth + 1.75) * side;
-          const pz = cz - dirX * (halfWidth + 1.75) * side;
-          if (
-            rand() > 0.24 &&
-            !this.isInsideStructure(px, pz, 1.2)
-          ) {
-            const py = this.world.terrain.getTerrainHeight(px, pz);
-            const poleYaw = Math.atan2(dirX, dirZ) + Math.PI / 2;
-            this.addShapeWorld(roadBatchId, px, py + 3.4, pz, 0.2, 6.8, 0.2, 0x6b4f35, {
-              shape: 'cylinder',
-            });
-            this.addShapeWorld(
-              roadBatchId,
-              px,
-              py + 6.3,
-              pz,
-              2.1,
-              0.13,
-              0.15,
-              0x5b432e,
-              { shape: 'wood', yaw: poleYaw, tier: 'detail' }
-            );
-            for (const offset of [-0.85, 0.85]) {
-              this.addShapeWorld(
-                roadBatchId,
-                px + dirX * offset,
-                py + 6.48,
-                pz + dirZ * offset,
-                0.09,
-                0.2,
-                0.09,
-                0x93a2b0,
-                { shape: 'cylinder', tier: 'detail' }
-              );
-            }
-            const poleTop = new THREE.Vector3(px, py + 6.4, pz);
-            if (previousPole && previousPole.distanceTo(poleTop) < 42) {
-              this.addSaggingWireInstances(roadBatchId, previousPole, poleTop);
-            }
-            previousPole = poleTop;
-          }
-        }
-      }
-    }
-  }
-
-  /**
-   * Wire approximated by short instanced segments following a catenary sag.
-   * Each segment is oriented from the previous point to the next with a
-   * quaternion, so the wire follows the sag instead of pointing at a fixed
-   * axis (a pole-line is the single clearest "this world was authored" cue
-   * from ground level).
-   */
-  private addSaggingWireInstances(
-    districtId: string,
-    from: THREE.Vector3,
-    to: THREE.Vector3
-  ): void {
-    const steps = 7;
-    const sag = Math.min(1.4, from.distanceTo(to) * 0.045);
-    let previous = from.clone();
-    for (let i = 1; i <= steps; i++) {
-      const t = i / steps;
-      const point = new THREE.Vector3().lerpVectors(from, to, t);
-      point.y -= Math.sin(t * Math.PI) * sag;
-      const length = previous.distanceTo(point);
-      if (length > 0.02) {
-        const mid = new THREE.Vector3().addVectors(previous, point).multiplyScalar(0.5);
-        const quaternion = new THREE.Quaternion().setFromUnitVectors(
-          new THREE.Vector3(0, 1, 0),
-          new THREE.Vector3().subVectors(point, previous).normalize()
-        );
-        const matrix = new THREE.Matrix4().compose(
-          mid,
-          quaternion,
-          new THREE.Vector3(0.05, length, 0.05)
-        );
-        this.addInstance('decal', districtId, matrix, 0x2f3944, 'detail');
-      }
-      previous = point;
     }
   }
 
@@ -3164,83 +2600,6 @@ export class MapExpansionBuilder {
       this.addShapeWorld(settlement.id, signX, signY + 5.15, signZ, 3.4, 1.25, 0.28, signColor);
       this.addShapeWorld(settlement.id, signX, signY + 6.25, signZ, 0.72, 0.72, 0.72, signColor, { shape: 'glow', tier: 'detail' });
       this.addWorldCylinderCollider(`expansion_${settlement.id}_sign`, signX, signZ, 0.35, signY, signY + 6.0);
-
-      this.buildStreetDressing(settlement);
-    }
-  }
-
-  /**
-   * Street furniture that makes each settlement read as a designed place:
-   * benches with backs, litter bins, planter boxes with clipped shrubs,
-   * bollards, café awnings and zebra crossings. Everything here is visual
-   * only — the shared instanced batches gain no colliders, so collision,
-   * navigation, loot and the gameplay fingerprint stay byte-identical.
-   */
-  private buildStreetDressing(settlement: (typeof ISLAND_SETTLEMENTS)[number]): void {
-    const alongX = settlement.streetAxis === 'x';
-    const color = Number.parseInt(settlement.color.slice(1), 16);
-    const place = (
-      offsetAlong: number,
-      offsetAcross: number,
-      y: number,
-      sx: number,
-      sy: number,
-      sz: number,
-      hex: number,
-      options: ShapeOptions = {}
-    ): void => {
-      const x = settlement.x + (alongX ? offsetAlong : offsetAcross);
-      const z = settlement.z + (alongX ? offsetAcross : offsetAlong);
-      const ground = Math.min(y, this.world.terrain.getTerrainHeight(x, z));
-      this.addShapeWorld(settlement.id, x, ground, z, sx, sy, sz, hex, options);
-    };
-
-    for (const side of [-1, 1]) {
-      const across = side * 4.85;
-      // Bench: seat, back rail and two legs.
-      const seatAlong = settlement.radius * 0.26;
-      place(seatAlong, across, settlement.baseHeight + 0.5, alongX ? 2.0 : 0.55, 0.12, alongX ? 0.55 : 2.0, 0x8a5a2b);
-      place(seatAlong, across + side * 0.26, settlement.baseHeight + 0.82, alongX ? 2.0 : 0.12, 0.5, alongX ? 0.12 : 2.0, 0x8a5a2b);
-      for (const leg of [-0.8, 0.8]) {
-        const legAlong = seatAlong + (alongX ? leg : 0);
-        place(legAlong, across + (alongX ? 0 : leg), settlement.baseHeight + 0.26, 0.12, 0.5, 0.12, 0x334155);
-      }
-
-      // Litter bin.
-      place(-seatAlong, across + side * 0.3, settlement.baseHeight + 0.44, 0.42, 0.86, 0.42, 0x3f4a5a, { shape: 'cylinder' });
-      place(-seatAlong, across + side * 0.3, settlement.baseHeight + 0.9, 0.48, 0.08, 0.48, 0x64748b, { shape: 'cylinder' });
-
-      // Planter box with a clipped shrub crown.
-      place(-settlement.radius * 0.42, across - side * 0.35, settlement.baseHeight + 0.36, 1.5, 0.52, 1.1, 0x94a3b8);
-      place(-settlement.radius * 0.42, across - side * 0.35, settlement.baseHeight + 0.78, 1.1, 0.62, 0.8, 0x2f6b3d, { shape: 'glow', tier: 'detail' });
-
-      // Bollards flanking the crossing.
-      for (const offset of [-1, 1]) {
-        place(offset * 2.4, side * 2.9, settlement.baseHeight + 0.42, 0.18, 0.84, 0.18, 0x334155, { shape: 'cylinder' });
-        place(offset * 2.4, side * 2.9, settlement.baseHeight + 0.86, 0.22, 0.08, 0.22, color, { shape: 'glow', tier: 'detail' });
-      }
-    }
-
-    // Café awning and stall counter outside the shop frontage.
-    const stallAlong = -settlement.radius * 0.2;
-    place(stallAlong, 5.6, settlement.baseHeight + 0.5, alongX ? 3.4 : 0.9, 1.0, alongX ? 0.9 : 3.4, 0x8a5a2b);
-    place(stallAlong, 5.6, settlement.baseHeight + 2.5, alongX ? 4.0 : 3.0, 0.16, alongX ? 3.0 : 4.0, color, { rotationZ: alongX ? 0 : 0.12, rotationX: alongX ? 0.12 : 0 });
-    for (const post of [-1.5, 1.5]) {
-      place(stallAlong + (alongX ? post : 0), 5.6 + (alongX ? 0 : post), settlement.baseHeight + 1.3, 0.12, 2.6, 0.12, 0x4b5563);
-    }
-
-    // Zebra crossing painted flat on the existing asphalt.
-    for (let stripe = -2; stripe <= 2; stripe++) {
-      place(
-        stripe * 0.9,
-        0,
-        settlement.baseHeight + 0.1,
-        alongX ? 0.5 : 5.2,
-        0.04,
-        alongX ? 5.2 : 0.5,
-        0xe2e8f0,
-        { shape: 'decal', tier: 'detail' }
-      );
     }
   }
 
@@ -3693,74 +3052,52 @@ export class MapExpansionBuilder {
       return inst;
     };
 
-    const pbr = this.world.pbrTextures;
-
-    const grassGeo = createCrossedGrassTuftGeometry(0.36, 0.78);
+    const grassGeo = new THREE.ConeGeometry(0.24, 0.78, 4);
+    grassGeo.translate(0, 0.38, 0);
     createInstances(
       grassGeo,
-      new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        flatShading: false,
-        roughness: 0.78,
-        side: THREE.DoubleSide,
-      }),
+      new THREE.MeshStandardMaterial({ color: 0xffffff, flatShading: true, roughness: 0.88 }),
       1050,
       4200,
       (x, z, y) => y > 1.7 && y < 12.5 && this.isDetailFoliageClear(x, z, 4.3),
-      () => dummy.scale.setScalar(0.82 + rand() * 0.88),
-      [0x2d6a3e, 0x3b7a47, 0x4d8845, 0x5c9449],
+      () => dummy.scale.setScalar(0.8 + rand() * 0.85),
+      [0x15803d, 0x16a34a, 0x22c55e, 0x65a30d],
       { strength: 0.062, baseY: 0, height: 0.78 }
     );
 
-    const undergrowthGeo = weldAndSmoothGeometry(new THREE.IcosahedronGeometry(0.42, 0));
-    undergrowthGeo.scale(1.28, 0.64, 1.28);
+    const undergrowthGeo = new THREE.DodecahedronGeometry(0.42, 0);
+    undergrowthGeo.scale(1.25, 0.62, 1.25);
     undergrowthGeo.translate(0, 0.28, 0);
     createInstances(
       undergrowthGeo,
-      new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        map: pbr.foliageAlbedo,
-        normalMap: pbr.foliageNormal,
-        normalScale: new THREE.Vector2(0.45, 0.45),
-        flatShading: false,
-        roughness: 0.8,
-      }),
+      new THREE.MeshStandardMaterial({ color: 0xffffff, flatShading: true, roughness: 0.9 }),
       430,
       1900,
       (x, z, y) => y > 1.8 && y < 13.5 && this.isDetailFoliageClear(x, z, 4.8),
-      () => dummy.scale.setScalar(0.78 + rand() * 0.9),
-      [0x1e4d2b, 0x275d36, 0x316b3f],
+      () => dummy.scale.setScalar(0.75 + rand() * 0.9),
+      [0x14532d, 0x166534, 0x15803d],
       { strength: 0.024, baseY: 0.02, height: 0.52 }
     );
 
-    const bushGeo = createBotanicalShrubGeometry(0.62);
+    const bushGeo = new THREE.DodecahedronGeometry(0.66, 0);
+    bushGeo.scale(1.15, 0.8, 1.15);
+    bushGeo.translate(0, 0.44, 0);
     createInstances(
       bushGeo,
-      new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        map: pbr.foliageAlbedo,
-        normalMap: pbr.foliageNormal,
-        normalScale: new THREE.Vector2(0.55, 0.55),
-        flatShading: false,
-        roughness: 0.76,
-      }),
+      new THREE.MeshStandardMaterial({ color: 0xffffff, flatShading: true, roughness: 0.86 }),
       280,
       1300,
       (x, z, y) => y > 1.8 && y < 13.0 && this.isDetailFoliageClear(x, z, 5.0),
-      () => dummy.scale.setScalar(0.82 + rand() * 0.88),
-      [0x276238, 0x327343, 0x467b36],
+      () => dummy.scale.setScalar(0.8 + rand() * 0.85),
+      [0x15803d, 0x16a34a, 0x4d7c0f],
       { strength: 0.026, baseY: -0.09, height: 1.06 }
     );
 
-    const flowerGeo = createCrossedGrassTuftGeometry(0.28, 0.34);
+    const flowerGeo = new THREE.DodecahedronGeometry(0.2, 0);
+    flowerGeo.translate(0, 0.25, 0);
     createInstances(
       flowerGeo,
-      new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        flatShading: false,
-        roughness: 0.68,
-        side: THREE.DoubleSide,
-      }),
+      new THREE.MeshStandardMaterial({ color: 0xffffff, flatShading: true, roughness: 0.75 }),
       340,
       1500,
       (x, z, y) => y > 1.9 && y < 11.5 && this.isDetailFoliageClear(x, z, 4.4),
@@ -3769,18 +3106,11 @@ export class MapExpansionBuilder {
       { strength: 0.032, baseY: 0.05, height: 0.4 }
     );
 
-    const pebbleGeo = weldAndSmoothGeometry(new THREE.OctahedronGeometry(0.3, 0));
-    pebbleGeo.scale(1.28, 0.52, 1.04);
+    const pebbleGeo = new THREE.DodecahedronGeometry(0.3, 0);
+    pebbleGeo.scale(1.25, 0.52, 1.0);
     createInstances(
       pebbleGeo,
-      new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        map: pbr.rockAlbedo,
-        normalMap: pbr.rockNormal,
-        normalScale: new THREE.Vector2(0.45, 0.45),
-        flatShading: false,
-        roughness: 0.86,
-      }),
+      new THREE.MeshStandardMaterial({ color: 0xffffff, flatShading: true, roughness: 0.94 }),
       260,
       1400,
       (x, z, y) => y > 0.25 && (y < 2.7 || y > 8.5) && this.isDetailFoliageClear(x, z, 4.1),
@@ -3795,7 +3125,7 @@ export class MapExpansionBuilder {
     reedGeo.translate(0, 0.6, 0);
     createInstances(
       reedGeo,
-      new THREE.MeshStandardMaterial({ color: 0x5c8d3e, flatShading: false, roughness: 0.82 }),
+      new THREE.MeshStandardMaterial({ color: 0x65a30d, flatShading: true, roughness: 0.88 }),
       150,
       2400,
       (x, z, y) => {
@@ -3821,14 +3151,7 @@ export class MapExpansionBuilder {
     logGeo.translate(0, 0.27, 0);
     createInstances(
       logGeo,
-      new THREE.MeshStandardMaterial({
-        color: 0x854d27,
-        map: pbr.barkAlbedo,
-        normalMap: pbr.barkNormal,
-        normalScale: new THREE.Vector2(0.55, 0.55),
-        flatShading: false,
-        roughness: 0.86,
-      }),
+      new THREE.MeshStandardMaterial({ color: 0x92400e, flatShading: true, roughness: 0.92 }),
       90,
       700,
       (x, z, y) => y > 1.8 && y < 13.5 && this.isDetailFoliageClear(x, z, 5.2),
@@ -3846,11 +3169,8 @@ export class MapExpansionBuilder {
         geometries.add(object.geometry);
         for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
           materials.add(material);
-          const stdMat = material as THREE.MeshStandardMaterial;
-          if (stdMat.map) textures.add(stdMat.map);
-          if (stdMat.roughnessMap) textures.add(stdMat.roughnessMap);
-          if (stdMat.normalMap) textures.add(stdMat.normalMap);
-          if (stdMat.bumpMap) textures.add(stdMat.bumpMap);
+          if (material.map) textures.add(material.map);
+          if (material.roughnessMap) textures.add(material.roughnessMap);
         }
       });
       group.clear(); group.removeFromParent();
@@ -3863,71 +3183,38 @@ export class MapExpansionBuilder {
     this.architectureFinalized = true;
 
     const textures = createArchitectureTextures();
-    const pbr = this.world.pbrTextures;
     const contactGeo = new THREE.PlaneGeometry(1,1);
     contactGeo.rotateX(-Math.PI/2);
     const boxGeo = new THREE.BoxGeometry(1, 1, 1);
-    // CI CRAFT 7.0 — the shared cylinder was 10-sided and the cone 8-sided.
-    // On a 3 m silo or a water tank the flat panels are the silhouette, so the
-    // whole district read as low-poly. 18/14 segments still cost only ~1.5 k
-    // triangles across every instance while removing the visible facets.
-    const coneGeo = new THREE.ConeGeometry(0.5, 1, 14);
-    const cylinderGeo = new THREE.CylinderGeometry(0.5, 0.5, 1, 18);
-    const glowGeo = weldAndSmoothGeometry(new THREE.IcosahedronGeometry(0.5, 0));
+    const coneGeo = new THREE.ConeGeometry(0.5, 1, 8);
+    const cylinderGeo = new THREE.CylinderGeometry(0.5, 0.5, 1, 8);
+    const glowGeo = new THREE.IcosahedronGeometry(0.5, 0);
 
-    // CI CRAFT 6.2 — the instanced shells now sample the authored 512 px
-    // plaster/metal sets through the world-space UV projection, so a wall's
-    // texture scale is constant in metres regardless of its instance scale.
-    const architecture = this.world.architecturalMaterials;
-    const standardMat = applyArchitectureSurfaceShader(
-      architecture.instanced.wall,
-      'facade'
-    );
-    const metalMat = applyArchitectureSurfaceShader(
-      architecture.instanced.metal,
-      'metal'
-    );
-    const paintMat = applyArchitectureSurfaceShader(
-      architecture.instanced.paint,
-      'facade'
-    );
-    const contactMat = new THREE.MeshBasicMaterial({
-      color: 0x0b1220,
-      map: textures.contact,
-      transparent: true,
-      opacity: 0.38,
-      depthWrite: false,
-      polygonOffset: true,
-      polygonOffsetFactor: -1,
+    const standardMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      flatShading: true,
+      roughness: 0.88,
+      metalness: 0.03,
+      roughnessMap: textures.roughness,
     });
-    const glassMat = applyArchitectureSurfaceShader(
-      new THREE.MeshStandardMaterial({
-        color: 0xe0f2fe,
-        map: pbr.windowAlbedo,
-        normalMap: pbr.windowNormal,
-        normalScale: new THREE.Vector2(0.6, 0.6),
-        emissive: 0xbad8ef,
-        emissiveIntensity: 0.14,
-        envMapIntensity: 1.65,
-        flatShading: false,
-        roughness: 0.06,
-        metalness: 0.68,
-        transparent: true,
-        opacity: 0.78,
-      }),
-      'glass'
-    );
+    const metalMat = new THREE.MeshStandardMaterial({color:0xffffff, roughness:.42,
+      metalness:.78, envMapIntensity:1.15, roughnessMap:textures.roughness});
+    const paintMat = new THREE.MeshStandardMaterial({color:0xffffff, roughness:.6,
+      metalness:.18, roughnessMap:textures.roughness});
+    const contactMat = new THREE.MeshBasicMaterial({color:0x0b1220, map:textures.contact,
+      transparent:true, opacity:.32, depthWrite:false, polygonOffset:true, polygonOffsetFactor:-1});
+    const glassMat = new THREE.MeshStandardMaterial({
+      color: 0xe0f2fe,
+      emissive: 0xbad8ef,
+      emissiveIntensity: 0.12,
+      envMapIntensity: 1.25,
+      flatShading: true,
+      roughness: 0.18,
+      metalness: 0.36,
+      transparent: true,
+      opacity: 0.64,
+    });
     const glowMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-    // CI CRAFT 6.2 — masonry and timber instances sample the same authored
-    // 512 px world-projected sets as the merged kit parts.
-    const stoneMat = applyArchitectureSurfaceShader(
-      architecture.merged.ashlar,
-      'facade'
-    );
-    const woodMat = applyArchitectureSurfaceShader(
-      architecture.merged.timber,
-      'facade'
-    );
 
     const geometryFor = (shape: ArchitectureShape): THREE.BufferGeometry => {
       switch (shape) {
@@ -3940,8 +3227,6 @@ export class MapExpansionBuilder {
         case 'glow':
           return glowGeo;
         case 'glass':
-        case 'stone':
-        case 'wood':
         case 'box':
         default:
           return boxGeo;
@@ -3953,8 +3238,6 @@ export class MapExpansionBuilder {
       if (shape === 'contact') return contactMat;
       if (shape === 'glass') return glassMat;
       if (shape === 'glow') return glowMat;
-      if (shape === 'stone') return stoneMat;
-      if (shape === 'wood') return woodMat;
       return standardMat;
     };
 
@@ -3994,18 +3277,5 @@ export class MapExpansionBuilder {
     }
 
     this.instances.clear();
-
-    // Merge the authored facade/roof kit into one mesh per material slot and
-    // route fine trim into the quality-controlled detail group.
-    const kitMeshes = mergeKitParts(
-      this.kit,
-      this.world.architecturalMaterials,
-      'ExpansionKit'
-    );
-    for (const { mesh, detail } of kitMeshes) {
-      if (detail) this.expansionDetailGroup.add(mesh);
-      else this.expansionGroup.add(mesh);
-    }
-    this.kit.resetParts();
   }
 }

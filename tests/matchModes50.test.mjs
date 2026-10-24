@@ -103,7 +103,7 @@ test('CI CRAFT 5.0 shared match rules: Battle Royale, Free for All (50 kills / 1
     ...createInitialVitals('free_for_all'),
     position: { x: 0, y: 6, z: 0 },
   };
-  assert.equal(victim.health, 100);
+  assert.equal(victim.health, 200);
   assert.equal(victim.shield, 50);
   assert.equal(victim.livesRemaining, null);
 
@@ -113,15 +113,16 @@ test('CI CRAFT 5.0 shared match rules: Battle Royale, Free for All (50 kills / 1
   assert.equal(hit1.isShieldBreak, true);
   assert.equal(hit1.lethal, false);
   assert.equal(victim.shield, 0);
-  assert.equal(victim.health, 80);
+  assert.equal(victim.health, 180);
 
-  const hit2 = applyAuthoritativeDamage(victim, 95);
+  // 9.3: health is 200, so a second hit must exceed the remaining 180 to be lethal.
+  const hit2 = applyAuthoritativeDamage(victim, 180);
   assert.equal(hit2.lethal, true);
   assert.equal(victim.health, 0);
 
   applyRespawnVitals(victim, { x: -58, y: 8.15, z: -24 });
   assert.equal(victim.alive, true);
-  assert.equal(victim.health, 100);
+  assert.equal(victim.health, 200);
   assert.equal(victim.shield, 50);
   assert.equal(victim.respawns, 1);
   assert.deepEqual(victim.position, { x: -58, y: 8.15, z: -24 });
@@ -594,8 +595,8 @@ test('CI CRAFT 5.0 authoritative server: FFA auto-respawn on lethal combat_hit, 
     });
     await new Promise((r) => setTimeout(r, 80));
 
-    // Fire 2 headshots with rare DMR (baseDamage 48 * 1.75 = 84 headshot damage -> 2 shots = 168 > 150 HP+Shield)
-    for (let shot = 1; shot <= 2; shot++) {
+    // Fire 3 headshots with rare DMR (84 headshot damage -> 3 shots = 252 > 250 HP+Shield)
+    for (let shot = 1; shot <= 3; shot++) {
       c1.send({
         type: 'fire_weapon',
         shotSeq: shot,
@@ -612,7 +613,7 @@ test('CI CRAFT 5.0 authoritative server: FFA auto-respawn on lethal combat_hit, 
         weaponRarity: 'rare',
         hitPoint: { x: posB.x, y: posB.y + 1.5, z: posB.z },
       });
-      if (shot === 1) await new Promise((r) => setTimeout(r, 420));
+      if (shot < 3) await new Promise((r) => setTimeout(r, 420));
     }
 
     const lethalHit = await c1.waitFor(
@@ -625,7 +626,7 @@ test('CI CRAFT 5.0 authoritative server: FFA auto-respawn on lethal combat_hit, 
     const respawnEv = await c2.waitFor(
       (m) => m.type === 'player_respawned' && m.playerId === p2Id
     );
-    assert.equal(respawnEv.health, 100);
+    assert.equal(respawnEv.health, 200);
     assert.equal(respawnEv.shield, 50);
     assert.equal(respawnEv.deaths, 1);
     assert.equal(respawnEv.respawns, 1);
@@ -739,7 +740,7 @@ test('CI CRAFT 5.0 authoritative server: Battle Royale preserves 1-life immediat
     });
     await new Promise((r) => setTimeout(r, 80));
 
-    for (let shot = 1; shot <= 2; shot++) {
+    for (let shot = 1; shot <= 3; shot++) {
       c1.send({
         type: 'fire_weapon',
         shotSeq: shot,
@@ -756,7 +757,7 @@ test('CI CRAFT 5.0 authoritative server: Battle Royale preserves 1-life immediat
         weaponRarity: 'rare',
         hitPoint: { x: posB.x, y: posB.y + 1.5, z: posB.z },
       });
-      if (shot === 1) await new Promise((r) => setTimeout(r, 420));
+      if (shot < 3) await new Promise((r) => setTimeout(r, 420));
     }
 
     const brLethal = await c1.waitFor(
@@ -872,7 +873,7 @@ test('CI CRAFT 5.0 authoritative server: Free for All respawn + timeout winner, 
     });
     await new Promise((r) => setTimeout(r, 80));
 
-    for (let shot = 1; shot <= 2; shot++) {
+    for (let shot = 1; shot <= 3; shot++) {
       c1.send({
         type: 'fire_weapon',
         shotSeq: shot,
@@ -889,13 +890,13 @@ test('CI CRAFT 5.0 authoritative server: Free for All respawn + timeout winner, 
         weaponRarity: 'rare',
         hitPoint: { x: posB.x, y: posB.y + 1.5, z: posB.z },
       });
-      if (shot === 1) await new Promise((r) => setTimeout(r, 420));
+      if (shot < 3) await new Promise((r) => setTimeout(r, 420));
     }
 
     const ffaRespawn = await c2.waitFor(
       (m) => m.type === 'player_respawned' && m.playerId === ffaP2
     );
-    assert.equal(ffaRespawn.health, 100);
+    assert.equal(ffaRespawn.health, 200);
     assert.equal(ffaRespawn.shield, 50);
 
     const ffaEnded = await c1.waitFor((m) => m.type === 'match_ended', 6000);

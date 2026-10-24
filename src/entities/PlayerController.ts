@@ -1,12 +1,4 @@
 import * as THREE from 'three';
-import { raycastPlayers } from '../../shared/hitbox.mjs';
-import {
-  resolveAim,
-  spreadDirection,
-  createSpreadRng,
-  type AimSolution,
-  type Vec3,
-} from '../weapons/AimSolver';
 import {
   AmmoType,
   BuildMaterialType,
@@ -50,15 +42,6 @@ interface BurstQueueState {
 }
 
 export class PlayerController {
-  /**
-   * Last resolved aim solution for the local player. Read by the development
-   * overlay (`AimDiagnostics`) and by tests; never affects gameplay on its own.
-   */
-  public lastAimSolution: AimSolution | null = null;
-  private aimBlocked = false;
-  private aimBlockedUntil = 0;
-  private spreadRng = createSpreadRng(0x5eed77);
-
   private fireCooldown: Map<string, number> = new Map();
   private burstQueues: Map<string, BurstQueueState> = new Map();
   private prevFireHeld: Map<string, boolean> = new Map();
@@ -81,7 +64,7 @@ export class PlayerController {
     lootSystem: LootSystem,
     particles: ParticleSystem,
     sound: SoundManager,
-    cameraRay: { origin: THREE.Vector3; direction: THREE.Vector3 },
+    aimRay: { origin: THREE.Vector3; direction: THREE.Vector3 },
     onPlayerHit: ShotHitCallback,
     onCrosshairHitmarker: (isHeadshot: boolean, isShield: boolean) => void,
     onRecoilKick?: (
@@ -320,7 +303,7 @@ export class PlayerController {
       meshes,
       particles,
       sound,
-      cameraRay,
+      aimRay,
       onPlayerHit,
       onCrosshairHitmarker,
       onRecoilKick
@@ -348,12 +331,7 @@ export class PlayerController {
     category: string,
     muzzlePos: THREE.Vector3,
     hitPoint: THREE.Vector3,
-    rarity?: WeaponRarity,
-    aim?: {
-      origin: { x: number; y: number; z: number };
-      direction: { x: number; y: number; z: number };
-      aimPoint: { x: number; y: number; z: number };
-    }
+    rarity?: WeaponRarity
   ) => void;
   public onLocalDestructibleDamaged?: (destructibleId: string, damage: number) => void;
   public onLocalStructureFeedback?: (
@@ -474,7 +452,7 @@ export class PlayerController {
     meshes: Map<string, CharacterMesh>,
     particles: ParticleSystem,
     sound: SoundManager,
-    cameraRay: { origin: THREE.Vector3; direction: THREE.Vector3 },
+    aimRay: { origin: THREE.Vector3; direction: THREE.Vector3 },
     onPlayerHit: ShotHitCallback,
     onCrosshairHitmarker?: (isHeadshot: boolean, isShield: boolean) => void,
     onRecoilKick?: (
@@ -484,11 +462,7 @@ export class PlayerController {
       isAiming?: boolean
     ) => void
   ): void {
-    // Keep the overshoot instead of clamping it to zero. Clamping quantised the
-    // fire interval to whole frames, so a 13 rounds/s SMG actually fired ~10/s
-    // on a 30 Hz phone and the missing shots were invisible to the player.
-    const rawCd = (this.fireCooldown.get(player.id) || 0) - dt;
-    const currentCd = Math.max(0, rawCd);
+    const currentCd = Math.max(0, (this.fireCooldown.get(player.id) || 0) - dt);
     this.fireCooldown.set(player.id, currentCd);
 
     if (!player.alive) {
@@ -615,7 +589,7 @@ export class PlayerController {
           meshes,
           particles,
           sound,
-          cameraRay,
+          aimRay,
           onPlayerHit,
           onCrosshairHitmarker,
           onRecoilKick
@@ -658,13 +632,7 @@ export class PlayerController {
     }
 
     this.lastFireTimeMs.set(player.id, nowMs);
-    const shotInterval = 1 / stats.fireRate;
-    // `rawCd` is <= 0 here; carrying it forward preserves the configured rate
-    // exactly. The floor stops a long stall from banking up a burst of shots.
-    this.fireCooldown.set(
-      player.id,
-      Math.max(-shotInterval, rawCd) + shotInterval
-    );
+    this.fireCooldown.set(player.id, 1 / stats.fireRate);
     this.executeWeaponShot(
       player,
       stats,
@@ -673,7 +641,7 @@ export class PlayerController {
       meshes,
       particles,
       sound,
-      cameraRay,
+      aimRay,
       onPlayerHit,
       onCrosshairHitmarker,
       onRecoilKick
@@ -704,7 +672,7 @@ export class PlayerController {
     meshes: Map<string, CharacterMesh>,
     particles: ParticleSystem,
     sound: SoundManager,
-    cameraRay: { origin: THREE.Vector3; direction: THREE.Vector3 },
+    aimRay: { origin: THREE.Vector3; direction: THREE.Vector3 },
     onPlayerHit: ShotHitCallback,
     onCrosshairHitmarker?: (isHeadshot: boolean, isShield: boolean) => void,
     onRecoilKick?: (
@@ -748,31 +716,10 @@ export class PlayerController {
       shooterMesh.getMuzzleWorldPosition(muzzlePos);
     }
 
-    // Resolve what the player is actually pointing at before firing a single
-    // pellet: camera ray -> aim point -> muzzle direction. See AimSolver.
-    const solution = this.resolveLocalAim(
-      player,
-      cameraRay,
-      muzzlePos,
-      stats.range,
-      state,
-      world
-    );
-    this.lastAimSolution = solution;
-    // The reticle goes "blocked" only for the case that actually matters: the
-    // crosshair was on an enemy but the muzzle could not reach them. Firing into
-    // a wall you are deliberately shooting at is not an error state.
-    this.aimBlocked = solution.muzzleObstructed && solution.crosshairTargetId !== null;
-    this.aimBlockedUntil = performance.now() + 400;
-
     if (stats.category !== 'harvester') {
       particles.spawnShellCasing(muzzlePos, player.yaw);
       if (distFactor > 0.15) {
-        particles.spawnMuzzleSparks(
-          muzzlePos,
-          new THREE.Vector3(solution.fireDirection.x, solution.fireDirection.y, solution.fireDirection.z),
-          stats.category
-        );
+        particles.spawnMuzzleSparks(muzzlePos, aimRay.direction, stats.category);
       }
     }
 
@@ -786,27 +733,17 @@ export class PlayerController {
     player.shotsFired++;
 
     for (let p = 0; p < stats.pellets; p++) {
-      // Uniform disc inside a real cone around the resolved muzzle direction.
-      // The old version offset x/y/z independently, which is a cube rather than
-      // a cone, and it rotated its bias with the world axes instead of with the
-      // weapon, so the same gun felt tighter facing north than facing east.
-      const spread = spreadDirection(
-        solution.fireDirection,
-        effectiveSpread,
-        this.spreadRng(),
-        this.spreadRng()
-      );
-      const dir = new THREE.Vector3(spread.x, spread.y, spread.z);
-
-      const fireOrigin = new THREE.Vector3(
-        solution.fireOrigin.x,
-        solution.fireOrigin.y,
-        solution.fireOrigin.z
-      );
+      const dir = aimRay.direction.clone();
+      if (effectiveSpread > 0) {
+        dir.x += (Math.random() - 0.5) * effectiveSpread * 2;
+        dir.y += (Math.random() - 0.5) * effectiveSpread * 2;
+        dir.z += (Math.random() - 0.5) * effectiveSpread * 2;
+        dir.normalize();
+      }
 
       const hitResult = this.performShotRaycast(
         player,
-        fireOrigin,
+        aimRay.origin,
         dir,
         stats.range,
         state,
@@ -824,12 +761,7 @@ export class PlayerController {
           stats.category,
           muzzlePos,
           hitResult.point,
-          stats.rarity,
-          {
-            origin: solution.fireOrigin,
-            direction: solution.fireDirection,
-            aimPoint: solution.aimPoint,
-          }
+          stats.rarity
         );
       }
 
@@ -914,159 +846,6 @@ export class PlayerController {
     }
   }
 
-  /**
-   * Casts the camera ray against world geometry and every living character to
-   * find the point under the crosshair, then converts that into a muzzle ray.
-   */
-  private resolveLocalAim(
-    player: PlayerState,
-    cameraRay: { origin: THREE.Vector3; direction: THREE.Vector3 },
-    muzzle: THREE.Vector3,
-    range: number,
-    state: MatchState,
-    world: IslandWorld
-  ): AimSolution {
-    const cameraOrigin: Vec3 = {
-      x: cameraRay.origin.x,
-      y: cameraRay.origin.y,
-      z: cameraRay.origin.z,
-    };
-    const cameraDirection: Vec3 = {
-      x: cameraRay.direction.x,
-      y: cameraRay.direction.y,
-      z: cameraRay.direction.z,
-    };
-
-    return resolveAim({
-      cameraOrigin,
-      cameraDirection,
-      muzzle: { x: muzzle.x, y: muzzle.y, z: muzzle.z },
-      range,
-      castWorld: (origin, direction, maxDistance) => {
-        const scratchOrigin = new THREE.Vector3(origin.x, origin.y, origin.z);
-        const scratchDirection = new THREE.Vector3(direction.x, direction.y, direction.z);
-        const hit = world.raycastWorld(scratchOrigin, scratchDirection, maxDistance);
-        const terrainHit = this.castTerrain(
-          world,
-          origin,
-          direction,
-          hit ? Math.min(maxDistance, hit.distance) : maxDistance
-        );
-        if (hit || terrainHit) {
-          const useTerrain = !hit || (terrainHit && terrainHit.distance < hit.distance);
-          if (useTerrain && terrainHit) return terrainHit;
-          if (hit) {
-            return {
-              distance: hit.distance,
-              point: { x: hit.point.x, y: hit.point.y, z: hit.point.z },
-            };
-          }
-        }
-        return null;
-      },
-      castTargets: (origin, direction, maxDistance) =>
-        this.castPlayerHitboxes(
-          state,
-          player.id,
-          origin,
-          direction,
-          maxDistance
-        ),
-    });
-  }
-
-  /**
-   * Terrain is not part of `IslandWorld.raycastWorld`, so aiming at the ground
-   * used to return "nothing" and the shot flew off into the sky along the view
-   * axis. A short march against the heightfield fixes the aim point for ground
-   * shots without adding terrain to the raycaster.
-   */
-  private castTerrain(
-    world: IslandWorld,
-    origin: Vec3,
-    direction: Vec3,
-    maxDistance: number
-  ): { distance: number; point: Vec3 } | null {
-    const limit = Math.min(maxDistance, 160);
-    if (limit <= 0.2) return null;
-    const step = Math.max(0.4, Math.min(1.2, limit / 64));
-    let previous = 0;
-    for (let travelled = step; travelled <= limit; travelled += step) {
-      const x = origin.x + direction.x * travelled;
-      const y = origin.y + direction.y * travelled;
-      const z = origin.z + direction.z * travelled;
-      const ground = world.terrain.getTerrainHeight(x, z);
-      if (y <= ground) {
-        // Refine linearly between the last clear sample and this one.
-        const lo = previous;
-        const hi = travelled;
-        let best = hi;
-        for (let i = 0; i < 6; i++) {
-          const mid = (lo + best) * 0.5;
-          const mx = origin.x + direction.x * mid;
-          const my = origin.y + direction.y * mid;
-          const mz = origin.z + direction.z * mid;
-          if (my <= world.terrain.getTerrainHeight(mx, mz)) best = mid;
-          else break;
-        }
-        const px = origin.x + direction.x * best;
-        const pz = origin.z + direction.z * best;
-        return {
-          distance: best,
-          point: {
-            x: px,
-            y: world.terrain.getTerrainHeight(px, pz),
-            z: pz,
-          },
-        };
-      }
-      previous = travelled;
-    }
-    return null;
-  }
-
-  private castPlayerHitboxes(
-    state: MatchState,
-    shooterId: string,
-    origin: Vec3,
-    direction: Vec3,
-    maxDistance: number
-  ): { targetId: string; distance: number; point: Vec3 } | null {
-    const candidates: { id: string; position: Vec3 }[] = [];
-    for (const candidate of state.players.values()) {
-      if (!candidate.alive || candidate.id === shooterId) continue;
-      candidates.push({
-        id: candidate.id,
-        position: {
-          x: candidate.position.x,
-          y: candidate.position.y,
-          z: candidate.position.z,
-        },
-      });
-    }
-    if (candidates.length === 0) return null;
-
-    const hit = raycastPlayers(
-      origin.x,
-      origin.y,
-      origin.z,
-      direction.x,
-      direction.y,
-      direction.z,
-      candidates,
-      maxDistance,
-      0,
-      shooterId
-    );
-    if (!hit) return null;
-    return { targetId: hit.id, distance: hit.t, point: hit.point };
-  }
-
-  /** True briefly after a shot whose muzzle ray was stopped by cover. */
-  public isAimBlocked(): boolean {
-    return this.aimBlocked && performance.now() < this.aimBlockedUntil;
-  }
-
   private performShotRaycast(
     shooter: PlayerState,
     origin: THREE.Vector3,
@@ -1082,86 +861,59 @@ export class PlayerController {
     isHeadshot: boolean;
   } {
     const worldHit = world.raycastWorld(origin, direction, maxRange);
-    const terrainHit = this.castTerrain(
-      world,
-      { x: origin.x, y: origin.y, z: origin.z },
-      { x: direction.x, y: direction.y, z: direction.z },
-      worldHit ? Math.min(maxRange, worldHit.distance) : maxRange
+    let closestDist = worldHit ? worldHit.distance : maxRange;
+    let closestPoint = worldHit
+      ? worldHit.point.clone()
+      : origin.clone().addScaledVector(direction, maxRange);
+    let destructibleId = worldHit?.destructibleId;
+
+    const shooterDistFromOrigin = origin.distanceTo(
+      new THREE.Vector3(shooter.position.x, shooter.position.y + 1.4, shooter.position.z)
     );
+    const minValidDist = Math.max(0.2, shooterDistFromOrigin - 0.5);
 
-    let closestDist = maxRange;
-    let closestPoint = origin.clone().addScaledVector(direction, maxRange);
-    let destructibleId: string | undefined;
-    let hitWorld = false;
-
-    if (worldHit && worldHit.distance <= closestDist) {
-      closestDist = worldHit.distance;
-      closestPoint = worldHit.point.clone();
-      destructibleId = worldHit.destructibleId;
-      hitWorld = true;
-    }
-    if (terrainHit && terrainHit.distance < closestDist) {
-      closestDist = terrainHit.distance;
-      closestPoint = new THREE.Vector3(
-        terrainHit.point.x,
-        terrainHit.point.y,
-        terrainHit.point.z
-      );
+    if (worldHit && worldHit.distance < minValidDist) {
+      closestDist = maxRange;
+      closestPoint = origin.clone().addScaledVector(direction, maxRange);
       destructibleId = undefined;
-      hitWorld = true;
     }
 
-    // Character hitboxes come from shared/hitbox.mjs so the client and the
-    // authoritative server agree on what "hitting a player" means.
-    const candidates: { id: string; position: Vec3 }[] = [];
+    let hitPlayer: PlayerState | undefined;
+    let isHeadshot = false;
+
     for (const candidate of state.players.values()) {
       if (!candidate.alive || candidate.id === shooter.id) continue;
-      candidates.push({
-        id: candidate.id,
-        position: {
-          x: candidate.position.x,
-          y: candidate.position.y,
-          z: candidate.position.z,
-        },
-      });
-    }
 
-    const playerHit = raycastPlayers(
-      origin.x,
-      origin.y,
-      origin.z,
-      direction.x,
-      direction.y,
-      direction.z,
-      candidates,
-      closestDist,
-      0,
-      shooter.id
-    );
+      const targetCenter = new THREE.Vector3(
+        candidate.position.x,
+        candidate.position.y + 1.0,
+        candidate.position.z
+      );
+      const toTarget = targetCenter.clone().sub(origin);
+      const t = toTarget.dot(direction);
+      if (t < minValidDist || t > closestDist) continue;
 
-    if (playerHit) {
-      const victim = state.players.get(playerHit.id);
-      if (victim) {
-        return {
-          point: new THREE.Vector3(
-            playerHit.point.x,
-            playerHit.point.y,
-            playerHit.point.z
-          ),
-          hitWorld: false,
-          destructibleId: undefined,
-          hitPlayer: victim,
-          isHeadshot: playerHit.headshot,
-        };
+      const closestOnRay = origin.clone().addScaledVector(direction, t);
+      const horizDist = Math.hypot(
+        closestOnRay.x - candidate.position.x,
+        closestOnRay.z - candidate.position.z
+      );
+      const relY = closestOnRay.y - candidate.position.y;
+
+      if (horizDist <= 0.54 && relY >= -0.05 && relY <= 2.08) {
+        closestDist = t;
+        closestPoint = closestOnRay;
+        hitPlayer = candidate;
+        isHeadshot = relY >= 1.48;
       }
     }
 
     return {
       point: closestPoint,
-      hitWorld,
-      destructibleId,
-      hitPlayer: undefined,
-      isHeadshot: false,
+      hitWorld: !!worldHit && !hitPlayer,
+      destructibleId: hitPlayer ? undefined : destructibleId,
+      hitPlayer,
+      isHeadshot,
     };
   }
 

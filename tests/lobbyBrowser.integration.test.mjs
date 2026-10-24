@@ -862,24 +862,29 @@ test('lobby browser: authoritative create/discover/join/start, passwords, host t
         7000,
         'duo opponent elimination'
       );
-      sendJson(wsA, {
-        type: 'fire_weapon',
-        category: 'sniper',
-        rarity: 'legendary',
-        muzzlePos: { x: 0, y: 81, z: 0 },
-        hitPoint: { x: 0, y: 81.7, z: 0 },
-      });
-      sendJson(wsA, {
-        type: 'combat_hit',
-        hitId: `duo-kill-${index}`,
-        targetId: opponent.id,
-        damage: 240,
-        isHeadshot: true,
-        weaponName: 'Legendary Rail Sniper',
-        weaponCategory: 'sniper',
-        weaponRarity: 'legendary',
-        hitPoint: { x: 0, y: 81.7, z: 0 },
-      });
+      // 9.3: 200 HP + 50 shield = 250 effective vs a 226-damage hit, so a single
+      // legendary sniper hit no longer eliminates. Two hits are required.
+      for (let shot = 0; shot < 2; shot++) {
+        if (shot > 0) await delay(1400);
+        sendJson(wsA, {
+          type: 'fire_weapon',
+          category: 'sniper',
+          rarity: 'legendary',
+          muzzlePos: { x: 0, y: 81, z: 0 },
+          hitPoint: { x: 0, y: 81.7, z: 0 },
+        });
+        sendJson(wsA, {
+          type: 'combat_hit',
+          hitId: `duo-kill-${index}-${shot}`,
+          targetId: opponent.id,
+          damage: 240,
+          isHeadshot: true,
+          weaponName: 'Legendary Rail Sniper',
+          weaponCategory: 'sniper',
+          weaponRarity: 'legendary',
+          hitPoint: { x: 0, y: 81.7, z: 0 },
+        });
+      }
       await hitPromise;
     }
 

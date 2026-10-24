@@ -257,7 +257,8 @@ test('production server: HTTP APIs + authoritative two-client multiplayer over i
     assert.equal(hit.damage, 30);
     assert.equal(hit.weaponName, 'Epic Triad Burst Rifle');
     assert.equal(hit.victimShield, 20);
-    assert.equal(hit.victimHealth, 100);
+    // 9.3: fully absorbed by the shield, so health stays at the new 200 maximum.
+    assert.equal(hit.victimHealth, 200);
     assert.equal(hit.eliminated, false);
 
     // Duplicate hitId must be ignored by the server (no second server_hit).
@@ -340,7 +341,8 @@ test('production server: HTTP APIs + authoritative two-client multiplayer over i
       assert.equal(lastPelletHit.damage, 10);
     }
     assert.equal(lastPelletHit.victimShield, 0);
-    assert.equal(lastPelletHit.victimHealth, 40);
+    // 9.3: identical pellet damage against the doubled 200 HP pool.
+    assert.equal(lastPelletHit.victimHealth, 140);
 
     let ninthPelletSeen = false;
     const ninthPelletWatcher = waitForMessage(wsB, (m) => m.type === 'server_hit', 400)

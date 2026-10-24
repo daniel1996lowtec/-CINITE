@@ -16,6 +16,8 @@ import {
   isRespawnMode,
   isStormEnabledForMode,
   normalizeGameMode,
+  PLAYER_MAX_HEALTH,
+  PLAYER_SPAWN_HEALTH,
 } from '../../shared/matchRules.mjs';
 import { IslandWorld } from '../world/IslandWorld';
 import { ISLAND_ROUTE_POINTS } from '../world/TerrainGenerator';
@@ -241,8 +243,8 @@ export class BotAIController {
         yaw: initialYaw,
         facingYaw: initialYaw,
         pitch: 0,
-        health: 100,
-        maxHealth: 100,
+        health: PLAYER_SPAWN_HEALTH,
+        maxHealth: PLAYER_MAX_HEALTH,
         shield: respawnMode ? 50 : 25,
         maxShield: 100,
         eliminations: 0,
@@ -316,8 +318,8 @@ export class BotAIController {
     const spawnY = Math.max(1.0, groundY + 0.2);
 
     bot.alive = true;
-    bot.health = 100;
-    bot.maxHealth = 100;
+    bot.health = PLAYER_SPAWN_HEALTH;
+    bot.maxHealth = PLAYER_MAX_HEALTH;
     bot.shield = 50;
     bot.maxShield = 100;
     bot.livesRemaining = null;
@@ -530,7 +532,7 @@ export class BotAIController {
           0,
           stormCenterZ + (Math.random() - 0.5) * stormRadius * 0.35
         );
-      } else if (bot.health < 55 && this.hasConsumableInInventory(bot)) {
+      } else if (bot.health < PLAYER_MAX_HEALTH * 0.55 && this.hasConsumableInInventory(bot)) {
         mem.aiState = 'TAKING_COVER';
       } else if (nearestEnemy) {
         mem.aiState = 'ENGAGING';

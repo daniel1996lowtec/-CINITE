@@ -69,8 +69,7 @@ function makeBuildingBranding(): readonly BuildingBranding[] {
     if (b.kind === 'shop') {
       mount(b, id === 'plaza_market' || id === 'crossroads_shop' ? 'market' : 'entrance',
         'shop-fascia', 0, 3.52, hd + 0.28 + gap, 0, 4.8, 0.52);
-      // Sits in the wall band between the shopfront fascia and the 6.2 cornice.
-      if (id === 'plaza_market') mount(b, 'plaza', 'wall', 0, 4.2, hd + gap, 0, 5.2, 0.55);
+      if (id === 'plaza_market') mount(b, 'plaza', 'wall', 0, 4.45, hd + gap, 0, 5.2, 0.55);
       if (id === 'westlook_shop') mount(b, 'graffiti', 'wall', 0, 1.55, -hd - gap, Math.PI, 2.1, 0.9);
     } else if (b.kind === 'warehouse') {
       const rear = id === 'docks_warehouse' || id === 'silos_warehouse';

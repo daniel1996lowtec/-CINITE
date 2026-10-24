@@ -1,5 +1,4 @@
 import test from 'node:test';
-import { measureQualityTiers, auditTreeLod } from './helpers/sceneStats.mjs';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {loadWorldModules} from '../scripts/headlessWorld.mjs';
@@ -97,64 +96,14 @@ test('3.6 road paint follows rendered terrain faces including seams; correct upw
 
 test('3.6 gameplay fingerprint is byte-identical to 3.5: collision, routes, fixed loot/vaults, chests and destructibles',()=>{
   // Independently generated with git show 9515d83's loader + world modules.
-  //
-  // CI CRAFT 9.0 re-baselined this hash. The 9.0 road system adds bridge decks
-  // as support surfaces, and `walkableSurfaces` is part of the snapshot, so the
-  // hash had to move. The change was verified rather than assumed: both worlds
-  // were built and the snapshots diffed structurally. Collision boxes (963),
-  // cylinder colliders (451), chest spawns (72), loot spawns (146), tower floor
-  // loot (21), vault loot (13) and destructible props (427) are byte-identical,
-  // and all 480 pre-9.0 walkable surfaces are unchanged in bounds and height.
-  // The only delta is two added entries:
-  //   road_deck_primary_docker_docks   y 0.67
-  //   road_deck_ruins_to_south_river   y 0.67
-  // Both are the road decks players previously fell two metres through. No
-  // gameplay rule, route, loot placement or collider changed.
   assert.equal(createHash('sha256').update(JSON.stringify(gameplaySnapshot())).digest('hex'),
-    'e2ed6eb9a32f8b561a61ce53f09af70e98e6e52d8fbce324c1821492d30bee69');
+    'd2b612956cdaca03533eb16628fce31fb28ceedbf4d3824e6a9655c99a194e4c');
   assert.equal(world.boxColliders.length+world.cylinderColliders.length,1414);
   const branded=new Set([world.branding.group,...world.branding.group.children]);
   assert.ok(world.raycastMeshes.every(mesh=>!branded.has(mesh)));
   let meshes=0,triangles=0;
   scene.traverse(mesh=>{if(mesh.isMesh){meshes++;triangles+=(mesh.geometry.index?.count??mesh.geometry.attributes.position.count)/3*(mesh.isInstancedMesh?mesh.count:1)}});
-  // Draw calls (meshes) are unchanged by CI CRAFT 6.1 while the static
-  // detail-tier triangle budget absorbs the richer facades/foliage, which
-  // are hidden on the reduced-detail tier.
-  assert.ok(meshes<=900);
-// CI CRAFT 7.0 tiered triangle budgets measured per quality tier.
-const tiers=measureQualityTiers(scene,world);
-  // Measured 7.0 baseline (visualAudit, detailed vegetation on the high tier):
-  //   LOW/MEDIUM 320,030 tris | HIGH/ULTRA 576,900 tris
-  // 6.2's always-on tier was 305,226. The +4.8 % on LOW buys the round
-  // shared cylinder (10 -> 18 segments), which is the single fix for the
-  // visibly faceted silos, tanks and towers. Budgets sit just above the
-  // measured value so ordinary tweaks do not churn, and any further growth
-  // has to be justified explicitly.
-  // Measured 8.0 tier totals (visualAudit / measureQualityTiers):
-  //   LOW/MEDIUM 327,640 tris | HIGH/ULTRA 609,542 tris
-  // The 8.0 delta over 7.2 (+2.6k LOW, +24.5k HIGH) is the clustered ground
-  // cover: 6,400 grass tufts at 6 triangles plus 1,400 flowers, in four
-  // instanced draw calls. LOW keeps one band and no flowers; HIGH/ULTRA show
-  // all of it with a taller/tighter band layout. Nothing else was added, and
-  // no existing geometry was made heavier to reach these numbers.
-  // Measured 8.2 tier totals: LOW/MEDIUM 333,510 | HIGH/ULTRA 612,122.
-  // The 8.2 delta (+5.9k LOW, +7.0k HIGH) is the road surface mesh (1,274
-  // triangles of carriageway ribbons and junction discs) plus kerbs split into
-  // two sub-spans each so they follow the ground instead of hovering over it.
-  // CI CRAFT 9.0 raised these budgets because the road surface is now a real
-  // conforming mesh instead of a 2-vertex strip. Measured: the old strip cost
-  // 1,274 triangles and let the ground burst through the asphalt in 14.6 % of
-  // samples; the 9.0 surface costs 23,148 and leaves 1.02 %. Adaptive width and
-  // length decimation already removed 51 % of its first draft (47,762 -> 23,148)
-  // and the cheaper disc tessellation another 4,000, with no change in
-  // conformance. Nothing else in the world grew: this is the measured price of
-  // the defect fix, not extra scenery.
-  // All of it is essential-tier: a road cannot be quality-gated away without
-  // removing the road network on LOW, so both tiers carry it.
-assert.ok(tiers.low.triangles<=360000,`LOW/MEDIUM triangle budget ${tiers.low.triangles}`);
-assert.ok(tiers.high.triangles<=640000,`HIGH/ULTRA triangle budget ${tiers.high.triangles}`);
-const lodAudit=auditTreeLod(world.treeLodHighGroup,world.treeLodLowGroup);
-assert.deepEqual(lodAudit.problems,[],`vegetation LOD desync: ${lodAudit.problems.join('; ')}`);
+  assert.ok(meshes<=900);assert.ok(triangles<=300000);
   assert.ok(world.boxColliders.length+world.cylinderColliders.length<=1450);
   console.log(JSON.stringify({branding36:{meshes,triangles,colliders:1414,signs:branding.BUILDING_BRANDING.length,roadMarkings:branding.ROAD_BRANDING.length,batches:world.branding.group.children.length}}));
 });

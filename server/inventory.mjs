@@ -1,5 +1,6 @@
 import catalogue from './weaponCatalog.json' with { type: 'json' };
 import manifest from './worldLootManifest.json' with { type: 'json' };
+import { PLAYER_MAX_HEALTH, PLAYER_MAX_SHIELD } from '../shared/matchRules.mjs';
 
 // Only this module writes online inventory. No client weapon/ammo/healing values
 // participate in these transactions. Clocks are injectable for boundary tests.
@@ -54,8 +55,8 @@ export function advanceInventory(p, now = Date.now()) {
       slot.clipAmmo += n; p.ammo[slot.ammoType] -= n;
     } else {
       const s = weaponStats(slot.category,slot.rarity);
-      p.health = Math.min(100,p.health+(s.healAmount || 0));
-      p.shield = Math.min(100,p.shield+(s.shieldAmount || 0));
+      p.health = Math.min(PLAYER_MAX_HEALTH,p.health+(s.healAmount || 0));
+      p.shield = Math.min(PLAYER_MAX_SHIELD,p.shield+(s.shieldAmount || 0));
       if (--slot.count === 0) { p.inventory[p.activeSlot] = null; p.activeSlot = 0; }
     }
   }
@@ -82,7 +83,7 @@ export function inventoryAction(p, action, slot, seq, now = Date.now()) {
     duration = s.reloadTime; p.isReloading = true;
     p.reloadTimer = duration; p.reloadDuration = duration;
   } else if (action === 'use') {
-    if (!s.isConsumable || item.count <= 0 || !((s.healAmount && p.health < 100) || (s.shieldAmount && p.shield < 100))) return false;
+    if (!s.isConsumable || item.count <= 0 || !((s.healAmount && p.health < PLAYER_MAX_HEALTH) || (s.shieldAmount && p.shield < PLAYER_MAX_SHIELD))) return false;
     duration = s.consumeTime; p.isHealing = true;
   } else return false;
   p.burstRemaining = 0;

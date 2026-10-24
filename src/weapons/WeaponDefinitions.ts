@@ -504,89 +504,18 @@ export function createWeaponStats(
 }
 
 const weaponTemplateCache = new Map<string, THREE.Group>();
-
-/**
- * Authored, self-contained weapon surface maps. A machined anisotropic steel
- * normal map gives receivers and barrels real tooling streaks, while a fine
- * polymer stipple breaks up grips and handguards. Both are deterministic
- * DataTextures (no downloads) shared by every weapon material.
- */
-function createWeaponNormalMap(kind: 'steel' | 'polymer', strength: number): THREE.DataTexture {
-  const size = 64;
-  const data = new Uint8Array(size * size * 4);
-  const height = new Float32Array(size * size);
-  let seed = kind === 'steel' ? 20240611 : 771133;
-  const rand = (): number => {
-    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
-    return seed / 4294967296;
-  };
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const streak =
-        kind === 'steel'
-          ? Math.sin((y / size) * Math.PI * 96 + Math.sin(x * 0.21) * 0.7) * 0.5
-          : 0;
-      const stipple =
-        kind === 'polymer'
-          ? Math.sin(x * 1.7 + y * 0.9) * Math.cos(y * 1.3 - x * 0.4) * 0.5
-          : 0;
-      height[y * size + x] = 0.5 + streak * 0.32 + stipple * 0.28 + (rand() - 0.5) * 0.18;
-    }
-  }
-  const mask = size - 1;
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const xPrev = (x - 1) & mask;
-      const xNext = (x + 1) & mask;
-      const yPrev = (y - 1) & mask;
-      const yNext = (y + 1) & mask;
-      const dx = (height[y * size + xNext] - height[y * size + xPrev]) * strength;
-      const dy = (height[yNext * size + x] - height[yPrev * size + x]) * strength;
-      const invLen = 1 / Math.hypot(dx, dy, 1);
-      const i = (y * size + x) * 4;
-      data[i] = Math.round((-dx * invLen * 0.5 + 0.5) * 255);
-      data[i + 1] = Math.round((-dy * invLen * 0.5 + 0.5) * 255);
-      data[i + 2] = Math.round(invLen * 0.5 * 255 + 127);
-      data[i + 3] = 255;
-    }
-  }
-  const tex = new THREE.DataTexture(data, size, size);
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(kind === 'steel' ? 3 : 2, kind === 'steel' ? 8 : 2);
-  tex.magFilter = tex.minFilter = THREE.LinearFilter;
-  tex.needsUpdate = true;
-  return tex;
-}
-
-const SHARED_WEAPON_STEEL_NORMAL = createWeaponNormalMap('steel', 2.4);
-const SHARED_WEAPON_POLYMER_NORMAL = createWeaponNormalMap('polymer', 1.9);
-
 const SHARED_WEAPON_DARK_MAT = new THREE.MeshStandardMaterial({
-  color: 0x1f2937,
-  normalMap: SHARED_WEAPON_POLYMER_NORMAL,
-  normalScale: new THREE.Vector2(0.55, 0.55),
-  roughness: 0.6,
-  metalness: 0.26,
-  envMapIntensity: 0.85,
-  flatShading: false,
+  color: 0x1e293b,
+  roughness: 0.72,
+  metalness: 0.12,
+  flatShading: true,
 });
 const SHARED_WEAPON_GUNMETAL_MAT = new THREE.MeshStandardMaterial({
-  color: 0x4a5568,
-  normalMap: SHARED_WEAPON_STEEL_NORMAL,
-  normalScale: new THREE.Vector2(0.42, 0.42),
-  roughness: 0.26,
-  metalness: 0.9,
-  envMapIntensity: 1.3,
-  flatShading: false,
-});
-const SHARED_WEAPON_STEEL_MAT = new THREE.MeshStandardMaterial({
-  color: 0x8a949f,
-  normalMap: SHARED_WEAPON_STEEL_NORMAL,
-  normalScale: new THREE.Vector2(0.32, 0.32),
-  roughness: 0.2,
-  metalness: 0.96,
-  envMapIntensity: 1.45,
-  flatShading: false,
+  color: 0x475569,
+  roughness: 0.32,
+  metalness: 0.82,
+  envMapIntensity: 1.15,
+  flatShading: true,
 });
 
 function makeRarityAccentMaterial(rarity: WeaponRarity): THREE.MeshStandardMaterial {
@@ -594,13 +523,11 @@ function makeRarityAccentMaterial(rarity: WeaponRarity): THREE.MeshStandardMater
   return new THREE.MeshStandardMaterial({
     color,
     emissive: color,
-    emissiveIntensity: rarity === 'legendary' ? 0.2 : rarity === 'epic' ? 0.14 : 0.07,
-    normalMap: SHARED_WEAPON_STEEL_NORMAL,
-    normalScale: new THREE.Vector2(0.25, 0.25),
-    roughness: rarity === 'legendary' ? 0.16 : 0.24,
-    metalness: rarity === 'legendary' ? 0.62 : 0.44,
-    envMapIntensity: rarity === 'legendary' ? 1.35 : 1.05,
-    flatShading: false,
+    emissiveIntensity: rarity === 'legendary' ? 0.26 : rarity === 'epic' ? 0.2 : 0.12,
+    roughness: rarity === 'legendary' ? 0.16 : 0.22,
+    metalness: rarity === 'legendary' ? 0.46 : 0.28,
+    envMapIntensity: rarity === 'legendary' ? 1.15 : 0.85,
+    flatShading: true,
   });
 }
 
@@ -656,95 +583,6 @@ function addFirearmFinish(group: THREE.Group, category: WeaponCategory): void {
   details.add(bore,pin); group.add(details);
 }
 
-
-/**
- * Adds authored close-quarters hardware to a firearm: folding iron sights,
- * handguard vent slots, a magwell bevel, a QD sling loop, a rubberised butt
- * pad and a barrel thread collar. Everything reuses the shared unit
- * geometries and materials, so fourteen extra silhouette details still cost
- * no new draw calls beyond one merged hardware group per weapon.
- */
-function addWeaponHardware(
-  group: THREE.Group,
-  category: WeaponCategory,
-  length: number
-): void {
-  const dark = SHARED_WEAPON_DARK_MAT;
-  const steel = SHARED_WEAPON_GUNMETAL_MAT;
-  const bright = SHARED_WEAPON_STEEL_MAT;
-  const hardware = new THREE.Group();
-  hardware.name = 'weapon_hardware';
-
-  const frontSightBase = sharedBoxMesh(steel, 0.05, 0.03, 0.05, 'front_sight_base');
-  frontSightBase.position.set(0, 0.16, -length * 0.62);
-  const frontPost = sharedBoxMesh(bright, 0.012, 0.055, 0.012, 'front_sight_post');
-  frontPost.position.set(0, 0.2, -length * 0.62);
-  const rearSightBase = sharedBoxMesh(steel, 0.06, 0.028, 0.045, 'rear_sight_base');
-  rearSightBase.position.set(0, 0.165, length * 0.02);
-  const rearAperture = new THREE.Mesh(
-    new THREE.TorusGeometry(0.019, 0.006, 6, 12),
-    bright
-  );
-  rearAperture.name = 'rear_sight_aperture';
-  rearAperture.rotation.y = Math.PI / 2;
-  rearAperture.position.set(0, 0.196, length * 0.02);
-  hardware.add(frontSightBase, frontPost, rearSightBase, rearAperture);
-
-  // Handguard vent slots: three dark recessed cuts per side.
-  for (const side of [-1, 1]) {
-    for (let slot = 0; slot < 3; slot++) {
-      const vent = sharedBoxMesh(dark, 0.012, 0.026, 0.058, 'handguard_vent');
-      vent.position.set(
-        side * 0.052,
-        0.062,
-        -length * 0.46 - slot * 0.072
-      );
-      hardware.add(vent);
-    }
-  }
-
-  // Magwell bevel + trigger housing pin.
-  const magwell = sharedBoxMesh(steel, 0.086, 0.05, 0.13, 'magwell_bevel');
-  magwell.position.set(0, -0.028, -length * 0.3);
-  magwell.rotation.x = 0.16;
-  const housingPin = sharedCylinderMesh(bright, 0.009, 0.086, 'trigger_housing_pin');
-  housingPin.rotation.z = Math.PI / 2;
-  housingPin.position.set(0, -0.012, -length * 0.14);
-  hardware.add(magwell, housingPin);
-
-  // QD sling loop and rubber butt pad.
-  const slingLoop = new THREE.Mesh(new THREE.TorusGeometry(0.022, 0.006, 6, 12), steel);
-  slingLoop.name = 'sling_loop';
-  slingLoop.rotation.y = Math.PI / 2;
-  slingLoop.position.set(-0.062, 0.045, length * 0.14);
-  const buttPad = sharedBoxMesh(dark, 0.098, 0.15, 0.045, 'butt_pad');
-  buttPad.position.set(0, 0.012, length * 0.19);
-  hardware.add(slingLoop, buttPad);
-
-  // Threaded muzzle collar just behind the flash hider.
-  const threadCollar = sharedCylinderMesh(bright, 0.036, 0.03, 'barrel_thread_collar');
-  threadCollar.rotation.x = Math.PI / 2;
-  threadCollar.position.set(0, 0.065, -length * 0.86);
-  hardware.add(threadCollar);
-
-  if (category === 'shotgun' || category === 'tactical_shotgun') {
-    const bead = new THREE.Mesh(new THREE.SphereGeometry(0.014, 8, 6), bright);
-    bead.name = 'bead_sight';
-    bead.position.set(0, 0.19, -length * 0.86);
-    const tubeCap = sharedCylinderMesh(steel, 0.03, 0.04, 'magazine_tube_cap');
-    tubeCap.rotation.x = Math.PI / 2;
-    tubeCap.position.set(0, 0.015, -length * 0.86);
-    hardware.add(bead, tubeCap);
-  }
-  if (category === 'smg' || category === 'assault_rifle' || category === 'burst_rifle') {
-    const sideRail = sharedBoxMesh(steel, 0.016, 0.02, 0.24, 'side_rail');
-    sideRail.position.set(0.058, 0.115, -length * 0.44);
-    hardware.add(sideRail);
-  }
-
-  group.add(hardware);
-}
-
 export function createWeaponMesh(
   category: WeaponCategory,
   rarity: WeaponRarity = 'common'
@@ -762,67 +600,26 @@ export function createWeaponMesh(
   const accentMat = SHARED_RARITY_ACCENT_MATS[rarity];
 
   if (category === 'harvester') {
-    const shaft = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.022, 0.026, 0.68, 12),
-      darkMat
-    );
-    shaft.position.set(0, 0.26, 0);
-    const lowerGrip = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.028, 0.028, 0.16, 12),
-      gunmetalMat
-    );
-    lowerGrip.position.set(0, 0.04, 0);
-    const upperCollar = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.032, 0.026, 0.1, 12),
-      gunmetalMat
-    );
-    upperCollar.position.set(0, 0.56, 0);
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.042, 0.98, 6), darkMat);
+    shaft.position.set(0, 0.36, 0);
+    group.add(shaft);
 
-    const headHousing = new THREE.Mesh(
-      new THREE.CapsuleGeometry(0.032, 0.1, 6, 12),
-      gunmetalMat
-    );
-    headHousing.rotation.x = Math.PI / 2;
-    headHousing.position.set(0, 0.6, 0);
-
-    const tipMat = new THREE.MeshStandardMaterial({
+    const headMat = new THREE.MeshStandardMaterial({
       color: 0x38bdf8,
       emissive: 0x0284c7,
-      emissiveIntensity: 0.28,
-      roughness: 0.24,
-      metalness: 0.62,
-      flatShading: false,
+      emissiveIntensity: 0.5,
+      roughness: 0.2,
+      flatShading: true,
     });
-    const frontPick = new THREE.Mesh(
-      new THREE.ConeGeometry(0.026, 0.2, 12),
-      gunmetalMat
-    );
-    frontPick.rotation.x = -Math.PI / 2 - 0.18;
-    frontPick.position.set(0, 0.58, -0.15);
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.13, 0.08), headMat);
+    blade.position.set(0, 0.84, 0.05);
+    blade.rotation.y = Math.PI / 2;
 
-    const rearPick = new THREE.Mesh(
-      new THREE.ConeGeometry(0.022, 0.15, 12),
-      tipMat
-    );
-    rearPick.rotation.x = Math.PI / 2 + 0.14;
-    rearPick.position.set(0, 0.59, 0.13);
+    const spike = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.26, 4), headMat);
+    spike.rotation.x = Math.PI / 2;
+    spike.position.set(0, 0.84, 0.38);
 
-    const collarRing = new THREE.Mesh(
-      new THREE.TorusGeometry(0.034, 0.006, 8, 16),
-      tipMat
-    );
-    collarRing.rotation.x = Math.PI / 2;
-    collarRing.position.set(0, 0.56, 0);
-
-    group.add(
-      shaft,
-      lowerGrip,
-      upperCollar,
-      headHousing,
-      frontPick,
-      rearPick,
-      collarRing
-    );
+    group.add(blade, spike);
     weaponTemplateCache.set(cacheKey, group);
     return group.clone(true);
   }
@@ -925,7 +722,6 @@ export function createWeaponMesh(
       group.add(heavyBarrel, cylinder, topRib);
     }
     group.add(slide, stripe, grip, pistolMag, muzzleAnchor);
-    addWeaponHardware(group, category, category === 'heavy_pistol' ? 0.62 : 0.4);
     addFirearmFinish(group,category);
     weaponTemplateCache.set(cacheKey, group);
     return group.clone(true);
@@ -1146,7 +942,6 @@ export function createWeaponMesh(
   muzzleAnchor.name = 'muzzle_tip';
   muzzleAnchor.position.set(0, 0.065, -length * 0.96);
   group.add(muzzleAnchor);
-  addWeaponHardware(group, category, length);
   addFirearmFinish(group,category);
 
   weaponTemplateCache.set(cacheKey, group);

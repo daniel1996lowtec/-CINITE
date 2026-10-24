@@ -1,4 +1,5 @@
 import { RoomTextChat } from './RoomTextChat';
+import { PLAYER_MAX_HEALTH, PLAYER_SPAWN_HEALTH } from '../../shared/matchRules.mjs';
 import {
   BackAccessoryType,
   BuildMaterialType,
@@ -814,8 +815,8 @@ export class NetworkManager {
       yaw: 0,
       facingYaw: 0,
       pitch: 0,
-      health: 100,
-      maxHealth: 100,
+      health: PLAYER_SPAWN_HEALTH,
+      maxHealth: PLAYER_MAX_HEALTH,
       shield: 50,
       maxShield: 100,
       livesRemaining: isRespawnMode(config.matchMode) ? null : 1,
@@ -1561,8 +1562,8 @@ export class NetworkManager {
               yaw: Number(rp.yaw || 0),
               facingYaw: Number(rp.facingYaw || 0),
               pitch: Number(rp.pitch || 0),
-              health: Number(rp.health ?? 100),
-              maxHealth: 100,
+              health: Number(rp.health ?? PLAYER_SPAWN_HEALTH),
+              maxHealth: PLAYER_MAX_HEALTH,
               shield: Number(rp.shield ?? 50),
               maxShield: 100,
               eliminations: Number(rp.eliminations ?? 0),
@@ -1982,7 +1983,7 @@ export class NetworkManager {
             y: 6,
             z: 0,
           },
-          health: Number(msg.health ?? 100),
+          health: Number(msg.health ?? PLAYER_SPAWN_HEALTH),
           shield: Number(msg.shield ?? 50),
           livesRemaining:
             msg.livesRemaining === null || msg.livesRemaining === undefined
@@ -2291,12 +2292,7 @@ export class NetworkManager {
     category: string,
     muzzlePos: { x: number; y: number; z: number },
     hitPoint: { x: number; y: number; z: number },
-    rarity?: WeaponRarity,
-    aim?: {
-      origin: { x: number; y: number; z: number };
-      direction: { x: number; y: number; z: number };
-      aimPoint: { x: number; y: number; z: number };
-    }
+    rarity?: WeaponRarity
   ): void {
     if (!this.isOnlineRoom || !this.roomConnected) return;
     const shotSeq = ++this.inventoryShotSeq;
@@ -2309,23 +2305,6 @@ export class NetworkManager {
       rarity,
       muzzlePos,
       hitPoint,
-      // The resolved muzzle ray. The server re-shoots it against its own
-      // lag-compensated hitboxes; it never trusts the client's verdict.
-      aim: aim
-        ? {
-            origin: { x: q3(aim.origin.x), y: q3(aim.origin.y), z: q3(aim.origin.z) },
-            direction: {
-              x: q3(aim.direction.x),
-              y: q3(aim.direction.y),
-              z: q3(aim.direction.z),
-            },
-            aimPoint: {
-              x: q3(aim.aimPoint.x),
-              y: q3(aim.aimPoint.y),
-              z: q3(aim.aimPoint.z),
-            },
-          }
-        : undefined,
     });
   }
 
