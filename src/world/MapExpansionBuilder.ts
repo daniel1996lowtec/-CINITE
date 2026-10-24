@@ -3097,7 +3097,7 @@ export class MapExpansionBuilder {
       4200,
       (x, z, y) => y > 1.7 && y < 12.5 && this.isDetailFoliageClear(x, z, 4.3),
       () => dummy.scale.setScalar(0.8 + rand() * 0.85),
-      [0x15803d, 0x16a34a, 0x22c55e, 0x65a30d],
+      [0x2c4a34, 0x46664a, 0x55704a, 0x6b7136],
       { strength: 0.062, baseY: 0, height: 0.78 }
     );
 
@@ -3111,7 +3111,7 @@ export class MapExpansionBuilder {
       1900,
       (x, z, y) => y > 1.8 && y < 13.5 && this.isDetailFoliageClear(x, z, 4.8),
       () => dummy.scale.setScalar(0.75 + rand() * 0.9),
-      [0x14532d, 0x166534, 0x15803d],
+      [0x24382a, 0x2f4433, 0x35503a],
       { strength: 0.024, baseY: 0.02, height: 0.52 }
     );
 
@@ -3125,7 +3125,7 @@ export class MapExpansionBuilder {
       1300,
       (x, z, y) => y > 1.8 && y < 13.0 && this.isDetailFoliageClear(x, z, 5.0),
       () => dummy.scale.setScalar(0.8 + rand() * 0.85),
-      [0x15803d, 0x16a34a, 0x4d7c0f],
+      [0x2c4a34, 0x46664a, 0x5a6234],
       { strength: 0.026, baseY: -0.09, height: 1.06 }
     );
 
@@ -3138,7 +3138,7 @@ export class MapExpansionBuilder {
       1500,
       (x, z, y) => y > 1.9 && y < 11.5 && this.isDetailFoliageClear(x, z, 4.4),
       () => dummy.scale.setScalar(0.75 + rand() * 0.65),
-      [0xf472b6, 0xfacc15, 0xc084fc, 0xfb7185, 0xffffff],
+      [0xc98fa4, 0xd8c27a, 0xa898b8, 0xc48a80, 0xf2ece0],
       { strength: 0.032, baseY: 0.05, height: 0.4 }
     );
 

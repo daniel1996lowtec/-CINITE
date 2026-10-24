@@ -894,10 +894,10 @@ export class GameEngine {
     // Phase D: the hemisphere light was carrying most of the illumination,
     // which is why walls read flat - ambient light has no direction. Shifting
     // energy from ambient into the key gives surfaces a lit and a shaded side.
-    this.hemiLight = new THREE.HemisphereLight(0xdcefff, 0x16a34a, 0.72);
+    this.hemiLight = new THREE.HemisphereLight(0xc2d8e6, 0x5d5a44, 0.66);
     this.scene.add(this.hemiLight);
 
-    this.dirLight = new THREE.DirectionalLight(0xffefc8, 1.95);
+    this.dirLight = new THREE.DirectionalLight(0xfff0d2, 2.1);
     const initialSun = getSunOffset('day');
     this.sunOffset.set(initialSun.x, initialSun.y, initialSun.z);
     this.dirLight.position.copy(this.sunOffset);
@@ -920,7 +920,7 @@ export class GameEngine {
     this.scene.add(this.dirLight);
 
     // Secondary Atmospheric Rim / Fill Light (no shadow map cost, improves silhouette & foliage readability)
-    this.fillLight = new THREE.DirectionalLight(0x7dd3fc, 0.42);
+    this.fillLight = new THREE.DirectionalLight(0x9db4c8, 0.26);
     this.fillLight.position.set(-120, 95, -110);
     this.scene.add(this.fillLight);
   }
@@ -1213,22 +1213,20 @@ export class GameEngine {
       }
     } else {
       this.scene.background = new THREE.Color(0x38bdf8);
-      // Phase D: subtle strengthening of aerial perspective only. 0.0019 is a
-      // 5% increase over the shipped 0.0018 - enough to separate distant
-      // scenery from the sea, small enough that a wall at 25m is untouched
-      // (about 0.2% fog at 25m, 1.3% at 60m, 24% at 380m).
       fog.color.setHex(0xcbdde5);
       fog.density = 0.0019;
-      this.hemiLight.color.setHex(0xe0f2fe);
-      this.hemiLight.groundColor.setHex(0x6b7256);
-      this.hemiLight.color.setHex(0xdcefff);
-      this.hemiLight.intensity = 0.72;
-      this.dirLight.color.setHex(0xffefc8);
-      this.dirLight.intensity = 1.95;
+      // Ambient lifts the sky while the ground bounce is a muted khaki rather
+      // than the saturated green that was tinting every underside.
+      this.hemiLight.color.setHex(0xc2d8e6);
+      this.hemiLight.groundColor.setHex(0x5d5a44);
+      this.hemiLight.intensity = 0.66;
+      // Stronger, warmer key for a harder lit/shade split and deeper shadow.
+      this.dirLight.color.setHex(0xfff0d2);
+      this.dirLight.intensity = 2.1;
       this.dirLight.position.copy(this.dirLightTarget.position).add(this.sunOffset);
       if (this.fillLight) {
-        this.fillLight.color.setHex(0x7dd3fc);
-        this.fillLight.intensity = 0.3;
+        this.fillLight.color.setHex(0x9db4c8);
+        this.fillLight.intensity = 0.26;
       }
     }
   }

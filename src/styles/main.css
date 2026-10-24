@@ -4290,3 +4290,223 @@ input:disabled {
   #text-chat { --chat-anchor-left: calc(var(--mh-left) + 112px); --chat-left: calc(var(--mh-left) + 112px); --chat-top: calc(var(--mh-top) + 72px); width: clamp(140px, calc(50dvw - var(--chat-anchor-left, var(--chat-left)) - 24px), 230px); }
   #chat-log { height: clamp(32px, calc(50dvh - 140px), 90px); }
 }
+
+/* ==========================================================================
+   PHASE F — TACTICAL HUD VISUAL IDENTITY
+   --------------------------------------------------------------------------
+   Pure visual layer: colour, borders, shadow, typography and transitions only.
+   No layout properties (size, position, padding, margin) are touched, so the
+   existing desktop and mobile layouts, safe-area insets and the verified
+   touch-control geometry are all preserved exactly.
+
+   Every selector here raises specificity within its own subject rather than
+   !important-ing over the responsive rules defined above, so the mobile
+   media queries continue to win wherever they set layout.
+   ========================================================================== */
+
+:root {
+  /* Gunmetal / steel / amber military palette replacing the bright cyan family */
+  --bg-dark: rgba(10, 15, 20, 0.86);
+  --border-light: rgba(150, 170, 184, 0.26);
+  --accent-blue: #7fb4cb;
+  --accent-green: #8dbe6c;
+  --accent-gold: #e6b95a;
+  --accent-purple: #a98bc4;
+  --accent-red: #e0664c;
+  --hud-accent: #e6b95a;
+  --hud-edge: rgba(160, 184, 198, 0.34);
+}
+
+/* --- Panels: recessed gunmetal with a hairline top edge ------------------ */
+.hud-bottom-left,
+.hud-bottom-right .active-ammo-card,
+.hud-top-left,
+.hud-top-right,
+.hud-compass-pill,
+.hud-fps-counter {
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0) 62%);
+  border-color: var(--border-light);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.10),
+    0 6px 20px rgba(0, 0, 0, 0.38);
+  backdrop-filter: blur(6px) saturate(0.85);
+  -webkit-backdrop-filter: blur(6px) saturate(0.85);
+}
+
+.hud-bottom-left {
+  border-left: 2px solid var(--hud-accent);
+  border-radius: 8px;
+}
+
+.hud-bottom-right .active-ammo-card {
+  border-right: 2px solid var(--hud-accent);
+  border-radius: 8px;
+}
+
+/* --- Typography: condensed tactical labelling, tabular figures ----------- */
+.weapon-title,
+.vital-text,
+.ammo-clip,
+.ammo-res,
+.hud-poi-toast,
+.hud-elim-banner,
+.hud-spectator-banner {
+  letter-spacing: 0.06em;
+  font-variant-numeric: tabular-nums;
+  text-transform: uppercase;
+}
+
+.weapon-title {
+  color: #cfdae2;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.ammo-clip {
+  color: #f2f6f8;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
+}
+
+.ammo-res {
+  color: #93a6b3;
+  letter-spacing: 0.04em;
+}
+
+.vital-text {
+  color: #d8e2e8;
+  font-size: 0.74rem;
+  letter-spacing: 0.05em;
+}
+
+/* --- Vitals: segmented military meter ----------------------------------- */
+.vital-bar-bg {
+  background:
+    repeating-linear-gradient(90deg, rgba(0, 0, 0, 0.30) 0 1px, transparent 1px 9px),
+    linear-gradient(180deg, rgba(0, 0, 0, 0.42), rgba(0, 0, 0, 0.22));
+  border: 1px solid rgba(140, 162, 176, 0.22);
+  border-radius: 3px;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.55);
+}
+
+.vital-bar-fill {
+  transition: width 0.15s ease-out, filter 0.2s ease;
+  box-shadow: 0 0 8px rgba(0, 0, 0, 0.35);
+}
+
+.health-fill {
+  background-image: linear-gradient(180deg, #a9d47a, #6f9c4e 55%, #527a39);
+}
+
+.shield-fill {
+  background-image: linear-gradient(180deg, #9fd0e2, #6d9db2 55%, #4d7688);
+}
+
+/* --- Crosshair: crisper hairline, keeps centre dot dominant ------------- */
+.ch-line {
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 0 2px rgba(0, 0, 0, 0.95), 0 0 1px rgba(0, 0, 0, 1);
+}
+
+.ch-dot {
+  box-shadow: 0 0 3px rgba(0, 0, 0, 1), 0 0 1px rgba(0, 0, 0, 1);
+}
+
+.hitmarker {
+  border-color: #ffffff;
+  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.85));
+}
+
+/* --- Feed and banners: stamped, edge-lit -------------------------------- */
+.hud-elim-banner,
+.hud-poi-toast {
+  border-left: 3px solid var(--hud-accent);
+  border-radius: 4px;
+  background-image: linear-gradient(90deg, rgba(230, 185, 90, 0.10), rgba(10, 15, 20, 0.90) 42%);
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.45);
+}
+
+.hud-elim-banner strong {
+  letter-spacing: 0.10em;
+}
+
+.hud-spectator-banner {
+  border-bottom: 1px solid var(--hud-edge);
+}
+
+/* --- Icon buttons: flat tactical chips ---------------------------------- */
+.hud-icon-btn {
+  border-color: var(--border-light);
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.01));
+  transition: border-color 0.15s ease, background-color 0.15s ease, transform 0.12s ease;
+}
+
+.hud-icon-btn:hover {
+  border-color: var(--hud-accent);
+}
+
+.hud-icon-btn:active {
+  transform: translateY(1px);
+}
+
+/* --- Reload / weapon-switch feedback in the palette --------------------- */
+.active-ammo-card.is-reloading {
+  background-image: linear-gradient(
+    90deg,
+    var(--hud-accent) var(--reload-progress),
+    rgba(255, 255, 255, 0.08) var(--reload-progress)
+  );
+}
+
+.active-ammo-card.weapon-switch-feedback {
+  outline: 1px solid var(--hud-accent);
+}
+
+/* Reduced-motion users keep the identity but lose the motion. */
+@media (prefers-reduced-motion: reduce) {
+  .vital-bar-fill,
+  .hud-icon-btn {
+    transition: none;
+  }
+  .hud-icon-btn:active {
+    transform: none;
+  }
+}
+
+/* --- Phase F follow-up: stronger vitals contrast ------------------------ */
+.vital-bar-bg {
+  background:
+    repeating-linear-gradient(90deg, rgba(0, 0, 0, 0.45) 0 1px, transparent 1px 9px),
+    linear-gradient(180deg, rgba(0, 0, 0, 0.68), rgba(0, 0, 0, 0.44));
+  border-color: rgba(120, 140, 152, 0.30);
+}
+
+.health-fill {
+  background-image: linear-gradient(180deg, #a7d072, #6f9c46 52%, #47702f);
+}
+
+.shield-fill {
+  background-image: linear-gradient(180deg, #8ec6de, #4f8ba6 52%, #356a84);
+}
+
+/* Remaining cyan accents in the shipped UI move to the same steel/amber
+   family, so the interface reads as one system rather than mixed themes. */
+.hud-poi-toast {
+  color: #f0e2c4;
+}
+
+#text-chat button,
+.hud-compass-pill,
+.build-slot,
+.mh-btn {
+  border-color: var(--border-light);
+}
+
+/* Keep the compact landscape ammo card at its original content width so the
+   premium label spacing cannot push it toward the health card on small phones. */
+@media (max-width: 900px) {
+  .weapon-title { letter-spacing: 0.04em; font-size: 0.7rem; }
+  .ammo-clip, .ammo-res { letter-spacing: 0; }
+}

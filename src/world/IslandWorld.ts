@@ -962,7 +962,7 @@ export class IslandWorld {
 
     // Plaza Stone Planters & Tactical Low Cover Barriers
     const planterMat = new THREE.MeshStandardMaterial({ color: 0x64748b, flatShading: true });
-    const bushTopMat = new THREE.MeshStandardMaterial({ color: 0x22c55e, flatShading: true });
+    const bushTopMat = new THREE.MeshStandardMaterial({ color: 0x50663f, flatShading: true });
     for (const [px, pz] of [
       [-20, -5],
       [20, 5],
@@ -1107,7 +1107,7 @@ export class IslandWorld {
       maxY: lhY + 12.5,
     });
 
-    const containerColors = [0x0284c7, 0xef4444, 0x22c55e, 0xeab308];
+    const containerColors = [0x2f4a5c, 0x8c3a2e, 0x4a5a3c, 0xa8892e];
     const offsets = [
       { dx: -12, dz: 6 },
       { dx: -5, dz: 10 },
@@ -1358,7 +1358,7 @@ export class IslandWorld {
     this.spawnTree(-48, 36, 'blossom');
 
     // Decorative Lily Pads & Stepping Stones around Mirror Lake
-    const lilyMat = new THREE.MeshStandardMaterial({ color: 0x22c55e, flatShading: true });
+    const lilyMat = new THREE.MeshStandardMaterial({ color: 0x4e6b46, flatShading: true });
     for (let i = 0; i < 8; i++) {
       const a = (i / 8) * Math.PI * 2;
       const r = 9.5 + (i % 3) * 3.2;
@@ -1825,7 +1825,7 @@ export class IslandWorld {
     grassGeo.translate(0, 0.34, 0);
     const grassMat = applyFoliageWind(
       new THREE.MeshStandardMaterial({
-        color: 0x16a34a,
+        color: 0x54703f,
         flatShading: true,
         roughness: 0.85,
       }),
@@ -1858,9 +1858,9 @@ export class IslandWorld {
     flowerGeo.translate(0, 0.25, 0);
     const flowerMat = applyFoliageWind(
       new THREE.MeshStandardMaterial({
-        color: 0xf472b6,
-        emissive: 0xdb2777,
-        emissiveIntensity: 0.15,
+        color: 0xc98fa4,
+        emissive: 0x8f4e66,
+        emissiveIntensity: 0.10,
         flatShading: true,
       }),
       { strength: 0.032, baseY: 0.05, height: 0.4 }
@@ -1919,7 +1919,7 @@ export class IslandWorld {
     bushGeo.translate(0, 0.42, 0);
     const bushMat = applyFoliageWind(
       new THREE.MeshStandardMaterial({
-        color: 0x15803d,
+        color: 0x35503a,
         flatShading: true,
         roughness: 0.82,
       }),
@@ -2304,16 +2304,20 @@ export class IslandWorld {
       const tIdx = trunkCursor++;
       const trunkColor =
         style === 'birch' ? 0xe2e8f0 : style === 'palm' ? 0x92400e : 0x78350f;
+      // Phase F: canopy palette moved off tropical primaries to military
+      // olive/moss. Saturation is lower and the greens sit closer in value, so
+      // foliage stops competing with the loot rarity colours that must stay
+      // readable at distance.
       const leafColor =
         style === 'pine'
-          ? 0x15803d
+          ? 0x2c4a34
           : style === 'blossom'
-          ? 0xf472b6
+          ? 0xc98fa4
           : style === 'birch'
-          ? 0x84cc16
+          ? 0x6f7a38
           : style === 'palm'
-          ? 0x16a34a
-          : 0x22c55e;
+          ? 0x46664a
+          : 0x55704a;
       const trunkH = style === 'palm' ? 3.4 : 2.6;
       const variationSeed = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453;
       const variation = variationSeed - Math.floor(variationSeed);
