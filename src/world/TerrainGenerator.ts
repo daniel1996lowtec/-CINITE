@@ -2,26 +2,12 @@ import * as THREE from 'three';
 import { TimeOfDayPreset } from '../network/schemas';
 import {
   SKY_DOME_RADIUS,
-  weldAndSmoothGeometry,
   STARFIELD_RADIUS,
   SUN_DISTANCE,
-  applyTerrainGroundDetail,
-  applyOceanShader,
-  setOceanTime,
-  createTerrainSurfaceMaps,
   getSunDirection,
   getEnvironmentPreset,
   getSurfaceVariation,
 } from './VisualAtmosphere';
-import {
-  applySkyPreset,
-  createSkyMaterial,
-  horizonAirColor,
-  setSkyCloudDetail,
-  setSkyTime,
-  SKY_PRESETS as SKY_PALETTES,
-} from './SkySystem';
-import { buildRoadNetwork, roadSurfaceRequested, type RoadWalkable } from './RoadNetwork';
 import {
   EXPANSION_BUILDINGS,
   EXPANSION_LANDMARKS,
@@ -32,9 +18,6 @@ import {
   getBuildingFootprint,
   getLandmarkFootprint,
 } from './WorldLayout';
-
-/** Ocean surface height. Single source of truth for road/bridge elevation. */
-export const WATER_SURFACE_Y = -0.28;
 
 export interface POIDefinition {
   id: string;
@@ -177,89 +160,19 @@ export class TerrainGenerator {
   public lakeFoamRing!: THREE.Mesh;
   public lakeInnerRippleRing!: THREE.Mesh;
   public terrainMesh!: THREE.Mesh;
-  /**
-   * CI CRAFT recovery — whether the road system builds at all. Resolved once,
-   * from `?roads=0`. Everything road-related (carriageway, bridge structures,
-   * deck walkables, the sub-base painted into the terrain) reads this, so the
-   * world can never end up half-roaded.
-   */
-  public readonly roadsEnabled: boolean = roadSurfaceRequested();
-  /** CI CRAFT 9.0 — conforming road surface from RoadNetwork.buildRoadNetwork(). */
-  public roadSurfaceMesh: THREE.Mesh | null = null;
-  /** Support planes for genuine bridge decks, consumed by IslandWorld. */
-  public roadWalkables: RoadWalkable[] = [];
-  public roadStats: {
-    segments: number;
-    nodes: number;
-    triangles: number;
-    vertices: number;
-    waterCrossings: number;
-    spanLength: number;
-    longestEdge: number;
-  } | null = null;
-  /** CI CRAFT 8.2 — parapets and piers for elevated road spans. */
-  public roadBridgeMesh: THREE.Mesh | null = null;
-  /** Rendered terrain heights, row-major over the (segments+1)^2 lattice. */
-  private terrainGrid: Float32Array | null = null;
-  private terrainGridSize = 0;
   public cloudsGroup = new THREE.Group();
   public skyGroup = new THREE.Group();
   public distantIslandsGroup = new THREE.Group();
   public starfieldPoints!: THREE.Points;
   public atmosphereMotes!: THREE.Points;
   public skyDome!: THREE.Mesh;
-  /** Shader material driven by SkySystem; null until the sky is built. */
-  public skyMaterial: THREE.ShaderMaterial | null = null;
-  /** Reused scratch colour for aerial perspective, never allocated per frame. */
-  private readonly airColor = new THREE.Color();
-  private airPreset: TimeOfDayPreset = 'day';
+  public sunMesh!: THREE.Mesh;
+  public sunHaloMesh!: THREE.Mesh;
   public waterfallMesh!: THREE.Mesh;
   private waterTexture: THREE.CanvasTexture | null = null;
   private waterBumpTexture: THREE.CanvasTexture | null = null;
   private terrainDetailTexture: THREE.CanvasTexture | null = null;
-  private terrainSurfaceMaps: ReturnType<typeof createTerrainSurfaceMaps> | null = null;
   private time = 0;
-
-  /**
-   * Deterministic per-cell tonal value for paving slabs, cobbles, gravel and
-   * tilled rows. Keeps large ground planes from reading as flat colour bands.
-   */
-  /**
-   * Tileable-ish fractal value noise in 0..1 used for biome-border jitter and
-   * large tonal patches. Deterministic and independent of terrain height.
-   */
-  private macroNoise(x: number, z: number): number {
-    const n = (a: number, b: number): number => {
-      const h = Math.sin(a * 12.9898 + b * 78.233) * 43758.5453;
-      return h - Math.floor(h);
-    };
-    const smooth = (t: number): number => t * t * (3 - 2 * t);
-    let total = 0;
-    let amp = 1;
-    let sum = 0;
-    for (let o = 0; o < 4; o++) {
-      const scale = 0.018 * 2 ** o;
-      const fx = x * scale;
-      const fz = z * scale;
-      const x0 = Math.floor(fx);
-      const z0 = Math.floor(fz);
-      const tx = smooth(fx - x0);
-      const tz = smooth(fz - z0);
-      const a = n(x0, z0);
-      const b = n(x0 + 1, z0);
-      const c = n(x0, z0 + 1);
-      const d = n(x0 + 1, z0 + 1);
-      total += ((a * (1 - tx) + b * tx) * (1 - tz) + (c * (1 - tx) + d * tx) * tz) * amp;
-      sum += amp;
-      amp *= 0.5;
-    }
-    return total / sum;
-  }
-
-  private stoneTone(cellX: number, cellZ: number): number {
-    const h = Math.sin(cellX * 12.9898 + cellZ * 78.233) * 43758.5453;
-    return h - Math.floor(h);
-  }
 
   /**
    * Small deterministic pads under expansion structures. POI/settlement
@@ -556,46 +469,6 @@ export class TerrainGenerator {
     return height;
   }
 
-  /**
-   * CI CRAFT 8.2 — height of the *rendered* terrain surface.
-   *
-   * `getTerrainHeight` is the analytic field the collision system uses. The
-   * terrain mesh samples that field on a 2.60 m lattice and interpolates
-   * linearly between vertices, so between samples the drawn surface can be
-   * noticeably above or below the analytic value. Anything that must sit ON the
-   * ground — road ribbons, kerbs, verge decals — has to use this instead, or it
-   * will sink into convex ground and let terrain show through.
-   *
-   * Reproduces Three's PlaneGeometry triangulation exactly: each cell is split
-   * along the (ix, iy+1)–(ix+1, iy) diagonal, so the surface is piecewise
-   * planar, not bilinear.
-   */
-  public getRenderedTerrainHeight(x: number, z: number): number {
-    const grid = this.terrainGrid;
-    const size = this.terrainGridSize;
-    if (!grid || size < 2) return this.getTerrainHeight(x, z);
-
-    const half = this.worldSize / 2;
-    const cells = size - 1;
-    const gx = ((x + half) / this.worldSize) * cells;
-    const gz = ((z + half) / this.worldSize) * cells;
-    if (gx < 0 || gz < 0 || gx >= cells || gz >= cells) return this.getTerrainHeight(x, z);
-
-    const ix = Math.floor(gx);
-    const iz = Math.floor(gz);
-    const u = gx - ix;
-    const v = gz - iz;
-
-    const at = (cx: number, cz: number): number => grid[cz * size + cx];
-    const a = at(ix, iz);
-    const b = at(ix, iz + 1);
-    const c = at(ix + 1, iz + 1);
-    const d = at(ix + 1, iz);
-
-    if (u + v <= 1) return a + (d - a) * u + (b - a) * v;
-    return c * (u + v - 1) + b * (1 - u) + d * (1 - v);
-  }
-
   public getTerrainHeight(x: number, z: number): number {
     const height = this.getUnpaddedTerrainHeight(x, z);
 
@@ -670,22 +543,11 @@ export class TerrainGenerator {
     const cliffRockColor = new THREE.Color(0x64748b);
     const dirtShoulderColor = new THREE.Color(0xb48a5a);
 
-    // CI CRAFT 8.2 — keep the height grid so road ribbons can be built from the
-    // surface that is actually drawn, not from the smooth analytic field.
-    // A 208-segment lattice over 540 m gives 2.60 m cells, and the rendered
-    // triangles can sit up to half a metre above `getTerrainHeight` between
-    // samples. Roads built from the analytic field therefore sank into convex
-    // ground and showed patches of terrain through the asphalt.
-    const gridSize = segments + 1;
-    this.terrainGrid = new Float32Array(gridSize * gridSize);
-    this.terrainGridSize = gridSize;
-
     for (let i = 0; i < posAttr.count; i++) {
       const vx = posAttr.getX(i);
       const vz = posAttr.getZ(i);
       const vy = this.getTerrainHeight(vx, vz);
       posAttr.setY(i, vy);
-      this.terrainGrid[i] = vy;
 
       const distCenter = Math.hypot(vx, vz);
       const distGitGrove = Math.hypot(vx - -95, vz - -85);
@@ -709,314 +571,122 @@ export class TerrainGenerator {
         }
       }
 
-      const microNoise = getSurfaceVariation(vx, vz);
-      const fineVariation = Math.sin(vx * 0.21 + vz * 0.17) * 0.5 + 0.5;
-
-      // CI CRAFT 6.2 — biome borders are jittered by fractal noise instead of
-      // following perfect height/radius contours, and wide tonal patches break
-      // up large single-colour fields. Both are pure functions of position, so
-      // terrain height, collision and navigation are untouched.
-      const macro = this.macroNoise(vx, vz);
-      const jitter = (macro - 0.5) * 1.5;
-      const vyJ = vy + jitter * 0.55;
-      const shoreJ = vy + jitter * 0.32;
-      const patch = this.macroNoise(vx * 0.45 + 91, vz * 0.45 - 37);
-
-      // CI CRAFT 8.2 — the carriageway takes priority over the water/shore paint.
-      //
-      // This cascade used to test water depth FIRST and roads LAST, so every
-      // road vertex on low ground was painted as seabed (0x075985) or lagoon
-      // turquoise before the road branch was ever reached. Measured on the
-      // terrain lattice: asphalt-classified vertices ran as dark as luminance
-      // 0.073, 79 % of them below 60 % of the intended asphalt value — long
-      // navy strips straight across the carriageway. That is the "black strips
-      // crossing road surfaces" defect.
-      //
-      // A road is only a road when it is above the water plane (-0.28 m, see
-      // surfaceY in buildWater); genuinely submerged terrain keeps its seabed
-      // colour, so river and lake beds are unaffected.
-      const onRoadSubBase = this.roadsEnabled && roadDist < 3.6 && vy > -0.2;
-
-      if (onRoadSubBase) {
-        // CI CRAFT 8.2 — the ±0.22 jitter on this band made the asphalt edge
-        // wander, so the carriageway was sometimes narrower and sometimes
-        // wider than the road ribbon that now defines it. The ribbon is the
-        // authoritative edge; the paint underneath is only the sub-base.
-        // CI CRAFT 6.2 — roads now read as *paved*: a dark compacted asphalt
-        // crown, a lighter aggregate shoulder band and tar seams. Previously
-        // they were a tan almost identical to the beach, so the road network
-        // was invisible from eye level.
-        const aggregate = this.stoneTone(Math.floor(vx * 1.4), Math.floor(vz * 1.4));
-        const crown = 1 - Math.min(1, roadDist / 3.0);
-        color.setHex(0x6b6f76).offsetHSL(0, 0.01 * aggregate, aggregate * 0.05 - 0.02);
-        // Wheel-track polish: two faint lighter bands either side of centre.
-        const track = Math.exp(-((roadDist - 1.35) ** 2) / 0.16);
-        color.offsetHSL(0, -0.01, track * 0.035);
-        // Aggregate shoulder at the very edge of the roadway.
-        color.lerp(new THREE.Color(0x9a9384), (1 - crown) * 0.55);
-        const seam = Math.abs(((vx + vz) * 0.35) % 1 - 0.5) < 0.02;
-        if (seam) color.multiplyScalar(0.86);
-        // Painted edge line where the kerb is (outside the driving surface).
-        if (roadDist > 3.15) color.lerp(new THREE.Color(0xd8d2c4), 0.5);
-      } else if (shoreJ < -0.35) {
+      if (vy < -0.35) {
         // Deep seabed & riverbed
-        color.setHex(0x075985);
-      } else if (shoreJ < 0.08) {
-        // Shallow turquoise lagoon shelf
-        color.setHex(0x0e7490).lerp(new THREE.Color(0xc49f6c), (shoreJ + 0.35) / 0.43);
-      } else if (shoreJ < 0.52) {
+        color.setHex(0x0369a1);
+      } else if (vy < 0.42) {
         // Wet shoreline sand
-        color.setHex(0xc49f6c).lerp(new THREE.Color(0xdcc59a), (shoreJ - 0.08) / 0.44);
+        color.setHex(0xd97706);
       } else if (
-        // CI CRAFT 8.0 — sand belongs next to water, not everywhere below 1.85 m.
-        // The old condition treated *all* low ground as beach, so every flat
-        // valley on the island rendered as one enormous beige field with no
-        // grass, no soil and no colour break: the single flattest, least
-        // authored-looking surface in the game.
-        //
-        // Sand is now gated on actual proximity to the sea, a river or a lake,
-        // plus a noise mask so the dune/meadow border is organic rather than a
-        // contour line. Height still has to be low; it just is not sufficient.
-        (vyJ < 2.05 &&
-          (distCenter > this.islandRadius * 0.8 + jitter * 3.5 ||
-            riverDist < 8.5 + jitter * 1.4 ||
-            (lakeDist > 17 + jitter * 2 && lakeDist < 30 + jitter * 2))) ||
-        (vyJ < 1.15 && macro > 0.66)
+        vy < 1.85 ||
+        distCenter > this.islandRadius * 0.88 ||
+        (riverDist < 6.4 && vy < 2.5) ||
+        (lakeDist > 20 && lakeDist < 26.5 && vy < 2.6)
       ) {
-        // Warm Mediterranean coastal sand & riverbank pebble-sand, with the
-        // dune inland edge breaking up through patches of dry marram grass.
-        color.setHex(0xdcc59a).lerp(new THREE.Color(0xe8d7b4), fineVariation * 0.65);
-        const duneEdge = Math.min(1, Math.max(0, (vyJ - 1.15) / 0.9));
-        color.lerp(
-          new THREE.Color(0x9aa05e),
-          duneEdge * Math.max(0, patch - 0.34) * 1.15
-        );
+        // Warm golden beach sand & riverbank pebble-sand
+        const sandCheck = (Math.floor(vx * 0.25) + Math.floor(vz * 0.25)) % 2 === 0;
+        color.setHex(sandCheck ? 0xfde047 : 0xfacc15);
       } else if (Math.hypot(vx, vz) < 30) {
-        // Pipeline Plaza paving: individual travertine slabs with mortar
-        // joints and per-slab tonal variation instead of a two-tone checker.
-        const slabX = Math.floor(vx * 0.62 + Math.sin(vz * 0.31) * 0.4);
-        const slabZ = Math.floor(vz * 0.62);
-        const slabTone = this.stoneTone(slabX, slabZ);
-        const joint =
-          Math.abs(vx * 0.62 + Math.sin(vz * 0.31) * 0.4 - slabX - 0.5) > 0.45 ||
-          Math.abs(vz * 0.62 - slabZ - 0.5) > 0.45;
-        color.setHex(0x9aa5b1).offsetHSL(0, -0.02, slabTone * 0.05 - 0.03);
-        if (joint) color.multiplyScalar(0.9);
-      } else if (false) {
-        // CI CRAFT 8.2 — the ±0.22 jitter on this band made the asphalt edge
-        // wander, so the carriageway was sometimes narrower and sometimes
-        // wider than the road ribbon that now defines it. The ribbon is the
-        // authoritative edge; the paint underneath is only the sub-base.
-        // CI CRAFT 6.2 — roads now read as *paved*: a dark compacted asphalt
-        // crown, a lighter aggregate shoulder band and tar seams. Previously
-        // they were a tan almost identical to the beach, so the road network
-        // was invisible from eye level.
-        const aggregate = this.stoneTone(Math.floor(vx * 1.4), Math.floor(vz * 1.4));
-        const crown = 1 - Math.min(1, roadDist / 3.0);
-        color.setHex(0x6b6f76).offsetHSL(0, 0.01 * aggregate, aggregate * 0.05 - 0.02);
-        // Wheel-track polish: two faint lighter bands either side of centre.
-        const track = Math.exp(-((roadDist - 1.35) ** 2) / 0.16);
-        color.offsetHSL(0, -0.01, track * 0.035);
-        // Aggregate shoulder at the very edge of the roadway.
-        color.lerp(new THREE.Color(0x9a9384), (1 - crown) * 0.55);
-        const seam = Math.abs(((vx + vz) * 0.35) % 1 - 0.5) < 0.02;
-        if (seam) color.multiplyScalar(0.86);
-        // Painted edge line where the kerb is (outside the driving surface).
-        if (roadDist > 3.15) color.lerp(new THREE.Color(0xd8d2c4), 0.5);
-      } else if (roadDist < 5.1 + jitter * 0.5) {
-        // Smooth dirt road shoulder transition into surrounding meadow
-        const shoulderT = Math.min(1, Math.max(0, (roadDist - 3.6) / 1.5));
-        color.copy(dirtShoulderColor).lerp(new THREE.Color(0x4d7c42), shoulderT * 0.65);
+        // Pipeline Plaza paved town square tiles with cyan/slate accents
+        const tile = (Math.floor(vx * 0.35) + Math.floor(vz * 0.35)) % 2 === 0;
+        color.setHex(tile ? 0x94a3b8 : 0xcbd5e1);
+      } else if (roadDist < 3.6) {
+        // Navigable cobblestone & compacted dirt road
+        const cobble = (Math.floor(vx * 0.55) + Math.floor(vz * 0.55)) % 2 === 0;
+        color.setHex(cobble ? 0xc29b61 : 0xd6b07a);
+      } else if (roadDist < 4.9) {
+        // Soft dirt road shoulder transition
+        color.copy(dirtShoulderColor);
       } else if (expansionSettlement) {
-        // Settlement grounds use layered, noise-driven material variation
-        // (paving slabs, gravel aggregate, tilled furrows, dune ripples)
-        // rather than a hard two-tone checkerboard.
-        const tone = this.stoneTone(Math.floor(vx * 0.5), Math.floor(vz * 0.5));
+        // Handcrafted ground treatments make secondary settlements readable
+        // from the drop ship without adding extra terrain meshes.
+        const checker = (Math.floor(vx * 0.32) + Math.floor(vz * 0.32)) % 2 === 0;
         switch (expansionSettlement.ground) {
           case 'paved':
-            color.setHex(0xa3aeb9).offsetHSL(0, -0.02, tone * 0.05);
+            color.setHex(checker ? 0x94a3b8 : 0xb6c2d2);
             break;
           case 'industrial':
-            color.setHex(0x827a72).offsetHSL(0, 0.01, tone * 0.05);
+            color.setHex(checker ? 0x78716c : 0x8b8580);
             break;
           case 'farm':
-            color
-              .setHex(0x8a6a34)
-              .lerp(new THREE.Color(0x5c8432), 0.35 + fineVariation * 0.35)
-              .offsetHSL(0, 0, tone * 0.04);
+            color.setHex(Math.sin(vz * 1.25) > 0 ? 0xa16207 : 0x65a30d);
             break;
           case 'sand':
-            color.setHex(0xdfcaa2).offsetHSL(0, 0.01, tone * 0.035);
+            color.setHex(checker ? 0xfacc15 : 0xfde047);
             break;
           case 'alpine':
-            color.setHex(0xd6dfe8).offsetHSL(0, -0.01, tone * 0.03);
+            color.setHex(checker ? 0xcbd5e1 : 0xe2e8f0);
             break;
           case 'dirt':
           default:
-            color.setHex(0xac8862).offsetHSL(0, 0.015, tone * 0.045);
+            color.setHex(checker ? 0xb48a5a : 0xc29b61);
             break;
         }
       } else if (distKeep < 25) {
-        color.setHex(0x5c6875).offsetHSL(0, 0, this.stoneTone(Math.floor(vx * 0.8), Math.floor(vz * 0.8)) * 0.05);
+        const keepTile = (Math.floor(vx * 0.3) + Math.floor(vz * 0.3)) % 2 === 0;
+        color.setHex(keepTile ? 0x64748b : 0x475569);
       } else if (distSilos < 22) {
         color.setHex(0x64748b);
       } else if (distDocks < 22) {
         color.setHex(0xa8a29e);
       } else if (distRuins < 23) {
-        color.setHex(0x76897b);
+        color.setHex(0x84a98c);
       } else if (distFarm < 25 && Math.sin(vx * 1.4) > 0) {
-        color.setHex(0xc89d3c);
+        color.setHex(0xeab308);
       } else if (vy > 16.0) {
         // Alpine snow cap
         color.setHex(0xf8fafc);
       } else if (vy > 10.6) {
-        // High mountain limestone & slate rock
-        color.setHex(0x6b7482).lerp(new THREE.Color(0x7c8694), fineVariation * 0.5);
+        // High mountain rock
+        color.setHex(0x64748b);
       } else if (distGitGrove < 38) {
-        // Lush deep-emerald forest floor
-        color.setHex(0x2d5a34).lerp(new THREE.Color(0x3b7042), fineVariation * 0.7);
+        // Lush emerald forest floor
+        const checker = (Math.floor(vx * 0.09) + Math.floor(vz * 0.09)) % 2 === 0;
+        color.setHex(checker ? 0x16a34a : 0x15803d);
       } else if (vy > 7.2) {
-        // Highland olive-meadow grass
-        color.setHex(0x46733d).lerp(new THREE.Color(0x58874b), fineVariation * 0.65);
+        // Highland meadow grass
+        color.setHex(0x22c55e);
       } else {
-        // Natural coastal & lowland meadow turf (no harsh neon-green checkerboards)
-        color
-          .setHex(0x4d7c42)
-          .lerp(new THREE.Color(0x5e8e50), (microNoise * 0.5 + 0.5) * 0.72);
-      }
-
-      // Wide tonal patches: dry grass, damp hollows and exposed soil drift
-      // across the meadows so no field is ever one flat colour.
-      if (vy > 1.6 && vyJ > 2.0 && roadDist > 5.0 && slope < 0.36 && shoreJ > 0.9) {
-        const dry = Math.max(0, patch - 0.52) * 1.9;
-        const damp = Math.max(0, 0.46 - patch) * 1.7;
-        color.lerp(new THREE.Color(0x8a9550), Math.min(0.52, dry));
-        color.lerp(new THREE.Color(0x35603a), Math.min(0.42, damp));
-      }
-      // Sand grain ripples: fine tonal banding across the beach and dunes.
-      if (shoreJ >= 0.08 && shoreJ < 2.0) {
-        const ripple = Math.sin(vx * 1.35 + vz * 0.85 + macro * 6.0) * 0.5 + 0.5;
-        color.offsetHSL(0, 0, (ripple - 0.5) * 0.035);
-        color.lerp(new THREE.Color(0xbda57d), Math.max(0, patch - 0.62) * 0.35);
-      }
-      // Rock strata and scree on the mountains.
-      if (vyJ > 6.5) {
-        const strata = Math.sin(vy * 3.1 + macro * 4.2) * 0.5 + 0.5;
-        color.offsetHSL(0, 0, (strata - 0.5) * 0.05 + (patch - 0.5) * 0.04);
+        // Vibrant stylized lowland meadow grass
+        const checker = (Math.floor(vx * 0.08) + Math.floor(vz * 0.08)) % 2 === 0;
+        color.setHex(checker ? 0x4ade80 : 0x34d399);
       }
 
       // Slope-based cliff & escarpment rock blending on steep terrain
-      if (vy > 1.8 && vy < 15.8 && slope > 0.42) {
-        const rockWeight = Math.min(1, (slope - 0.42) / 0.44);
-        color.lerp(cliffRockColor, rockWeight * 0.88);
+      if (vy > 1.8 && vy < 15.8 && slope > 0.46) {
+        const rockWeight = Math.min(1, (slope - 0.46) / 0.42);
+        color.lerp(cliffRockColor, rockWeight * 0.85);
       }
 
-      // Smooth, deterministic tonal variation softens biome transitions
-      color.offsetHSL(0, 0, microNoise * 0.028 + (patch - 0.5) * 0.05);
+      // Smooth, deterministic tonal variation softens the intentionally
+      // readable biome/checker colours at landscape scale. Heights and all
+      // gameplay placement remain untouched.
+      color.offsetHSL(0, 0, getSurfaceVariation(vx, vz) * 0.024);
 
       colors.push(color.r, color.g, color.b);
     }
 
     geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-    // CI CRAFT 8.2 — paved-surface mask.
-    //
-    // The 8.0 layered ground shader blends turf, soil, gravel, damp and dry
-    // overlays into `diffuseColor` with no knowledge of roads, so it was
-    // painting ~60 % turf tint on top of asphalt (measured #77787a -> #696d5c)
-    // and streaking it with 1.7 m noise. Roads are only ~2.8 terrain cells
-    // wide, so that noise crossed the whole carriageway as bands.
-    //
-    // This attribute tells the shader which fragments are paved so it can leave
-    // the authored asphalt/paving colour alone. 1 = paved, 0 = natural ground,
-    // with a short smoothstep so the verge keeps some organic variation.
-    const pavedMask = new Float32Array(posAttr.count);
-    const PAVED_EDGE = 3.7;
-    const PAVED_BLEND = 1.15;
-    for (let i = 0; i < posAttr.count; i++) {
-      const d = this.getRoadDistance(posAttr.getX(i), posAttr.getZ(i));
-      pavedMask[i] = 1 - THREE.MathUtils.smoothstep(d, PAVED_EDGE, PAVED_EDGE + PAVED_BLEND);
-    }
-    geo.setAttribute('aPavedMask', new THREE.BufferAttribute(pavedMask, 1));
     geo.computeVertexNormals();
 
     this.terrainDetailTexture = this.createTerrainMicroTexture();
-    // Two independent detail scales: the authored macro overlay breaks up
-    // biome transitions across the whole island, while the tiling normal and
-    // roughness maps add real, close-range surface relief to grass, sand,
-    // dirt and asphalt (about 7 m per tile).
-    this.terrainSurfaceMaps = createTerrainSurfaceMaps();
     const terrainMat = new THREE.MeshStandardMaterial({
       vertexColors: true,
       map: this.terrainDetailTexture,
-      normalMap: this.terrainSurfaceMaps.normal,
-      normalScale: new THREE.Vector2(0.62, 0.62),
-      roughnessMap: this.terrainSurfaceMaps.roughness,
-      bumpMap: this.terrainSurfaceMaps.grain,
-      bumpScale: 0.02,
+      bumpMap: this.terrainDetailTexture,
+      bumpScale: 0.055,
       flatShading: false,
-      roughness: 0.9,
+      roughness: 0.82,
       metalness: 0.02,
-      envMapIntensity: 0.55,
     });
-    applyTerrainGroundDetail(terrainMat);
 
     this.terrainMesh = new THREE.Mesh(geo, terrainMat);
     this.terrainMesh.receiveShadow = true;
     scene.add(this.terrainMesh);
 
-    // CI CRAFT 8.2 — real road surface geometry.
-    //
-    // Roads were previously *only* a per-vertex terrain colour. The terrain
-    // lattice is 540 / 208 = 2.60 m, so a 7.2 m carriageway is under three
-    // samples wide: the road edge was a 2.6 m interpolated gradient and the
-    // asphalt/shoulder classification banded along triangle edges, which is
-    // what produced the long straight strips and "disconnected" road edges.
-    //
-    // This builds the carriageway as actual geometry: a quad strip along each
-    // centreline, sampled every few metres so it follows the terrain, closed at
-    // every junction by a paved disc. Ribbons are trimmed by one carriageway
-    // radius at each end, so segments meeting at a node join through the disc
-    // instead of overlapping — no gaps and no coplanar z-fighting.
-    // CI CRAFT 9.0 — the whole road network comes from one deterministic
-    // builder that conforms the asphalt across its full width. See
-    // src/world/RoadNetwork.ts for why the previous two-vertex strip tore.
-    if (this.roadsEnabled) {
-      const roadNetwork = buildRoadNetwork(ISLAND_ROAD_SEGMENTS, this, WATER_SURFACE_Y);
-      this.roadSurfaceMesh = roadNetwork.surface;
-      this.roadBridgeMesh = roadNetwork.structures;
-      this.roadWalkables = roadNetwork.walkables;
-      this.roadStats = roadNetwork.stats;
-      scene.add(roadNetwork.surface);
-      if (roadNetwork.structures) scene.add(roadNetwork.structures);
-    }
-
-    // Stylized Ocean, Mirror Lake & Winding River Water Plane with Coastal Depth Gradient
+    // Stylized Ocean, Mirror Lake & Winding River Water Plane with Specular Shimmer
     const waterGeo = new THREE.PlaneGeometry(1600, 1600, 64, 64);
     waterGeo.rotateX(-Math.PI / 2);
-    const waterPosAttr = waterGeo.attributes.position;
-    const waterColors: number[] = [];
-    const shallowTurquoise = new THREE.Color(0x2dd4bf);
-    const midLagoon = new THREE.Color(0x06b6d4);
-    const deepOcean = new THREE.Color(0x0284c7);
-    const waterColTmp = new THREE.Color();
-    for (let i = 0; i < waterPosAttr.count; i++) {
-      const wx = waterPosAttr.getX(i);
-      const wz = waterPosAttr.getZ(i);
-      const distCenter = Math.hypot(wx, wz);
-      const lakeDist = Math.hypot(wx - -46, wz - 38);
-      if (distCenter < this.islandRadius * 0.96 || lakeDist < 32) {
-        // Mirror Lake, river & immediate beach surf: luminous tropical turquoise
-        waterColTmp.copy(shallowTurquoise).lerp(midLagoon, 0.35);
-      } else if (distCenter < this.islandRadius * 1.28) {
-        const t = (distCenter - this.islandRadius * 0.96) / (this.islandRadius * 0.32);
-        waterColTmp.copy(midLagoon).lerp(deepOcean, Math.min(1, Math.max(0, t)));
-      } else {
-        waterColTmp.copy(deepOcean);
-      }
-      waterColors.push(waterColTmp.r, waterColTmp.g, waterColTmp.b);
-    }
-    waterGeo.setAttribute('color', new THREE.Float32BufferAttribute(waterColors, 3));
-
     this.waterTexture = this.createWaterRippleTexture();
     this.waterBumpTexture = this.waterTexture?.clone() ?? null;
     if (this.waterBumpTexture) {
@@ -1024,38 +694,21 @@ export class TerrainGenerator {
       this.waterBumpTexture.needsUpdate = true;
     }
     const waterMat = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      vertexColors: true,
+      color: 0x0799d8,
       map: this.waterTexture,
       bumpMap: this.waterBumpTexture,
       bumpScale: 0.18,
       emissive: 0x0369a1,
-      emissiveIntensity: 0.1,
-      roughness: 0.05,
-      metalness: 0.12,
-      envMapIntensity: 1.35,
+      emissiveIntensity: 0.12,
+      roughness: 0.06,
+      metalness: 0.08,
+      envMapIntensity: 1.15,
       transparent: true,
       opacity: 0.92,
       flatShading: false,
     });
-    // CI CRAFT 7.0 — per-vertex water depth. `aOceanDepth` is the vertical gap
-    // between the water surface and the actual terrain heightfield, baked once
-    // here. The ocean shader uses it to grade colour by depth, fade the water
-    // out into translucency at the waterline and place shoreline foam exactly
-    // where the seabed meets the surface, instead of drawing a hard colour ring.
-    const depthArray = new Float32Array(waterPosAttr.count);
-    const surfaceY = -0.28;
-    for (let i = 0; i < waterPosAttr.count; i++) {
-      const wx = waterPosAttr.getX(i);
-      const wz = waterPosAttr.getZ(i);
-      const groundY = this.getTerrainHeight(wx, wz);
-      depthArray[i] = surfaceY - groundY;
-    }
-    waterGeo.setAttribute('aOceanDepth', new THREE.BufferAttribute(depthArray, 1));
-    applyOceanShader(waterMat, { waveHeight: 0.16, foamDepth: 0.85 });
-
     this.waterMesh = new THREE.Mesh(waterGeo, waterMat);
-    this.waterMesh.position.y = surfaceY;
+    this.waterMesh.position.y = -0.28;
     this.waterMesh.receiveShadow = true;
     scene.add(this.waterMesh);
 
@@ -1118,12 +771,20 @@ export class TerrainGenerator {
     this.skyGroup.name = 'CameraCentredSky';
     scene.add(this.skyGroup);
 
-    // 8.0: an analytic shader dome instead of a 40x24 vertex-coloured sphere.
-    // The old dome interpolated three colours across ~1k vertices, which bands
-    // visibly across the gradient and could not carry clouds or a real sun.
-    const skyGeo = new THREE.SphereGeometry(SKY_DOME_RADIUS, 64, 36);
-    const skyMat = createSkyMaterial(SKY_DOME_RADIUS);
-    this.skyMaterial = skyMat;
+    const skyGeo = new THREE.SphereGeometry(SKY_DOME_RADIUS, 40, 24);
+    const pos = skyGeo.attributes.position;
+    const skyColors: number[] = [];
+    for (let i = 0; i < pos.count; i++) {
+      skyColors.push(0.2, 0.7, 0.98);
+    }
+    skyGeo.setAttribute('color', new THREE.Float32BufferAttribute(skyColors, 3));
+
+    const skyMat = new THREE.MeshBasicMaterial({
+      vertexColors: true,
+      side: THREE.BackSide,
+      depthWrite: false,
+      fog: false,
+    });
     this.skyDome = new THREE.Mesh(skyGeo, skyMat);
     this.skyDome.name = 'AtmosphericSkyDome';
     this.skyDome.frustumCulled = false;
@@ -1163,47 +824,55 @@ export class TerrainGenerator {
     this.starfieldPoints.renderOrder = -99;
     this.skyGroup.add(this.starfieldPoints);
 
-    // The sun is drawn by the sky shader (disc, limb darkening, corona and
-    // forward scatter) rather than as a flat circle mesh with a ring around it.
-    // One light source, one definition, no mismatched hard edge against the sky.
+    // Sun Disc + Glowing Corona Halo, positioned by applyTimeOfDaySky on
+    // the same directional-light vector used for scene shadows.
+    const sunGeo = new THREE.CircleGeometry(13, 28);
+    const sunMat = new THREE.MeshBasicMaterial({
+      color: 0xfef08a,
+      side: THREE.DoubleSide,
+      fog: false,
+    });
+    this.sunMesh = new THREE.Mesh(sunGeo, sunMat);
+    this.sunMesh.name = 'AtmosphericSun';
+    this.sunMesh.frustumCulled = false;
+    this.sunMesh.renderOrder = -98;
+    this.skyGroup.add(this.sunMesh);
+
+    const haloGeo = new THREE.RingGeometry(13.4, 26, 28);
+    const haloMat = new THREE.MeshBasicMaterial({
+      color: 0xfde047,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.24,
+      depthWrite: false,
+      fog: false,
+    });
+    this.sunHaloMesh = new THREE.Mesh(haloGeo, haloMat);
+    this.sunHaloMesh.name = 'AtmosphericSunHalo';
+    this.sunHaloMesh.frustumCulled = false;
+    this.sunHaloMesh.renderOrder = -98;
+    this.skyGroup.add(this.sunHaloMesh);
 
     this.applyTimeOfDaySky('day');
 
-    // Soft-shaded cumulus puffs: welded icosahedron shells with flattened
-    // undersides catch the directional light like real cloud tops instead of
-    // reading as faceted grey rocks.
     const cloudMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
-      emissive: 0xdbeafe,
-      emissiveIntensity: 0.34,
-      flatShading: false,
-      roughness: 0.95,
-      metalness: 0,
-      envMapIntensity: 0.4,
+      emissive: 0xe0f2fe,
+      emissiveIntensity: 0.25,
+      flatShading: true,
+      roughness: 0.9,
     });
-    const cloudPuffGeo = weldAndSmoothGeometry(new THREE.IcosahedronGeometry(1, 1), 1e-3);
-    const cloudPuffPos = cloudPuffGeo.getAttribute('position');
-    for (let i = 0; i < cloudPuffPos.count; i++) {
-      const py = cloudPuffPos.getY(i);
-      // Flatten the underside and billow the crown.
-      const billow = py > 0 ? 1 + py * 0.18 : 0.55;
-      cloudPuffPos.setXYZ(
-        i,
-        cloudPuffPos.getX(i) * (1 + 0.08 * Math.sin(i * 1.7)),
-        py * billow,
-        cloudPuffPos.getZ(i) * (1 + 0.07 * Math.cos(i * 2.1))
-      );
-    }
-    cloudPuffGeo.computeVertexNormals();
 
     for (let i = 0; i < 20; i++) {
       const cluster = new THREE.Group();
       const puffs = 3 + (i % 3);
       for (let p = 0; p < puffs; p++) {
-        const radius = 6 + (p % 2) * 3.5;
-        const puff = new THREE.Mesh(cloudPuffGeo, cloudMat);
+        const puff = new THREE.Mesh(
+          new THREE.DodecahedronGeometry(6 + (p % 2) * 3.5, 0),
+          cloudMat
+        );
         puff.position.set((p - 1.2) * 6.5, (p % 2) * 1.8, (p % 3 - 1) * 2.5);
-        puff.scale.set(radius * 1.35, radius * 0.65, radius * 1.0);
+        puff.scale.set(1.35, 0.65, 1.0);
         cluster.add(puff);
       }
 
@@ -1260,27 +929,6 @@ export class TerrainGenerator {
       roughness: 0.8,
     });
 
-    // CI CRAFT 8.4 — the distant mountains were cones lofted with only six
-    // radial segments, so from the ground each one silhouetted as a hard-edged
-    // hexagonal pyramid: a flat grey triangle floating over the skyline. The
-    // snow cap made it worse rather than better — it was built 0.38–0.74 m
-    // *inside* the rock cone and 0.42–0.58 m inside its flank, so it never
-    // drew at all. All eight peaks were bare flat slate, and the two nearly
-    // coincident surfaces z-fought near the summit at 380 m, where depth
-    // precision is worst.
-    //
-    // Fixes, both geometric:
-    //   1. 18 radial segments, so the silhouette is a mountain rather than a
-    //      six-sided prism, and no triangle spans half the base.
-    //   2. The cap is derived from the peak's own profile and inflated 4.5 %
-    //      outside it, with its apex just above the rock. That keeps the snow
-    //      strictly in front of the rock at every height, so it reads as a
-    //      snow line instead of z-fighting through it.
-    const PEAK_SEGMENTS = 18;
-    const CAP_BASE_FRAC = 0.62;  // snow starts at 62 % of the peak's height
-    const CAP_PROUD = 1.045;     // 4.5 % outside the rock surface
-    const PEAK_BASE_Y = -4;
-
     for (let i = 0; i < 8; i++) {
       const angle = (i / 8) * Math.PI * 2 + 0.3;
       const dist = 340 + (i % 3) * 38;
@@ -1289,22 +937,10 @@ export class TerrainGenerator {
       const h = 38 + (i % 3) * 18;
       const r = 42 + (i % 2) * 16;
 
-      // Named so geometry audits can distinguish intentional ~400 m backdrop
-      // scenery from a mesh accidentally stretched across the world.
-      const peak = new THREE.Mesh(new THREE.ConeGeometry(r, h, PEAK_SEGMENTS), distantMat);
-      peak.name = 'DistantBackdropPeak';
-      peak.position.set(ix, h / 2 + PEAK_BASE_Y, iz);
-      // Slight elliptical squash so eight cones do not read as a stamped set.
-      peak.scale.set(1, 1, 0.88 + (i % 3) * 0.07);
-
-      const capBaseY = PEAK_BASE_Y + h * CAP_BASE_FRAC;
-      const capApexY = PEAK_BASE_Y + h + h * 0.012;
-      const capHeight = capApexY - capBaseY;
-      const capRadius = r * (1 - CAP_BASE_FRAC) * CAP_PROUD;
-      const cap = new THREE.Mesh(new THREE.ConeGeometry(capRadius, capHeight, PEAK_SEGMENTS), snowCapMat);
-      cap.name = 'DistantBackdropSnowCap';
-      cap.position.set(ix, (capBaseY + capApexY) / 2, iz);
-      cap.scale.copy(peak.scale);
+      const peak = new THREE.Mesh(new THREE.ConeGeometry(r, h, 6), distantMat);
+      peak.position.set(ix, h / 2 - 4, iz);
+      const cap = new THREE.Mesh(new THREE.ConeGeometry(r * 0.42, h * 0.42, 6), snowCapMat);
+      cap.position.set(ix, h * 0.78 - 4, iz);
       this.distantIslandsGroup.add(peak, cap);
     }
     scene.add(this.distantIslandsGroup);
@@ -1312,73 +948,100 @@ export class TerrainGenerator {
 
   public applyTimeOfDaySky(preset: TimeOfDayPreset): void {
     if (!this.skyDome) return;
-    this.airPreset = preset;
+    const pos = this.skyDome.geometry.attributes.position;
+    const colAttr = this.skyDome.geometry.attributes.color as THREE.BufferAttribute;
 
-    const palette = SKY_PALETTES[preset];
+    // One authored palette for the visible sky and PMREM lighting. Updating
+    // presets paints vertex colors once; no sky shader or per-frame uploads.
     const environment = getEnvironmentPreset(preset);
-    const sunDirection = getSunDirection(preset);
-    const sunVector = new THREE.Vector3(
-      sunDirection.x,
-      sunDirection.y,
-      sunDirection.z
+    const cZenith = new THREE.Color(environment.zenith);
+    const cHorizon = new THREE.Color(environment.horizon);
+    const cMid = cZenith.clone().lerp(cHorizon,.45);
+    const cGround = new THREE.Color(environment.ground);
+    const cSunGlow = new THREE.Color(
+      preset === 'day' ? 0xfef3c7 : preset === 'sunset' ? 0xffd9a0 : 0xbfdbfe
     );
+    const sunDirection = getSunDirection(preset);
+    const sunHorizontalLength = Math.hypot(sunDirection.x, sunDirection.z) || 1;
+    const sunAzimuthX = sunDirection.x / sunHorizontalLength;
+    const sunAzimuthZ = sunDirection.z / sunHorizontalLength;
+    const sunGlowStrength =
+      preset === 'sunset' ? 0.42 : preset === 'day' ? 0.18 : 0.06;
+    const tmp = new THREE.Color();
 
-    if (this.skyMaterial) {
-      applySkyPreset(this.skyMaterial, palette, sunVector);
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i);
+      const y = pos.getY(i);
+      const z = pos.getZ(i);
+      const elevation = THREE.MathUtils.clamp(y / SKY_DOME_RADIUS, -1, 1);
+      if (elevation >= 0.28) {
+        tmp.lerpColors(cMid, cZenith, (elevation - 0.28) / 0.72);
+      } else if (elevation >= 0) {
+        tmp.lerpColors(cHorizon, cMid, elevation / 0.28);
+      } else {
+        tmp.lerpColors(cHorizon, cGround, Math.min(1, -elevation / 0.42));
+      }
+
+      // A broad sun-side atmospheric glow ties the visible sun, directional
+      // light, and horizon together without a post-processing pass.
+      const horizontalLength = Math.hypot(x, z) || 1;
+      const azimuthDot = Math.max(
+        0,
+        (x / horizontalLength) * sunAzimuthX +
+          (z / horizontalLength) * sunAzimuthZ
+      );
+      const horizonBand = Math.max(0, 1 - Math.abs(elevation + 0.03) / 0.48);
+      tmp.lerp(
+        cSunGlow,
+        Math.pow(azimuthDot, 3) * horizonBand * sunGlowStrength
+      );
+      colAttr.setXYZ(i, tmp.r, tmp.g, tmp.b);
     }
+    colAttr.needsUpdate = true;
 
     if (this.starfieldPoints) {
-      // The shader also draws stars, but the point field still gives the night
-      // sky its depth; both are faded by the same preset value.
       const starMat = this.starfieldPoints.material as THREE.PointsMaterial;
-      starMat.opacity = preset === 'night' ? 0.55 : preset === 'sunset' ? 0.16 : 0.0;
+      starMat.opacity = preset === 'night' ? 0.92 : preset === 'sunset' ? 0.42 : 0.0;
     }
 
-    // The horizon colour the sky actually shows, reused for fog so distant
-    // geometry dissolves into the right tone instead of a fixed blue.
-    this.airColor.setHex(environment.horizon);
-  }
-
-  /**
-   * 8.0 aerial perspective.
-   *
-   * Fog used to be one constant colour for the whole scene, so looking toward
-   * the sun and looking away from it produced identical haze. Real air scatters
-   * forward: the horizon is warm and bright toward the light and cool away from
-   * it. Blending the fog colour per frame against the sun-influenced horizon
-   * colour costs two vector ops and makes distance read correctly.
-   */
-  public updateAerialPerspective(
-    cameraDirection: THREE.Vector3,
-    fog: THREE.FogExp2 | null
-  ): void {
-    if (!fog) return;
-    const palette = SKY_PALETTES[this.airPreset];
-    const sunDirection = getSunDirection(this.airPreset);
-    const sun = new THREE.Vector3(sunDirection.x, sunDirection.y, sunDirection.z);
-    horizonAirColor(palette, sun, cameraDirection, this.airColor);
-    // Keep the haze slightly cooler and less saturated than the sky itself so
-    // it never looks like a coloured sheet laid over the world.
-    fog.color.copy(this.airColor).lerp(new THREE.Color(palette.zenith), 0.18);
-  }
-
-  /** LOW/MEDIUM skip the second cloud layer in the sky shader. */
-  public setSkyQuality(detailedClouds: boolean): void {
-    if (this.skyMaterial) setSkyCloudDetail(this.skyMaterial, detailedClouds ? 1 : 0);
+    if (this.sunMesh) {
+      const sunMat = this.sunMesh.material as THREE.MeshBasicMaterial;
+      sunMat.color.setHex(
+        preset === 'day' ? 0xfef08a : preset === 'sunset' ? 0xfb923c : 0xe2e8f0
+      );
+      const sunPosition = new THREE.Vector3(
+        sunDirection.x,
+        sunDirection.y,
+        sunDirection.z
+      ).multiplyScalar(SUN_DISTANCE);
+      const facing = sunPosition.clone().multiplyScalar(-1).normalize();
+      const orientation = new THREE.Quaternion().setFromUnitVectors(
+        new THREE.Vector3(0, 0, 1),
+        facing
+      );
+      this.sunMesh.position.copy(sunPosition);
+      this.sunMesh.quaternion.copy(orientation);
+      if (this.sunHaloMesh) {
+        const haloMat = this.sunHaloMesh.material as THREE.MeshBasicMaterial;
+        haloMat.color.setHex(
+          preset === 'day' ? 0xfde047 : preset === 'sunset' ? 0xfb923c : 0x93c5fd
+        );
+        haloMat.opacity = preset === 'sunset' ? 0.32 : 0.22;
+        this.sunHaloMesh.position.copy(sunPosition);
+        this.sunHaloMesh.quaternion.copy(orientation);
+      }
+    }
   }
 
   public update(dt: number, cameraPosition?: THREE.Vector3): void {
     this.time += dt;
-    if (this.skyMaterial) setSkyTime(this.skyMaterial, this.time);
     if (cameraPosition) {
       // Sky, sun, and stars are directional backdrop elements. Following the
       // camera prevents parallax/clipping as the player crosses the island.
       this.skyGroup.position.copy(cameraPosition);
     }
     if (this.waterMesh) {
-      // The surface now waves per-vertex in the shader; moving the whole plane
-      // up and down (the old behaviour) made the entire ocean pump as one slab.
-      setOceanTime(this.waterMesh.material as THREE.Material, this.time);
+      this.waterMesh.position.y = -0.28 + Math.sin(this.time * 1.8) * 0.12;
       if (this.waterTexture) {
         this.waterTexture.offset.x = (this.time * 0.032) % 1;
         this.waterTexture.offset.y = (this.time * 0.02) % 1;

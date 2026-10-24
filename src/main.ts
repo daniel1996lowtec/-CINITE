@@ -43,29 +43,11 @@ import {
   getWeaponVisualProfile,
 } from './weapons/WeaponDefinitions';
 import { getOutfitVisualProfile } from './entities/CharacterCosmetics';
-import {
-  diagnosticsRequested,
-  installRendererDiagnostics,
-} from './debug/RendererDiagnostics';
 
 window.addEventListener('DOMContentLoaded', () => {
   const menuShell = new MenuShell(document);
   const container = document.getElementById('game-canvas-container')!;
   const engine = new GameEngine(container);
-
-  // CI CRAFT 8.7 — opt-in renderer diagnostics (`?diag=1`).
-  //
-  // Off by default and inert unless the query flag is present, so the normal
-  // game path is unchanged. It only reads the live renderer and prints what the
-  // driver says; nothing is transmitted and no endpoint exists.
-  if (diagnosticsRequested()) {
-    const targets = engine.getDiagnosticsTargets();
-    installRendererDiagnostics({
-      renderer: targets.renderer,
-      scene: targets.scene,
-      world: engine.world as unknown as Parameters<typeof installRendererDiagnostics>[0]['world'],
-    });
-  }
   const textChat = new TextChat(document, engine.network.textChat,
     text => engine.network.sendChat(text), () => {
       engine.keys.clear(); engine.clearTransientInput();
@@ -1247,7 +1229,7 @@ window.addEventListener('DOMContentLoaded', () => {
   const gfxSelect = document.getElementById('setting-graphics') as HTMLSelectElement;
   gfxSelect?.addEventListener('change', () => {
     engine.applySettings({
-      graphicsQuality: gfxSelect.value as 'auto' | 'low' | 'medium' | 'high' | 'ultra',
+      graphicsQuality: gfxSelect.value as 'auto' | 'low' | 'medium' | 'high',
     });
   });
 

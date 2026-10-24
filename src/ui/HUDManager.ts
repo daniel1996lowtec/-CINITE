@@ -73,7 +73,6 @@ export class HUDManager {
   private lootToastEl: HTMLElement | null;
   private activeAmmoCardEl: HTMLElement | null;
   private crosshairEl: HTMLElement;
-  private aimObstructed = false;
   private killfeedContainer: HTMLElement;
   private damageLayer: HTMLElement;
   private compassLabelEl: HTMLElement;
@@ -279,17 +278,6 @@ export class HUDManager {
     else if (isMoving) gap = 11;
     if (isFiring) gap += 6;
     this.crosshairEl.style.setProperty('--ch-gap', `${gap}px`);
-  }
-
-  /**
-   * Shows that the weapon's actual trajectory is blocked even though the
-   * crosshair is over open ground. Firing into cover should never look like a
-   * guaranteed hit. Cheap: only touches the DOM when the state flips.
-   */
-  public setAimObstructed(obstructed: boolean): void {
-    if (this.aimObstructed === obstructed) return;
-    this.aimObstructed = obstructed;
-    this.crosshairEl.classList.toggle('ch-obstructed', obstructed);
   }
 
   public showHitmarker(

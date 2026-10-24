@@ -37,8 +37,6 @@ import {
 import { IslandWorld } from '../world/IslandWorld';
 import {
   getCameraFarForQuality,
-  getShadowRigForQuality,
-  getFogDensityForQuality,
   getEnvironmentPreset,
   getSunOffset,
   resolveGraphicsQuality,
@@ -56,7 +54,6 @@ import { StormSystem } from '../systems/StormSystem';
 import { ParticleSystem } from '../systems/ParticleSystem';
 import { SoundManager } from '../audio/SoundManager';
 import { HUDManager } from '../ui/HUDManager';
-import { AimDiagnostics } from '../debug/AimDiagnostics';
 import { ProgressionSystem } from '../systems/ProgressionSystem';
 import { PerfMonitor, PerfSnapshot } from '../systems/PerfMonitor';
 import { createWeaponStats, RARITY_COLORS } from '../weapons/WeaponDefinitions';
@@ -66,12 +63,7 @@ export class GameEngine {
   private renderer: THREE.WebGLRenderer;
   private scene: THREE.Scene;
   private tpCamera: ThirdPersonCamera;
-  private readonly cameraForwardScratch = new THREE.Vector3();
-  /** Dev-only overlay, enabled with `?aimdebug=1`; inert otherwise. */
-  private aimDiagnostics = new AimDiagnostics();
   private dirLight!: THREE.DirectionalLight;
-  /** CI CRAFT 9.1 — tier currently backing the shadow rig. */
-  private shadowRigQuality: ResolvedGraphicsQuality | null = null;
   private dirLightTarget!: THREE.Object3D;
   private fillLight!: THREE.DirectionalLight;
   private hemiLight!: THREE.HemisphereLight;
@@ -84,16 +76,6 @@ export class GameEngine {
 
   public network: NetworkManager;
   public world: IslandWorld;
-
-  /**
-   * CI CRAFT 8.7 — read-only view of the live renderer for diagnostics.
-   *
-   * Kept as a single accessor rather than making `renderer`/`scene` public so
-   * gameplay code still cannot reach in and mutate them.
-   */
-  public getDiagnosticsTargets(): { renderer: THREE.WebGLRenderer; scene: THREE.Scene } {
-    return { renderer: this.renderer, scene: this.scene };
-  }
   public playerController: PlayerController;
   public botController: BotAIController;
   public lootSystem: LootSystem;
@@ -219,15 +201,6 @@ export class GameEngine {
     this.renderer.toneMappingExposure = 1.08;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.container.appendChild(this.renderer.domElement);
-
-    // CI CRAFT 8.7 — deliberately NOT installing renderer.debug.onShaderError.
-    //
-    // three.js calls that hook *instead of* its own reporter, and its reporter
-    // is the only thing that prints `Material Name`, `Material Type` and the
-    // annotated shader source. Overriding the hook silently downgrades real
-    // evidence to a bare info log. Diagnostics therefore leave three.js to
-    // report normally and capture its console output instead; see
-    // src/debug/RendererDiagnostics.ts.
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x38bdf8);
@@ -488,13 +461,7 @@ export class GameEngine {
     };
 
     // Outgoing local player actions -> Room Server & Bot Sound Investigation
-    this.playerController.onLocalWeaponFired = (
-      category,
-      muzzlePos,
-      hitPoint,
-      rarity,
-      aim
-    ) => {
+    this.playerController.onLocalWeaponFired = (category, muzzlePos, hitPoint, rarity) => {
       if (category !== 'harvester') {
         this.botController.notifySoundEvent(muzzlePos.x, muzzlePos.z, 95);
       }
@@ -502,8 +469,7 @@ export class GameEngine {
         category,
         { x: muzzlePos.x, y: muzzlePos.y, z: muzzlePos.z },
         { x: hitPoint.x, y: hitPoint.y, z: hitPoint.z },
-        rarity,
-        aim
+        rarity
       );
     };
 
@@ -749,13 +715,6 @@ export class GameEngine {
 
       if (!victim) return;
 
-      if (isLocalAttacker && !isLocalVictim) {
-        this.aimDiagnostics.reportServerResult(
-          true,
-          `${ev.damage} dmg${ev.isHeadshot ? ' head' : ''}`
-        );
-      }
-
       const hadShield = victim.shield > 0;
       victim.health = ev.victimHealth;
       victim.shield = ev.victimShield;
@@ -930,21 +889,16 @@ export class GameEngine {
   }
 
   private setupLighting(): void {
-    // CI CRAFT 9.1 — stronger key, weaker ambient.
-    //
-    // A hemisphere light near 0.96 lit every surface from every direction, so
-    // shadowed faces were almost as bright as lit ones and the whole world read
-    // flat. Pulling ambient down and the key sun up restores form and depth
-    // without darkening the scene: total delivered light is about the same.
-    this.hemiLight = new THREE.HemisphereLight(0xdceeff, 0x1f6b34, 0.66);
+    this.hemiLight = new THREE.HemisphereLight(0xe0f2fe, 0x16a34a, 0.96);
     this.scene.add(this.hemiLight);
 
-    this.dirLight = new THREE.DirectionalLight(0xfff0d2, 1.86);
+    this.dirLight = new THREE.DirectionalLight(0xfffbeb, 1.54);
     const initialSun = getSunOffset('day');
     this.sunOffset.set(initialSun.x, initialSun.y, initialSun.z);
     this.dirLight.position.copy(this.sunOffset);
     this.dirLight.castShadow = true;
-    this.applyShadowQuality(this.getResolvedGraphicsQuality());
+    this.dirLight.shadow.mapSize.width = 1536;
+    this.dirLight.shadow.mapSize.height = 1536;
     this.dirLight.shadow.camera.near = 15;
     this.dirLight.shadow.camera.far = 360;
     const d = 98;
@@ -953,6 +907,8 @@ export class GameEngine {
     this.dirLight.shadow.camera.top = d;
     this.dirLight.shadow.camera.bottom = -d;
     this.dirLight.shadow.bias = -0.00028;
+    this.dirLight.shadow.normalBias = 0.028;
+    this.dirLight.shadow.radius = 2.0;
     this.dirLightTarget = new THREE.Object3D();
     this.scene.add(this.dirLightTarget);
     this.dirLight.target = this.dirLightTarget;
@@ -1068,65 +1024,16 @@ export class GameEngine {
     return this.resolvedGraphicsQuality;
   }
 
-  /**
-   * CI CRAFT 9.1 — apply the tier's shadow rig.
-   *
-   * Changing `mapSize` after the map has been allocated does nothing unless the
-   * previous render target is disposed and rebuilt, so do that explicitly here.
-   * This is pure render state: no world geometry, no collision, no gameplay.
-   */
-  private applyShadowQuality(quality: ResolvedGraphicsQuality): void {
-    if (!this.dirLight) return;
-    const rig = getShadowRigForQuality(quality);
-    const shadow = this.dirLight.shadow;
-    if (shadow.mapSize.width !== rig.mapSize) {
-      shadow.mapSize.width = rig.mapSize;
-      shadow.mapSize.height = rig.mapSize;
-      // Drop the stale target; three.js reallocates it on the next shadow pass.
-      shadow.map?.dispose();
-      shadow.map = null;
-    }
-    shadow.radius = rig.radius;
-    shadow.normalBias = rig.normalBias;
-    this.shadowRigQuality = quality;
-  }
-
   private setAdaptiveDetailReduced(reduced: boolean): void {
     if (this.adaptiveDetailReduced === reduced) return;
     this.adaptiveDetailReduced = reduced;
     const quality = this.getResolvedGraphicsQuality();
-    if (this.shadowRigQuality !== quality) this.applyShadowQuality(quality);
     this.stormSystem.setDetailEnabled(quality !== 'low' && !reduced);
     this.world.setLandmarkDetail(quality !== 'low' && !reduced);
 
-    // CI CRAFT 7.0 — vegetation quality tiers. HIGH/ULTRA use the detailed
-    // canopies, LOW/MEDIUM swap to the coarse twins over the same instances.
-    const detailedTrees = quality === 'ultra' || quality === 'high';
-    // 8.0: LOW/MEDIUM evaluate one cloud layer instead of two. The sky is the
-    // largest single fill-rate surface in an outdoor frame, so this is the first
-    // thing to trim rather than the geometry the player is looking at.
-    this.world.terrain.setSkyQuality(detailedTrees && !reduced);
-    // Ground cover: LOW keeps one band, MEDIUM two, HIGH/ULTRA all three.
-    this.world.setGroundCoverQuality(
-      reduced ? 'low' : (quality as 'low' | 'medium' | 'high' | 'ultra')
-    );
-    if (this.world.treeLodHighGroup) {
-      this.world.treeLodHighGroup.visible = detailedTrees;
-      this.world.treeLodLowGroup.visible = !detailedTrees;
-    }
-
-    if (quality === 'ultra') {
+    if (quality === 'high') {
       this.world.detailFoliageGroup.visible = !reduced;
       this.world.expansionDetailGroup.visible = !reduced;
-      this.world.houseDetailGroup.visible = !reduced;
-      if (this.world.terrain.atmosphereMotes) {
-        this.world.terrain.atmosphereMotes.visible = !reduced;
-      }
-      this.setShadowMapSize(reduced ? 1536 : 2048);
-    } else if (quality === 'high') {
-      this.world.detailFoliageGroup.visible = !reduced;
-      this.world.expansionDetailGroup.visible = !reduced;
-      this.world.houseDetailGroup.visible = !reduced;
       if (this.world.terrain.atmosphereMotes) {
         this.world.terrain.atmosphereMotes.visible = !reduced;
       }
@@ -1192,11 +1099,9 @@ export class GameEngine {
     this.adaptiveSlowChecks = 0;
     this.adaptiveDetailReduced = false;
     const quality = this.getResolvedGraphicsQuality();
-    setFoliageWindStrength(
-      quality === 'ultra' || quality === 'high' ? 1 : quality === 'medium' ? 0.65 : 0
-    );
+    setFoliageWindStrength(quality === 'high' ? 1 : quality === 'medium' ? 0.65 : 0);
     this.particles?.setQualityScale(
-      quality === 'ultra' || quality === 'high' ? 1 : quality === 'medium' ? 0.8 : 0.55
+      quality === 'high' ? 1 : quality === 'medium' ? 0.8 : 0.55
     );
 
     if (quality === 'low') {
@@ -1211,7 +1116,6 @@ export class GameEngine {
       this.world.foliageGroup.visible = false;
       this.world.detailFoliageGroup.visible = false;
       this.world.expansionDetailGroup.visible = false;
-      this.world.houseDetailGroup.visible = false;
       this.world.terrain.distantIslandsGroup.visible = false;
       this.tpCamera.camera.far = getCameraFarForQuality(quality);
       this.tpCamera.camera.updateProjectionMatrix();
@@ -1229,25 +1133,6 @@ export class GameEngine {
       this.world.foliageGroup.visible = true;
       this.world.detailFoliageGroup.visible = false;
       this.world.expansionDetailGroup.visible = false;
-      this.world.houseDetailGroup.visible = false;
-      this.world.terrain.distantIslandsGroup.visible = true;
-      this.tpCamera.camera.far = getCameraFarForQuality(quality);
-      this.tpCamera.camera.updateProjectionMatrix();
-    } else if (quality === 'ultra') {
-      this.basePixelRatio = Math.min(deviceDpr, 2.0);
-      this.renderer.setPixelRatio(this.getEffectivePixelRatio());
-      this.renderer.shadowMap.enabled = true;
-      this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-      this.dirLight.castShadow = true;
-      this.setShadowMapSize(2048);
-      this.world.terrain.cloudsGroup.visible = true;
-      if (this.world.terrain.atmosphereMotes) {
-        this.world.terrain.atmosphereMotes.visible = true;
-      }
-      this.world.foliageGroup.visible = true;
-      this.world.detailFoliageGroup.visible = true;
-      this.world.expansionDetailGroup.visible = true;
-      this.world.houseDetailGroup.visible = true;
       this.world.terrain.distantIslandsGroup.visible = true;
       this.tpCamera.camera.far = getCameraFarForQuality(quality);
       this.tpCamera.camera.updateProjectionMatrix();
@@ -1265,17 +1150,12 @@ export class GameEngine {
       this.world.foliageGroup.visible = true;
       this.world.detailFoliageGroup.visible = true;
       this.world.expansionDetailGroup.visible = true;
-      this.world.houseDetailGroup.visible = true;
       this.world.terrain.distantIslandsGroup.visible = true;
       this.tpCamera.camera.far = getCameraFarForQuality(quality);
       this.tpCamera.camera.updateProjectionMatrix();
     }
     this.renderer.shadowMap.needsUpdate = true;
 
-    // Sharpen the new tiling detail maps at grazing angles (roads, cliffs,
-    // facades) on every tier that can afford the extra texture samples.
-    const maxAnisotropy = this.renderer.capabilities?.getMaxAnisotropy?.() ?? 1;
-    this.world.setTextureAnisotropy(quality === 'low' ? 1 : maxAnisotropy);
     this.stormSystem.setDetailEnabled(quality !== 'low' && !this.adaptiveDetailReduced);
     this.world.setLandmarkDetail(quality !== 'low' && !this.adaptiveDetailReduced);
     this.applyTimeOfDay(this.settings.timeOfDay);
@@ -1301,7 +1181,7 @@ export class GameEngine {
     if (preset === 'sunset') {
       this.scene.background = new THREE.Color(0xf97316);
       fog.color.setHex(0xfb923c);
-      fog.density = getFogDensityForQuality(0.0019, this.resolvedGraphicsQuality);
+      fog.density = 0.0019;
       this.hemiLight.color.setHex(0xfed7aa);
       this.hemiLight.groundColor.setHex(0x451a03);
       this.hemiLight.intensity = 0.82;
@@ -1315,7 +1195,7 @@ export class GameEngine {
     } else if (preset === 'night') {
       this.scene.background = new THREE.Color(0x0f172a);
       fog.color.setHex(0x1e293b);
-      fog.density = getFogDensityForQuality(0.0021, this.resolvedGraphicsQuality);
+      fog.density = 0.0021;
       this.hemiLight.color.setHex(0x38bdf8);
       this.hemiLight.groundColor.setHex(0x020617);
       this.hemiLight.intensity = 0.56;
@@ -1329,12 +1209,12 @@ export class GameEngine {
     } else {
       this.scene.background = new THREE.Color(0x38bdf8);
       fog.color.setHex(0xcbdde5);
-      fog.density = getFogDensityForQuality(0.0018, this.resolvedGraphicsQuality);
-      this.hemiLight.color.setHex(0xdceeff);
-      this.hemiLight.groundColor.setHex(0x1f6b34);
-      this.hemiLight.intensity = 0.66;
-      this.dirLight.color.setHex(0xfff0d2);
-      this.dirLight.intensity = 1.86;
+      fog.density = 0.0018;
+      this.hemiLight.color.setHex(0xe0f2fe);
+      this.hemiLight.groundColor.setHex(0x6b7256);
+      this.hemiLight.intensity = 0.96;
+      this.dirLight.color.setHex(0xfffbeb);
+      this.dirLight.intensity = 1.54;
       this.dirLight.position.copy(this.dirLightTarget.position).add(this.sunOffset);
       if (this.fillLight) {
         this.fillLight.color.setHex(0x7dd3fc);
@@ -1834,8 +1714,7 @@ export class GameEngine {
     this.perfMonitor.beginFrame();
 
     this.perfMonitor.beginSubsystem();
-    this.tpCamera.camera.getWorldDirection(this.cameraForwardScratch);
-    this.world.update(dt, this.tpCamera.camera.position, this.cameraForwardScratch);
+    this.world.update(dt, this.tpCamera.camera.position);
     this.perfMonitor.endSubsystem('world');
 
     this.perfMonitor.beginSubsystem();
@@ -1898,7 +1777,6 @@ export class GameEngine {
     // The new opaque menu does not need a hidden full-island draw every frame.
     // Keep rendering for gameplay (including pause) and the live Locker preview.
     if (this.isRunningMatch || previewWindow) this.renderer.render(this.scene, this.tpCamera.camera);
-    this.aimDiagnostics.render(this.tpCamera.camera);
     this.perfMonitor.endSubsystem('render');
 
     const snap = this.perfMonitor.endFrame(
@@ -2095,9 +1973,7 @@ export class GameEngine {
     this.pendingBuild = null;
     this.mobileJump = false;
 
-    // The crosshair is the centre of the screen, so the ray that decides what
-    // the player is aiming at has to come out of the rendered camera.
-    const aimRay = this.tpCamera.getCameraRay();
+    const aimRay = this.tpCamera.getAimRay();
 
     if (localPlayer.alive) {
       this.playerController.updateLocalPlayer(
@@ -2124,9 +2000,6 @@ export class GameEngine {
           );
         }
       );
-
-      this.aimDiagnostics.setSolution(this.playerController.lastAimSolution);
-      this.hud.setAimObstructed(this.playerController.isAimBlocked());
 
       this.network.sendInput(inputPacket);
 

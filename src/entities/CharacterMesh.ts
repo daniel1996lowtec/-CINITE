@@ -315,59 +315,6 @@ function createSuspensionLineMesh(
   return mesh;
 }
 
-// Self-contained armour and fabric surface relief. A deterministic woven
-// fabric normal map under the armour plates and a fine micro-scratch map on
-// hard composite keep close-up character detail from reading as flat colour.
-function createCharacterNormalMap(kind: 'fabric' | 'composite'): THREE.DataTexture {
-  const size = 64;
-  const data = new Uint8Array(size * size * 4);
-  const height = new Float32Array(size * size);
-  let seed = kind === 'fabric' ? 330917 : 884213;
-  const rand = (): number => {
-    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
-    return seed / 4294967296;
-  };
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const weave =
-        kind === 'fabric'
-          ? (Math.sin((x / size) * Math.PI * 64) * Math.sin((y / size) * Math.PI * 64)) * 0.35
-          : 0;
-      const scratch =
-        kind === 'composite'
-          ? Math.sin(x * 2.3 + y * 0.7) * Math.sin(y * 1.9) * 0.22
-          : 0;
-      height[y * size + x] = 0.5 + weave + scratch + (rand() - 0.5) * 0.22;
-    }
-  }
-  const mask = size - 1;
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const xPrev = (x - 1) & mask;
-      const xNext = (x + 1) & mask;
-      const yPrev = (y - 1) & mask;
-      const yNext = (y + 1) & mask;
-      const dx = (height[y * size + xNext] - height[y * size + xPrev]) * 2.1;
-      const dy = (height[yNext * size + x] - height[yPrev * size + x]) * 2.1;
-      const invLen = 1 / Math.hypot(dx, dy, 1);
-      const i = (y * size + x) * 4;
-      data[i] = Math.round((-dx * invLen * 0.5 + 0.5) * 255);
-      data[i + 1] = Math.round((-dy * invLen * 0.5 + 0.5) * 255);
-      data[i + 2] = Math.round(invLen * 0.5 * 255 + 127);
-      data[i + 3] = 255;
-    }
-  }
-  const tex = new THREE.DataTexture(data, size, size);
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(kind === 'fabric' ? 3 : 2, kind === 'fabric' ? 3 : 2);
-  tex.magFilter = tex.minFilter = THREE.LinearFilter;
-  tex.needsUpdate = true;
-  return tex;
-}
-
-const CHARACTER_FABRIC_NORMAL = createCharacterNormalMap('fabric');
-const CHARACTER_COMPOSITE_NORMAL = createCharacterNormalMap('composite');
-
 // Shared unit geometries for procedural outfit attachments. Smooth contoured
 // primitives replace raw cubes so no boxy placeholders ever appear on the character.
 const OUTFIT_PAULDRON_GEO = (() => {
@@ -385,39 +332,6 @@ const OUTFIT_BOX_GEO = (() => {
 const OUTFIT_CYLINDER_GEO = new THREE.CylinderGeometry(0.5, 0.5, 1, 12);
 const OUTFIT_CONE_GEO = new THREE.ConeGeometry(0.5, 1, 10);
 const OUTFIT_OCTA_GEO = new THREE.OctahedronGeometry(0.5, 1);
-const OUTFIT_THIGH_PLATE_GEO = (() => {
-  const geo = new THREE.SphereGeometry(0.5, 12, 8, 0, Math.PI * 1.05, 0, Math.PI * 0.62);
-  geo.rotateY(-Math.PI * 0.52);
-  geo.computeVertexNormals();
-  return geo;
-})();
-const OUTFIT_KNEE_GUARD_GEO = (() => {
-  const geo = new THREE.SphereGeometry(0.5, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.55);
-  geo.scale(1, 1.25, 0.7);
-  geo.computeVertexNormals();
-  return geo;
-})();
-const OUTFIT_CUFF_GEO = new THREE.CylinderGeometry(0.42, 0.5, 0.55, 12, 1, true);
-// Shoulder-strap body: a capsule squash-scaled per strap at build time.
-const OUTFIT_PACK_STRAP_GEO = new THREE.CapsuleGeometry(0.02, 0.1, 4, 8);
-// Conforming harness plate: an open spherical cap, scaled per strap group.
-const OUTFIT_BACKPLATE_GEO = new THREE.SphereGeometry(
-  0.106,
-  14,
-  10,
-  0,
-  Math.PI * 2,
-  0,
-  Math.PI * 0.66
-);
-// Bevelled clamp plate for pack harness buckles: a smooth-shaded rounded box
-// rather than a raw cube, so harness hardware matches the rest of the armour.
-const OUTFIT_BUCKLE_GEO = (() => {
-  const geo = new THREE.SphereGeometry(0.5, 10, 6);
-  geo.scale(0.032, 0.024, 0.012);
-  geo.computeVertexNormals();
-  return geo;
-})();
 
 function quatKeyframes(
   boneName: string,
@@ -1008,10 +922,9 @@ export class CharacterMesh {
     beltBand.scale.set(1.16, 1, 0.8);
     beltBand.position.y = 0.06;
     const beltBuckle = new THREE.Mesh(
-      new THREE.CapsuleGeometry(0.034, 0.06, 6, 10),
+      new THREE.BoxGeometry(0.14, 0.1, 0.06),
       accentMat
     );
-    beltBuckle.rotation.z = Math.PI / 2;
     beltBuckle.position.set(0, 0.06, -0.21);
     this.pelvisGroup.add(pelvisMesh, beltBand, beltBuckle);
     this.proceduralFallbackGroup.add(this.pelvisGroup);
@@ -1302,8 +1215,6 @@ export class CharacterMesh {
               color: this.accentColorHex,
               emissive: this.accentColorHex,
               emissiveIntensity: profile.visorEmissiveIntensity * 0.62,
-              normalMap: CHARACTER_COMPOSITE_NORMAL,
-              normalScale: new THREE.Vector2(0.25, 0.25),
               roughness: Math.max(0.06, profile.roughness * 0.35),
               metalness: Math.min(0.92, profile.metalness + 0.42),
               envMapIntensity: profile.envMapIntensity + 0.35,
@@ -1330,12 +1241,6 @@ export class CharacterMesh {
             if (this.armorTexture && !this.reducedDetail) {
               customBodyMat.bumpMap = this.armorTexture;
               customBodyMat.bumpScale = 0.015;
-            }
-            if (!this.reducedDetail) {
-              // Woven-suit micro relief so the character's torso, sleeves and
-              // trousers read as fabric and composite instead of flat paint.
-              customBodyMat.normalMap = CHARACTER_FABRIC_NORMAL;
-              customBodyMat.normalScale = new THREE.Vector2(0.45, 0.45);
             }
             mesh.material = customBodyMat;
             this.gltfBodyMat = customBodyMat;
@@ -1544,8 +1449,6 @@ export class CharacterMesh {
     const armorMat = new THREE.MeshStandardMaterial({
       color: tacticalPlateColor,
       map: this.armorTexture,
-      normalMap: CHARACTER_COMPOSITE_NORMAL,
-      normalScale: new THREE.Vector2(0.55, 0.55),
       roughness: Math.max(0.42, profile.roughness),
       metalness: Math.min(0.55, profile.metalness + 0.12),
       envMapIntensity: profile.envMapIntensity,
@@ -1563,10 +1466,8 @@ export class CharacterMesh {
     const darkMat = new THREE.MeshStandardMaterial({
       color: 0x1e293b,
       map: this.armorTexture,
-      normalMap: CHARACTER_FABRIC_NORMAL,
-      normalScale: new THREE.Vector2(0.75, 0.75),
-      roughness: Math.min(0.8, profile.roughness + 0.18),
-      metalness: 0.22,
+      roughness: Math.min(0.74, profile.roughness + 0.18),
+      metalness: 0.28,
       envMapIntensity: profile.envMapIntensity * 0.75,
       flatShading: false,
     });
@@ -1615,79 +1516,6 @@ export class CharacterMesh {
         0,
         side * -0.18
       );
-
-    // Shared armour layers: thigh plates, knee guards, glove cuffs and a
-    // chest harness. All are contoured capsule/sphere-bounded shells bound to
-    // the animated limb bones, so nothing floats or clips during sprint,
-    // freefall, gliding or reloads.
-    for (const side of [-1, 1] as const) {
-      const suffix = side < 0 ? 'left' : 'right';
-      add(
-        `thigh_plate_${suffix}`,
-        OUTFIT_THIGH_PLATE_GEO,
-        armorMat,
-        side * 0.105,
-        0.86,
-        0.045,
-        0.19,
-        0.26,
-        0.19,
-        0,
-        side * 0.4,
-        side * 0.12
-      );
-      add(
-        `knee_guard_${suffix}`,
-        OUTFIT_KNEE_GUARD_GEO,
-        darkMat,
-        side * 0.105,
-        0.47,
-        0.075,
-        0.15,
-        0.17,
-        0.15,
-        0.14,
-        0,
-        side * 0.1
-      );
-      add(
-        `glove_cuff_${suffix}`,
-        OUTFIT_CUFF_GEO,
-        accentMat,
-        0,
-        0.03,
-        0,
-        0.075,
-        0.06,
-        0.075,
-        Math.PI / 2,
-        0,
-        0
-      );
-    }
-    add(
-      'chest_harness',
-      OUTFIT_CYLINDER_GEO,
-      darkMat,
-      0,
-      1.34,
-      -0.16,
-      0.22,
-      0.045,
-      0.19,
-      Math.PI / 2
-    );
-    add(
-      'harness_buckle',
-      OUTFIT_OCTA_GEO,
-      accentMat,
-      0,
-      1.32,
-      -0.205,
-      0.05,
-      0.055,
-      0.022
-    );
 
     switch (profile.armorStyle) {
       case 'solar':
@@ -1761,52 +1589,23 @@ export class CharacterMesh {
       const y = object.position.y;
       const isLeftPauldron = object.name.includes('left_pauldron');
       const isRightPauldron = object.name.includes('right_pauldron');
-      const isLeftLeg = /(_left$|_left_)/.test(object.name) && object.name.includes('thigh');
-      const isRightLeg = /(_right$|_right_)/.test(object.name) && object.name.includes('thigh');
-      const isLeftKnee = /(_left$|_left_)/.test(object.name) && object.name.includes('knee');
-      const isRightKnee = /(_right$|_right_)/.test(object.name) && object.name.includes('knee');
-      const isLeftCuff = object.name.includes('glove_cuff_left');
-      const isRightCuff = object.name.includes('glove_cuff_right');
-      const bone = isLeftLeg
-        ? (this.gltfBones.leftUpLeg ?? this.gltfBones.hips)
-        : isRightLeg
-          ? (this.gltfBones.rightUpLeg ?? this.gltfBones.hips)
-          : isLeftKnee
-            ? (this.gltfBones.leftLeg ?? this.gltfBones.hips)
-            : isRightKnee
-              ? (this.gltfBones.rightLeg ?? this.gltfBones.hips)
-              : isLeftCuff
-                ? (this.gltfBones.leftHand ?? this.gltfBones.leftForeArm ?? this.gltfBones.spine2)
-                : isRightCuff
-                  ? (this.gltfBones.rightHand ?? this.gltfBones.rightForeArm ?? this.gltfBones.spine2)
-                  : y > 1.72
-                    ? this.gltfBones.head
-                    : isLeftPauldron
-                      ? (this.gltfBones.leftShoulder ?? this.gltfBones.spine2)
-                      : isRightPauldron
-                        ? (this.gltfBones.rightShoulder ?? this.gltfBones.spine2)
-                        : y < 1.1
-                          ? this.gltfBones.hips
-                          : this.gltfBones.spine2;
+      const bone =
+        y > 1.72
+          ? this.gltfBones.head
+          : isLeftPauldron
+            ? (this.gltfBones.leftShoulder ?? this.gltfBones.spine2)
+            : isRightPauldron
+              ? (this.gltfBones.rightShoulder ?? this.gltfBones.spine2)
+              : y < 1.1
+                ? this.gltfBones.hips
+                : this.gltfBones.spine2;
       const rest = bone && this.attachmentRest.get(bone);
       if (!bone || !rest) continue;
 
       // Map fallback coordinates onto the exact surface of soldier.glb
       const gltfPos = object.position.clone();
       const gltfScale = object.scale.clone();
-      if (isLeftLeg || isRightLeg || isLeftKnee || isRightKnee) {
-        // Thigh plates and knee guards sit on the limb's own bone so they
-        // follow the running/freefall animation instead of the hips.
-        gltfPos.set(
-          isLeftLeg || isLeftKnee ? -0.11 : 0.11,
-          isLeftKnee || isRightKnee ? 0.42 : 0.82,
-          0.02
-        );
-        gltfScale.multiplyScalar(0.9);
-      } else if (isLeftCuff || isRightCuff) {
-        gltfPos.set(0, 0.03, 0);
-        gltfScale.multiplyScalar(0.86);
-      } else if (isLeftPauldron) {
+      if (isLeftPauldron) {
         gltfPos.set(-0.182, 1.405, -0.042);
         gltfScale.multiplyScalar(0.76);
       } else if (isRightPauldron) {
@@ -1846,30 +1645,23 @@ export class CharacterMesh {
       object.matrixAutoUpdate = false;
       this.attachmentBindings.push({ object, bone, inverseBind });
     }
-    this.updateOutfitAttachments();
   }
 
   private updateOutfitAttachments(): void {
-    if (!this.attachmentRest.size) return;
+    if (!this.outfitAttachmentGroup?.visible) return;
     this.root.updateMatrixWorld(true);
     this.attachmentBodyInverse.copy(this.bodyGroup.matrixWorld).invert();
-    if (this.outfitAttachmentGroup?.visible) {
-      for (const { object, bone, inverseBind } of this.attachmentBindings) {
-        object.matrix
-          .multiplyMatrices(this.attachmentBodyInverse, bone.matrixWorld)
-          .multiply(inverseBind);
-        object.matrixWorldNeedsUpdate = true;
-      }
+    for (const { object, bone, inverseBind } of this.attachmentBindings) {
+      object.matrix.multiplyMatrices(this.attachmentBodyInverse, bone.matrixWorld).multiply(inverseBind);
+      object.matrixWorldNeedsUpdate = true;
     }
     if (this.jumpPackGroup && this.gltfBones.spine2) {
       const rest = this.attachmentRest.get(this.gltfBones.spine2);
       if (rest) {
         this.attachmentMatrix.copy(rest).invert();
         this.jumpPackGroup.matrixAutoUpdate = false;
-        this.jumpPackGroup.matrix
-          .multiplyMatrices(this.attachmentBodyInverse, this.gltfBones.spine2.matrixWorld)
-          .multiply(this.attachmentMatrix)
-          .multiply(this.packOffset);
+        this.jumpPackGroup.matrix.multiplyMatrices(this.attachmentBodyInverse, this.gltfBones.spine2.matrixWorld)
+          .multiply(this.attachmentMatrix).multiply(this.packOffset);
         this.jumpPackGroup.matrixWorldNeedsUpdate = true;
       }
     }
@@ -1920,66 +1712,6 @@ export class CharacterMesh {
       roughness: 0.25,
       metalness: 0.55,
     });
-
-    // CI CRAFT 6.2 — the pack used to hang off the spine with nothing joining
-    // it to the torso, so from the front and in profile it read as a floating
-    // prop. Every accessory now gets an authored harness: a conforming
-    // backplate, two shoulder straps that run over the collarbone and end in
-    // clamp buckles, a sternum strap and a lumbar pad with strap tails. The
-    // geometry is kept inside the pack's existing silhouette envelope so the
-    // accessory stays proportional to the rig.
-    const strapMat = new THREE.MeshStandardMaterial({
-      color: 0x1b2430,
-      normalMap: CHARACTER_FABRIC_NORMAL,
-      normalScale: new THREE.Vector2(0.9, 0.9),
-      roughness: 0.82,
-      metalness: 0.12,
-    });
-    const buckleMat = new THREE.MeshStandardMaterial({
-      color: 0x6b7785,
-      normalMap: CHARACTER_COMPOSITE_NORMAL,
-      normalScale: new THREE.Vector2(0.6, 0.6),
-      roughness: 0.34,
-      metalness: 0.86,
-    });
-
-    const backplate = new THREE.Mesh(OUTFIT_BACKPLATE_GEO, strapMat);
-    backplate.name = 'pack_backplate';
-    backplate.scale.set(0.86, 0.62, 0.34);
-    backplate.rotation.x = Math.PI * 0.5;
-    backplate.position.set(0, 0.004, -0.028);
-    this.jumpPackGroup.add(backplate);
-
-    for (const side of [-1, 1] as const) {
-      const strap = new THREE.Mesh(OUTFIT_PACK_STRAP_GEO, strapMat);
-      strap.name = side < 0 ? 'pack_strap_left' : 'pack_strap_right';
-      strap.position.set(side * 0.062, 0.036, -0.03);
-      strap.rotation.set(0.3, 0, side * 0.14);
-      strap.scale.set(1.25, 1, 0.42);
-      this.jumpPackGroup.add(strap);
-
-      const buckle = new THREE.Mesh(OUTFIT_BUCKLE_GEO, buckleMat);
-      buckle.name = side < 0 ? 'pack_buckle_left' : 'pack_buckle_right';
-      buckle.position.set(side * 0.068, 0.104, -0.012);
-      buckle.rotation.z = side * 0.2;
-      this.jumpPackGroup.add(buckle);
-    }
-
-    const sternum = new THREE.Mesh(OUTFIT_PACK_STRAP_GEO, strapMat);
-    sternum.name = 'pack_sternum_strap';
-    sternum.rotation.z = Math.PI / 2;
-    sternum.scale.set(0.55, 0.75, 0.45);
-    sternum.position.set(0, 0.062, -0.018);
-    const lumbarPad = new THREE.Mesh(OUTFIT_BACKPLATE_GEO, strapMat);
-    lumbarPad.name = 'pack_lumbar_pad';
-    lumbarPad.scale.set(0.7, 0.34, 0.4);
-    lumbarPad.rotation.x = Math.PI * 0.5;
-    lumbarPad.position.set(0, -0.078, -0.022);
-    const lumbarBuckle = new THREE.Mesh(OUTFIT_BUCKLE_GEO, buckleMat);
-    lumbarBuckle.name = 'pack_lumbar_buckle';
-    lumbarBuckle.scale.set(0.85, 0.85, 1);
-    lumbarBuckle.position.set(0, -0.078, 0.004);
-    this.jumpPackGroup.add(sternum, lumbarPad, lumbarBuckle);
 
     if (this.backAccessoryType === 'energy_wings') {
       const hub = new THREE.Mesh(
@@ -2057,7 +1789,6 @@ export class CharacterMesh {
         this.jumpPackGroup.add(pod, nozzle);
       }
     }
-    this.updateOutfitAttachments();
   }
 
   /**
@@ -2558,10 +2289,6 @@ export class CharacterMesh {
     }
 
     this.updateParachuteRig(state, dt, horizontalSpeedForLean, facingDelta);
-    this.weaponSocket.visible = !state.isGliding;
-    if (state.isGliding) {
-      this.muzzleFlashMesh.visible = false;
-    }
 
     if (this.muzzleFlashTimer > 0) {
       this.muzzleFlashTimer = Math.max(0, this.muzzleFlashTimer - dt);
@@ -2933,11 +2660,15 @@ export class CharacterMesh {
     let reloadBoltPull = 0;
 
     if (state.isGliding) {
+      const sway = Math.sin(this.animTime * 2.4) * 0.04;
+      if (b.rightArm) b.rightArm.rotation.set(-0.42, 0.68, 2.05 + sway);
+      if (b.rightForeArm) b.rightForeArm.rotation.set(0.55, 0.18, 0.28);
+      if (b.leftArm) b.leftArm.rotation.set(-0.42, -0.68, -2.05 + sway);
+      if (b.leftForeArm) b.leftForeArm.rotation.set(0.55, -0.18, -0.28);
       if (b.rightUpLeg) b.rightUpLeg.rotation.x -= 0.22;
       if (b.leftUpLeg) b.leftUpLeg.rotation.x -= 0.18;
       if (b.rightLeg) b.rightLeg.rotation.x += 0.36;
       if (b.leftLeg) b.leftLeg.rotation.x += 0.32;
-      this.alignGliderHands();
     } else if (state.isReloading || this.reloadPoseBlend > 0.05) {
       this.reloadAnimClock += stepDt;
       const magMesh = this.weaponMagazine;
@@ -2978,12 +2709,12 @@ export class CharacterMesh {
         : 0;
     const adsCenterOffsetX = -this.aimPoseBlend * 0.035;
     const adsLiftOffsetY = this.aimPoseBlend * 0.03;
-    const harvesterSwingPitch =
-      activeCat === 'harvester' && this.attackSwingTimer > 0
-        ? -Math.sin((this.attackSwingTimer / 0.22) * Math.PI) * 0.85
-        : 0;
 
-    if (!state.isGliding && b.rightHand && this.gltfModelGroup && distToCamera < 72) {
+    if (state.isGliding) {
+      // Sling weapon cleanly at hip/back harness while both hands grip parachute toggles
+      this.weaponSocket.position.set(0.16, 1.06, 0.14);
+      this.weaponSocket.rotation.set(-1.18, 0.16, 0.42);
+    } else if (b.rightHand && this.gltfModelGroup && distToCamera < 72) {
       this.root.updateMatrixWorld(true);
       b.rightHand.getWorldPosition(this.tempHandWorldPos);
       this.bodyGroup.worldToLocal(this.tempHandWorldPos);
@@ -2993,18 +2724,18 @@ export class CharacterMesh {
         this.tempHandWorldPos.z - 0.1 + recoilKick * 0.14
       );
       this.weaponSocket.rotation.set(
-        state.pitch * 0.65 - recoilKick * 0.45 + drawTilt + this.swayPitchOffset + harvesterSwingPitch,
+        state.pitch * 0.65 - recoilKick * 0.45 + drawTilt + this.swayPitchOffset,
         this.swayYawOffset,
         -this.swayYawOffset * 0.5 + this.weaponSwitchRoll
       );
-    } else if (!state.isGliding) {
+    } else {
       this.weaponSocket.position.set(
         0.18 + adsCenterOffsetX,
         1.22 + adsLiftOffsetY + moveBobY + this.weaponSwitchDipY,
         -0.28 + recoilKick * 0.14
       );
       this.weaponSocket.rotation.set(
-        state.pitch * 0.65 - recoilKick * 0.45 + drawTilt + this.swayPitchOffset + harvesterSwingPitch,
+        state.pitch * 0.65 - recoilKick * 0.45 + drawTilt + this.swayPitchOffset,
         this.swayYawOffset,
         -this.swayYawOffset * 0.5 + this.weaponSwitchRoll
       );
@@ -3033,56 +2764,30 @@ export class CharacterMesh {
     action.time = this.locomotionPhase * action.getClip().duration;
   }
 
-  private alignArmIK(
-    upper: THREE.Object3D | undefined,
-    lower: THREE.Object3D | undefined,
-    hand: THREE.Object3D | undefined,
-    targetWorld: THREE.Vector3,
-    preferredPoleWorld?: THREE.Vector3
-  ): void {
+  /** Two-bone support-hand IK. Cosmetic only; the gameplay ray never reads it. */
+  private alignSupportHand(category: WeaponCategory): void {
+    const upper = this.gltfBones.leftArm, lower = this.gltfBones.leftForeArm, hand = this.gltfBones.leftHand;
     if (!upper || !lower || !hand) return;
     const [a, b, c, target, axis, pole, elbow, direction] = this.ikPoints;
     this.root.updateMatrixWorld(true);
-    upper.getWorldPosition(a);
-    lower.getWorldPosition(b);
-    hand.getWorldPosition(c);
-    target.copy(targetWorld);
-    const l1 = a.distanceTo(b);
-    const l2 = b.distanceTo(c);
+    upper.getWorldPosition(a); lower.getWorldPosition(b); hand.getWorldPosition(c);
+    const grip = getSupportGrip(category);
+    target.set(grip[0],grip[1],grip[2]);
+    this.weaponSocket.localToWorld(target);
+    const l1 = a.distanceTo(b), l2 = b.distanceTo(c);
     if (l1 < 0.001 || l2 < 0.001) return;
     axis.subVectors(target, a);
-    const distance = THREE.MathUtils.clamp(
-      axis.length(),
-      Math.abs(l1 - l2) + 0.001,
-      l1 + l2 - 0.001
-    );
+    const distance = THREE.MathUtils.clamp(axis.length(), Math.abs(l1 - l2) + 0.001, l1 + l2 - 0.001);
     axis.normalize();
     target.copy(a).addScaledVector(axis, distance);
-    if (preferredPoleWorld) {
-      pole
-        .copy(preferredPoleWorld)
-        .addScaledVector(axis, -preferredPoleWorld.dot(axis));
-    } else {
-      pole
-        .subVectors(b, a)
-        .addScaledVector(axis, -direction.subVectors(b, a).dot(axis));
-    }
+    pole.subVectors(b, a).addScaledVector(axis, -direction.subVectors(b, a).dot(axis));
     if (pole.lengthSq() < 0.00001) pole.set(0, -1, 0).addScaledVector(axis, axis.y);
     pole.normalize();
     const along = (l1 * l1 - l2 * l2 + distance * distance) / (2 * distance);
-    elbow
-      .copy(a)
-      .addScaledVector(axis, along)
-      .addScaledVector(pole, Math.sqrt(Math.max(0, l1 * l1 - along * along)));
+    elbow.copy(a).addScaledVector(axis, along).addScaledVector(pole, Math.sqrt(Math.max(0, l1 * l1 - along * along)));
     const [rotation, world, parent, delta] = this.ikRotations;
-    const rotateTo = (
-      bone: THREE.Object3D,
-      from: THREE.Vector3,
-      to: THREE.Vector3,
-      origin: THREE.Vector3
-    ) => {
-      axis.subVectors(from, origin).normalize();
-      direction.subVectors(to, origin).normalize();
+    const rotateTo = (bone: THREE.Object3D, from: THREE.Vector3, to: THREE.Vector3, origin: THREE.Vector3) => {
+      axis.subVectors(from, origin).normalize(); direction.subVectors(to, origin).normalize();
       delta.setFromUnitVectors(axis, direction);
       bone.getWorldQuaternion(world);
       bone.parent!.getWorldQuaternion(parent).invert();
@@ -3091,53 +2796,8 @@ export class CharacterMesh {
       bone.updateWorldMatrix(false, true);
     };
     rotateTo(upper, b, elbow, a);
-    lower.getWorldPosition(b);
-    hand.getWorldPosition(c);
+    lower.getWorldPosition(b); hand.getWorldPosition(c);
     rotateTo(lower, c, target, b);
-  }
-
-  /** Aligns both hands symmetrically to the overhead parachute steering toggles. */
-  private alignGliderHands(): void {
-    const b = this.gltfBones;
-    this.root.updateMatrixWorld(true);
-    const leftToggle = this.parachuteCanopyPivot?.getObjectByName('steering_toggle_left');
-    const rightToggle = this.parachuteCanopyPivot?.getObjectByName('steering_toggle_right');
-
-    const leftTarget = new THREE.Vector3(-0.27, 1.76, -0.09);
-    const rightTarget = new THREE.Vector3(0.27, 1.76, -0.09);
-    if (leftToggle) {
-      leftToggle.getWorldPosition(leftTarget);
-    } else {
-      this.bodyGroup.localToWorld(leftTarget);
-    }
-    if (rightToggle) {
-      rightToggle.getWorldPosition(rightTarget);
-    } else {
-      this.bodyGroup.localToWorld(rightTarget);
-    }
-
-    const leftPole = new THREE.Vector3(-0.65, -0.35, -0.45)
-      .applyQuaternion(this.root.quaternion)
-      .normalize();
-    const rightPole = new THREE.Vector3(0.65, -0.35, -0.45)
-      .applyQuaternion(this.root.quaternion)
-      .normalize();
-
-    this.alignArmIK(b.leftArm, b.leftForeArm, b.leftHand, leftTarget, leftPole);
-    this.alignArmIK(b.rightArm, b.rightForeArm, b.rightHand, rightTarget, rightPole);
-  }
-
-  /** Two-bone support-hand IK. Cosmetic only; the gameplay ray never reads it. */
-  private alignSupportHand(category: WeaponCategory): void {
-    const upper = this.gltfBones.leftArm,
-      lower = this.gltfBones.leftForeArm,
-      hand = this.gltfBones.leftHand;
-    if (!upper || !lower || !hand) return;
-    this.root.updateMatrixWorld(true);
-    const grip = getSupportGrip(category);
-    const target = new THREE.Vector3(grip[0], grip[1], grip[2]);
-    this.weaponSocket.localToWorld(target);
-    this.alignArmIK(upper, lower, hand, target);
   }
 
   /**

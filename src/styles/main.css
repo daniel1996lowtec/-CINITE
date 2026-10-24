@@ -773,18 +773,6 @@ kbd {
   height: 2px;
 }
 
-/*
- * CI CRAFT 7.2 — the weapon's trajectory is blocked by cover even though the
- * crosshair is over open ground (low wall, crate, doorway edge). Firing here
- * cannot connect, so the reticle stops looking like a guaranteed hit.
- */
-.crosshair.ch-obstructed .ch-line {
-  background: rgba(248, 113, 113, 0.9);
-}
-.crosshair.ch-obstructed .ch-dot {
-  background: rgba(248, 113, 113, 0.95);
-}
-
 .hitmarker {
   position: absolute;
   width: 24px;

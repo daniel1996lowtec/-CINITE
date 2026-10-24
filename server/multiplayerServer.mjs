@@ -12,13 +12,6 @@ import { createWorldLootMap, getChestRewards, validateLootClaim } from './worldL
 import { resetInventory, inventoryAction, advanceInventory, fireInventory, collectInventory, inventorySnapshot, cancelInventoryAction, weaponStats as catalogueStats } from './inventory.mjs';
 import { canReachLoot, hasLineOfSight, worldProps, buildTransform, isBuildPlacementClear, isPlayerPositionClear, safeSpawnPosition, safeRespawnPosition } from './worldGeometry.mjs';
 import {
-  recordPositionHistory,
-  raycastVictimLagCompensated,
-  sanitizeFireOrigin,
-  sanitizeDirection,
-  spreadAllowanceRadius,
-} from './hitValidation.mjs';
-import {
   DEFAULT_GAME_MODE,
   MATCH_DURATION_SECONDS,
   normalizeGameMode,
@@ -3509,7 +3502,6 @@ server.on('upgrade', (req, socket) => {
             const proposedPosition = sanitizePosition(msg.position, p.position);
             if (isPlayerPositionClear(currentRoom,proposedPosition)) p.position = proposedPosition;
             else sendToPlayer(p,{type:'position_corrected',position:p.position});
-            recordPositionHistory(p);
             p.velocity = sanitizeVelocity(msg.velocity, p.velocity);
             p.yaw = clampFinite(msg.yaw, -Math.PI * 4, Math.PI * 4, p.yaw);
             p.facingYaw = clampFinite(
@@ -3558,23 +3550,6 @@ server.on('upgrade', (req, socket) => {
           if (!weaponStats) { sendInventoryState(shooter); continue; }
           if (!consumeServerShot(shooter, weaponStats)) { sendInventoryState(shooter); continue; }
           sendInventoryState(shooter);
-
-          // Store the shot's ray so the matching combat_hit can be re-shot by
-          // the server instead of being taken on trust. Legacy clients that do
-          // not send `aim` leave this null and fall through to the older
-          // hit-point proximity validation.
-          const aimOrigin = sanitizeFireOrigin(msg.aim && msg.aim.origin, shooter);
-          const aimDirection = sanitizeDirection(msg.aim && msg.aim.direction);
-          shooter.lastValidatedShot =
-            aimOrigin && aimDirection
-              ? {
-                  origin: aimOrigin,
-                  direction: aimDirection,
-                  category,
-                  rarity,
-                  expiresAt: Date.now() + 900,
-                }
-              : null;
           const origin = {...shooter.position,y:shooter.position.y+1.2};
           let muzzle = sanitizePosition(msg.muzzlePos,origin);
           if (Math.hypot(muzzle.x-origin.x,muzzle.y-origin.y,muzzle.z-origin.z)>3) muzzle=origin;
@@ -3671,80 +3646,25 @@ server.on('upgrade', (req, socket) => {
           if (dist > weaponStats.range + rangeAllowance) continue;
 
           if (!msg.hitPoint || ![msg.hitPoint.x,msg.hitPoint.y,msg.hitPoint.z].every(Number.isFinite)) continue;
-
-          let validatedHitPoint = sanitizePosition(msg.hitPoint, victim.position);
-          let serverResolvedHit = null;
-
-          const nowMs = Date.now();
-          const shot = attacker.lastValidatedShot;
-          const shotUsable =
-            shot &&
-            shot.expiresAt > nowMs &&
-            shot.category === weaponStats.category &&
-            shot.rarity === weaponStats.rarity;
-
-          if (shotUsable) {
-            // Authoritative re-shoot. The client's ray is replayed against the
-            // server's own hitboxes; if it does not intersect the victim's body
-            // (allowing the bounded lag window) the hit is rejected outright.
-            const shotRange = weaponStats.range + 4;
-            const distanceToVictim = Math.hypot(
-              victim.position.x - shot.origin.x,
-              victim.position.y - shot.origin.y,
-              victim.position.z - shot.origin.z
+          const validatedHitPoint = sanitizePosition(msg.hitPoint, victim.position);
+          if (msg.hitPoint && typeof msg.hitPoint === 'object') {
+            const hitPointDistance = Math.hypot(
+              validatedHitPoint.x - Number(victim.position?.x || 0),
+              validatedHitPoint.y - Number(victim.position?.y || 0),
+              validatedHitPoint.z - Number(victim.position?.z || 0)
             );
-            serverResolvedHit = raycastVictimLagCompensated(
-              victim,
-              shot.origin,
-              shot.direction,
-              shotRange,
-              nowMs,
-              spreadAllowanceRadius(weaponStats.spreadRad, distanceToVictim)
-            );
-            if (!serverResolvedHit) continue;
-            validatedHitPoint = {
-              x: serverResolvedHit.point.x,
-              y: serverResolvedHit.point.y,
-              z: serverResolvedHit.point.z,
-            };
-            // Line of sight is evaluated from the real muzzle, not from the
-            // operator's chest. In third person the camera can legally see over
-            // cover that the body cannot, and using the body position rejected
-            // honest shots taken from behind low cover.
-            if (
-              !hasLineOfSight(
-                currentRoom,
-                shot.origin,
-                {
-                  x: serverResolvedHit.point.x,
-                  y: serverResolvedHit.point.y,
-                  z: serverResolvedHit.point.z,
-                }
-              )
-            ) {
-              continue;
-            }
-          } else {
-            // Legacy clients: keep the previous proximity validation.
-            if (msg.hitPoint && typeof msg.hitPoint === 'object') {
-              const hitPointDistance = Math.hypot(
-                validatedHitPoint.x - Number(victim.position?.x || 0),
-                validatedHitPoint.y - Number(victim.position?.y || 0),
-                validatedHitPoint.z - Number(victim.position?.z || 0)
-              );
-              const height = validatedHitPoint.y-Number(victim.position?.y || 0);
-              const horizontal = Math.hypot(validatedHitPoint.x-victim.position.x,validatedHitPoint.z-victim.position.z);
-              if (hitPointDistance > 2.4 || horizontal > 1.1 || height < -.15 || height > 2.1) continue;
-            }
-            if (!hasLineOfSight(currentRoom,{...attacker.position,y:attacker.position.y+1.2},validatedHitPoint)) continue;
+            const height = validatedHitPoint.y-Number(victim.position?.y || 0);
+            const horizontal = Math.hypot(validatedHitPoint.x-victim.position.x,validatedHitPoint.z-victim.position.z);
+            if (hitPointDistance > 2.4 || horizontal > 1.1 || height < -.15 || height > 2.1) continue;
           }
+
+          if (!hasLineOfSight(currentRoom,{...attacker.position,y:attacker.position.y+1.2},validatedHitPoint)) continue;
 
           // Derive the headshot from the validated hit height rather than
           // trusting a client flag. The client raycast uses 1.48 m; 1.38 m
           // leaves a small allowance for 20 Hz vertical position sync.
-          const isHeadshot = serverResolvedHit
-            ? serverResolvedHit.headshot
-            : validatedHitPoint.y - Number(victim.position?.y || 0) >= 1.38;
+          const isHeadshot =
+            validatedHitPoint.y - Number(victim.position?.y || 0) >= 1.38;
           const rawDamage = getServerWeaponDamage(weaponStats, isHeadshot);
           if (rawDamage <= 0) continue;
           const dmgResult = applyAuthoritativeDamage(victim, rawDamage);
