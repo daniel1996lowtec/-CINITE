@@ -31,6 +31,8 @@ import {
   computeTeamScores,
   evaluateMatchOutcome,
   normalizeTdmTeam,
+  PLAYER_MAX_HEALTH,
+  PLAYER_SPAWN_HEALTH,
 } from '../shared/matchRules.mjs';
 import { validateChatText, createChatRateLimiter } from './textChat.mjs';
 const allowChatAttempt = createChatRateLimiter();
@@ -3203,7 +3205,7 @@ server.on('upgrade', (req, socket) => {
             if (msg.resetPlayer && !lobbyManagedRoom && !player.alive) {
               isFreshJoinOrReset = true;
               room.matchSeq += 1;
-              player.health = 100;
+              player.health = PLAYER_SPAWN_HEALTH;
               player.shield = 50;
               player.alive = true;
               player.eliminations = 0;
@@ -3212,7 +3214,7 @@ server.on('upgrade', (req, socket) => {
               resetInventory(player);
               player.position = safeSpawnPosition(room,sanitizePosition(msg.position, player.position));
             } else if (msg.resetPlayer && lobbyManagedRoom && room.phase === 'lobby') {
-              player.health = 100;
+              player.health = PLAYER_SPAWN_HEALTH;
               player.shield = 50;
               player.alive = true;
               player.eliminations = 0;
@@ -4226,7 +4228,7 @@ function buildRoomPlayersSnapshot(room) {
       facingYaw: q3(p.facingYaw),
       pitch: q3(p.pitch),
       health: p.health,
-      maxHealth: p.maxHealth || 100,
+      maxHealth: p.maxHealth || PLAYER_MAX_HEALTH,
       shield: p.shield,
       maxShield: p.maxShield || 100,
       livesRemaining:

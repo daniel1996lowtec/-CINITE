@@ -28,6 +28,8 @@ import {
   isStormEnabledForMode,
   isTimedMode,
   normalizeGameMode,
+  PLAYER_MAX_HEALTH,
+  PLAYER_SPAWN_HEALTH,
 } from '../../shared/matchRules.mjs';
 import {
   NetworkConnectionState,
@@ -323,8 +325,8 @@ export class GameEngine {
       yaw: this.lobbyPreviewYaw,
       facingYaw: this.lobbyPreviewYaw,
       pitch: 0.04,
-      health: 100,
-      maxHealth: 100,
+      health: PLAYER_SPAWN_HEALTH,
+      maxHealth: PLAYER_MAX_HEALTH,
       shield: 100,
       maxShield: 100,
       eliminations: 0,
@@ -802,7 +804,7 @@ export class GameEngine {
 
         if (respawnMode && state.phase !== 'ENDED') {
           victim.alive = true;
-          victim.health = 100;
+          victim.health = PLAYER_SPAWN_HEALTH;
           victim.shield = 50;
           victim.isGliding = false;
           victim.isGrounded = true;
@@ -2308,8 +2310,8 @@ export class GameEngine {
     const rawZ = Math.sin(angle) * radius;
     const groundY = this.world.terrain.getTerrainHeight(rawX, rawZ);
     localPlayer.alive = true;
-    localPlayer.health = 100;
-    localPlayer.maxHealth = 100;
+    localPlayer.health = PLAYER_SPAWN_HEALTH;
+    localPlayer.maxHealth = PLAYER_MAX_HEALTH;
     localPlayer.shield = 50;
     localPlayer.maxShield = 100;
     localPlayer.livesRemaining = null;

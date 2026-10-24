@@ -16,6 +16,11 @@ function emit(source) {
   emitted.add(source);
   let code=ts.transpileModule(fs.readFileSync(source,'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText.replaceAll('import.meta.env', 'globalThis.__chatTestEnv');
   code=code.replace(/from ['"](\.[^'"]+)['"]/g,(_,specifier)=>{
+    // CI CRAFT 9.3: honour an explicit .mjs specifier instead of appending
+    // '.ts'. NetworkManager now imports the shared health constants.
+    if (specifier.endsWith('.mjs') || specifier.endsWith('.js')) {
+      return `from '${pathToFileURL(path.resolve(path.dirname(source),specifier)).href}'`;
+    }
     const dependency=emit(path.resolve(path.dirname(source),specifier+'.ts'));
     return `from '${pathToFileURL(dependency).href}'`;
   });

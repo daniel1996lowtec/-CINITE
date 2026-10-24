@@ -31,9 +31,13 @@ export const TDM_TEAM_COLORS = Object.freeze({
   blue: 0x3b82f6,
 });
 
-export const PLAYER_MAX_HEALTH = 100;
+// CI CRAFT 9.3: player health doubled from the original 100. The server is
+// authoritative for both values: createInitialVitals(), applyAuthoritativeDamage()
+// and applyRespawnVitals() all read from here, so spawn, damage clamping and
+// respawn stay in lockstep. Shield values are deliberately unchanged.
+export const PLAYER_MAX_HEALTH = 200;
 export const PLAYER_MAX_SHIELD = 100;
-export const PLAYER_SPAWN_HEALTH = 100;
+export const PLAYER_SPAWN_HEALTH = 200;
 export const PLAYER_SPAWN_SHIELD = 50;
 
 export const MODE_RULES = Object.freeze({

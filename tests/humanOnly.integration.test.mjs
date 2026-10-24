@@ -666,6 +666,37 @@ test('human-only rooms: authenticated lobby, ready gate, reconnect dedupe, zero 
     // A catalogued Legendary Rail Sniper headshot is 226 server-derived
     // damage, regardless of the client's forged damage/name fields.
     await equipRegistered(wsA,'sniper','legendary');
+    // 9.3: 200 HP + 50 shield = 250 effective against a 226-damage hit, so the
+    // first shot strips the shield and most of the health; the second is lethal.
+    const firstHitB = waitForMessage(
+      wsB,
+      (msg) => msg.type === 'server_hit' && msg.victimId === bravoPublicId,
+      6000,
+      'human-only first server_hit'
+    );
+    sendJson(wsA, {
+      type: 'fire_weapon',
+      category: 'sniper',
+      rarity: 'legendary',
+      muzzlePos: { x: 0, y: 81, z: 0 },
+      hitPoint: { x: 5, y: 81.7, z: 5 },
+    });
+    sendJson(wsA, {
+      type: 'combat_hit',
+      hitId: 'human_only_shield_hit',
+      targetId: bravoPublicId,
+      damage: 1,
+      isHeadshot: true,
+      weaponName: 'Forged Weapon',
+      weaponCategory: 'sniper',
+      weaponRarity: 'legendary',
+      hitPoint: { x: 5, y: 81.7, z: 5 },
+    });
+    const firstHit = await firstHitB;
+    assert.equal(firstHit.damage, 226);
+    assert.equal(firstHit.eliminated, false);
+    await new Promise((r) => setTimeout(r, 1400));
+
     const serverHitB = waitForMessage(
       wsB,
       (msg) => msg.type === 'server_hit' && msg.victimId === bravoPublicId,
@@ -900,9 +931,30 @@ test('human-only rooms: authenticated lobby, ready gate, reconnect dedupe, zero 
       'common'
     );
     assert.equal(setupHit.damage, 24);
-    assert.equal(setupHit.victimHealth, 1);
+    // 9.3: 200 HP leaves 101 after the 149-damage setup above, so the victim is
+    // walked down to exactly 1 HP for the storm to finish. 30 + 28 + 42 = 100.
+    assert.equal(setupHit.victimHealth, 101);
     assert.equal(setupHit.victimShield, 0);
     assert.equal(setupHit.eliminated, false);
+
+    const setupBurst = await sendCatalogHit(
+      'storm_setup_burst_rifle',
+      'burst_rifle',
+      'epic'
+    );
+    assert.equal(setupBurst.damage, 30);
+    assert.equal(setupBurst.victimHealth, 71);
+    assert.equal(setupBurst.eliminated, false);
+
+    const setupPistol = await sendCatalogHit('storm_setup_pistol', 'pistol', 'epic');
+    assert.equal(setupPistol.damage, 28);
+    assert.equal(setupPistol.victimHealth, 43);
+    assert.equal(setupPistol.eliminated, false);
+
+    const setupHitFinal = await sendCatalogHit('storm_setup_dmr', 'dmr', 'common');
+    assert.equal(setupHitFinal.damage, 42);
+    assert.equal(setupHitFinal.victimHealth, 1);
+    assert.equal(setupHitFinal.eliminated, false);
 
     const stormHit = waitForMessage(
       wsStormB,
@@ -1321,13 +1373,25 @@ test('3.3 four authenticated humans: contested loot, authoritative inventory/rel
     // End the real four-human match using the unchanged server weapon catalogue.
     sockets.forEach((ws,i)=>sendJson(ws,{type:'player_sync',position:{x:i*2,y:80,z:0},isGrounded:true}));
     await new Promise(r=>setTimeout(r,100));
-    const endings = sockets.map(ws=>waitForMessage(ws,m=>m.type==='match_ended',7000));
+    // 9.3: two hits per opponent at sniper cadence needs more headroom than 7s.
+    const endings = sockets.map(ws=>waitForMessage(ws,m=>m.type==='match_ended',25000));
     for(let i=1;i<4;i++) {
-      const hitPromise=waitForMessage(sockets[0],m=>m.type==='server_hit'&&m.victimId===joins[i].selfPlayerId);
+      // 9.3: 200 HP + 50 shield = 250 vs a 226-damage hit, so each opponent needs
+      // two hits. Wait specifically for the eliminating hit.
+      if(i===3) {
+        // A legendary sniper clip holds 5 rounds and six shots are needed, so
+        // reload before the final target.
+        await action(sockets[0],'reload',1);
+        await new Promise(r=>setTimeout(r,2700));
+      }
+      const hitPromise=waitForMessage(sockets[0],m=>m.type==='server_hit'&&m.victimId===joins[i].selfPlayerId&&m.eliminated===true);
       const hitPoint={x:i*2,y:81.7,z:0};
-      sendJson(sockets[0],{type:'fire_weapon',category:'sniper',rarity:'legendary',muzzlePos:{x:0,y:81,z:0},hitPoint});
-      sendJson(sockets[0],{type:'combat_hit',hitId:`four_final_${i}`,targetId:joins[i].selfPlayerId,
-        weaponCategory:'sniper',weaponRarity:'legendary',hitPoint,damage:999999});
+      for(let shot=0;shot<2;shot++){
+        if(shot>0) await new Promise(r=>setTimeout(r,1400));
+        sendJson(sockets[0],{type:'fire_weapon',category:'sniper',rarity:'legendary',muzzlePos:{x:0,y:81,z:0},hitPoint});
+        sendJson(sockets[0],{type:'combat_hit',hitId:`four_final_${i}_${shot}`,targetId:joins[i].selfPlayerId,
+          weaponCategory:'sniper',weaponRarity:'legendary',hitPoint,damage:999999});
+      }
       const hit=await hitPromise;
       assert.equal(hit.damage,226); assert.equal(hit.attackerEliminations,i);
       if(i<3) await new Promise(r=>setTimeout(r,1400));
