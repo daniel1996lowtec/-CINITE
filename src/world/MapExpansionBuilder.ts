@@ -89,6 +89,8 @@ export class MapExpansionBuilder {
   private readonly dummy = new THREE.Object3D();
   private readonly childDummy = new THREE.Object3D();
   private architectureFinalized = false;
+  /** Phase C: shared albedo-detail map, created once and reused. */
+  private sharedSurfaceDetail: THREE.DataTexture | null = null;
 
   private readonly buildingFootprints = EXPANSION_BUILDINGS.map((building) =>
     getBuildingFootprint(building)
@@ -2991,6 +2993,8 @@ export class MapExpansionBuilder {
   }
 
   public buildDetailFoliage(): void {
+    this.sharedSurfaceDetail ??= createArchitectureTextures().detail;
+    const textures = { detail: this.sharedSurfaceDetail };
     let seed = 271828;
     const rand = () => {
       seed = (seed * 48271) % 2147483647;
@@ -3056,7 +3060,7 @@ export class MapExpansionBuilder {
     grassGeo.translate(0, 0.38, 0);
     createInstances(
       grassGeo,
-      new THREE.MeshStandardMaterial({ color: 0xffffff, flatShading: true, roughness: 0.88 }),
+      new THREE.MeshStandardMaterial({ color: 0xffffff, flatShading: true, roughness: 0.88, map: textures.detail }),
       1050,
       4200,
       (x, z, y) => y > 1.7 && y < 12.5 && this.isDetailFoliageClear(x, z, 4.3),
@@ -3070,7 +3074,7 @@ export class MapExpansionBuilder {
     undergrowthGeo.translate(0, 0.28, 0);
     createInstances(
       undergrowthGeo,
-      new THREE.MeshStandardMaterial({ color: 0xffffff, flatShading: true, roughness: 0.9 }),
+      new THREE.MeshStandardMaterial({ color: 0xffffff, flatShading: true, roughness: 0.9, map: textures.detail }),
       430,
       1900,
       (x, z, y) => y > 1.8 && y < 13.5 && this.isDetailFoliageClear(x, z, 4.8),
@@ -3084,7 +3088,7 @@ export class MapExpansionBuilder {
     bushGeo.translate(0, 0.44, 0);
     createInstances(
       bushGeo,
-      new THREE.MeshStandardMaterial({ color: 0xffffff, flatShading: true, roughness: 0.86 }),
+      new THREE.MeshStandardMaterial({ color: 0xffffff, flatShading: true, roughness: 0.86, map: textures.detail }),
       280,
       1300,
       (x, z, y) => y > 1.8 && y < 13.0 && this.isDetailFoliageClear(x, z, 5.0),
@@ -3110,7 +3114,7 @@ export class MapExpansionBuilder {
     pebbleGeo.scale(1.25, 0.52, 1.0);
     createInstances(
       pebbleGeo,
-      new THREE.MeshStandardMaterial({ color: 0xffffff, flatShading: true, roughness: 0.94 }),
+      new THREE.MeshStandardMaterial({ color: 0xffffff, flatShading: true, roughness: 0.94, map: textures.detail }),
       260,
       1400,
       (x, z, y) => y > 0.25 && (y < 2.7 || y > 8.5) && this.isDetailFoliageClear(x, z, 4.1),
@@ -3171,6 +3175,7 @@ export class MapExpansionBuilder {
           materials.add(material);
           if (material.map) textures.add(material.map);
           if (material.roughnessMap) textures.add(material.roughnessMap);
+          if (material.bumpMap) textures.add(material.bumpMap);
         }
       });
       group.clear(); group.removeFromParent();
@@ -3190,17 +3195,22 @@ export class MapExpansionBuilder {
     const cylinderGeo = new THREE.CylinderGeometry(0.5, 0.5, 1, 8);
     const glowGeo = new THREE.IcosahedronGeometry(0.5, 0);
 
+    // Phase C: one shared albedo-detail map and one bump map cover every
+    // instanced wall, roof and prop. Instance colour still drives the hue, so
+    // no building needs its own texture and draw state stays unchanged.
     const standardMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       flatShading: true,
-      roughness: 0.88,
-      metalness: 0.03,
+      roughness: 0.94,
+      metalness: 0.0,
+      envMapIntensity: 0.55,
       roughnessMap: textures.roughness,
+      map: textures.detail,
     });
-    const metalMat = new THREE.MeshStandardMaterial({color:0xffffff, roughness:.42,
-      metalness:.78, envMapIntensity:1.15, roughnessMap:textures.roughness});
-    const paintMat = new THREE.MeshStandardMaterial({color:0xffffff, roughness:.6,
-      metalness:.18, roughnessMap:textures.roughness});
+    const metalMat = new THREE.MeshStandardMaterial({color:0xffffff, roughness:.34,
+      metalness:.86, envMapIntensity:1.3, roughnessMap:textures.roughness});
+    const paintMat = new THREE.MeshStandardMaterial({color:0xffffff, roughness:.62,
+      metalness:.1, roughnessMap:textures.roughness});
     const contactMat = new THREE.MeshBasicMaterial({color:0x0b1220, map:textures.contact,
       transparent:true, opacity:.32, depthWrite:false, polygonOffset:true, polygonOffsetFactor:-1});
     const glassMat = new THREE.MeshStandardMaterial({
