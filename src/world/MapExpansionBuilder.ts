@@ -2211,6 +2211,25 @@ export class MapExpansionBuilder {
       }
     }
     box(doorWidth / 2 + 0.18, 1.75, hd - 0.72, 0.14, 2.9, 1.25, placement.accentColor, { tier: 'detail' });
+
+    // Phase E: a doorway surround for the warehouse entrances, which are
+    // otherwise a bare 5m gap punched through a flat wall. Jambs and a lintel
+    // give the opening a frame and a focal point, so the elevation reads as
+    // designed rather than hollowed out. The jambs sit flush against the
+    // opening edges (never inside it) so the doorway stays clear to walk
+    // through, and they are visual-only: no collider is registered.
+    //
+    // Scoped to warehouses because this world is already at its 300k triangle
+    // budget - see the Phase E notes. A three-box surround costs 36 triangles,
+    // and only ~41 boxes' worth of headroom remains for the whole map.
+    if (kind === 'warehouse') {
+      const jambX = doorWidth / 2 + 0.09;
+      for (const side of [-1, 1]) {
+        box(side * jambX, 1.5, hd + 0.04, 0.18, 3.0, 0.22, 0xf8fafc, { tier: 'detail' });
+      }
+      box(0, 3.05, hd + 0.04, doorWidth + 0.54, 0.2, 0.26, 0xf8fafc, { tier: 'detail' });
+    }
+
     box(0, 0.1, hd + 0.52, doorWidth + 1.1, 0.18, 1.0, concrete);
     const parkingPadWidth = kind === 'shop' || kind === 'warehouse' ? placement.width * 0.82 : doorWidth + 2.2;
     box(0, 0.045, hd + 2.0, parkingPadWidth, 0.09, 3.4, 0x64748b);
@@ -2371,6 +2390,19 @@ export class MapExpansionBuilder {
         rotationY: Math.PI / 4,
       });
       box(0, placement.height + 3.08, 0, 0.5, 0.28, placement.depth * 0.55, placement.accentColor, { tier: 'detail' });
+      // Phase E: a masonry chimney on the gabled houses. Roofs are read from
+      // across the map in this game, and a chimney is the cheapest way to give
+      // a pitched roof a believable silhouette. Tucked off-centre and sunk
+      // into the slope so the base is buried - nothing floats.
+      if (kind === 'house') {
+        // Single box, deliberately: a wider cap would cost another 12
+        // triangles per house and the silhouette reads the same at the
+        // distances players actually shoot from. The base is sunk ~0.5 into
+        // the roof slope so the stack is seated, never floating.
+        box(hw * 0.3, placement.height + 2.7, -hd * 0.16, 0.7, 2.1, 0.7, 0x64748b, {
+          tier: 'detail',
+        });
+      }
     } else {
       if (placement.roof === 'shed') {
         box(0, placement.height + 0.58, 0, placement.width + 0.9, 0.2, placement.depth + 0.9, placement.accentColor, { rotationX: 0.12 });
