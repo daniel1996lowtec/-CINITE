@@ -151,35 +151,97 @@ export class IslandWorld {
       this.patternTextures.set(kind, null);
       return null;
     }
+    // Phase C: readable material patterns instead of bare outlines. The base
+    // stays near-white and only luminance varies, so the wall colour passed in
+    // by each building still controls the hue.
+    const size = 128;
     const canvas = document.createElement('canvas');
-    canvas.width = 64;
-    canvas.height = 64;
+    canvas.width = size;
+    canvas.height = size;
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
 
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, 64, 64);
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.14)';
-    ctx.lineWidth = 2;
+    // Deterministic per-pixel jitter: no Math.random, no per-frame work.
+    let seed = kind === 'wood' ? 1013 : kind === 'stone' ? 2027 : 3041;
+    const rnd = () => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed / 4294967295;
+    };
+    const shade = (base: number, spread: number) => {
+      const v = Math.round(Math.min(255, Math.max(0, base + (rnd() - 0.5) * spread)));
+      return `rgb(${v},${v},${v})`;
+    };
 
-    if (kind === 'wood') {
-      for (let y = 0; y < 64; y += 16) {
-        ctx.strokeRect(0, y, 64, 16);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, size, size);
+
+    if (kind === 'stone') {
+      // Running-bond brick. 8 courses of 16px, 2px mortar, per-brick tone.
+      const course = 16;
+      const brick = 32;
+      for (let row = 0; row < size / course; row++) {
+        const y = row * course;
+        const offset = row % 2 === 0 ? 0 : brick / 2;
+        for (let x = -brick; x < size + brick; x += brick) {
+          const bx = x + offset;
+          ctx.fillStyle = shade(244, 22);
+          ctx.fillRect(bx + 1, y + 1, brick - 2, course - 2);
+        }
+        // Mortar joints sit slightly darker than the brick faces.
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.16)';
+        ctx.fillRect(0, y, size, 1);
       }
-    } else if (kind === 'stone') {
-      for (let row = 0; row < 4; row++) {
-        const y = row * 16;
-        const offset = (row % 2) * 16;
-        for (let x = -16; x < 64; x += 32) {
-          ctx.strokeRect(x + offset, y, 32, 16);
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.10)';
+      for (let row = 0; row < size / course; row++) {
+        const offset = row % 2 === 0 ? 0 : brick / 2;
+        for (let x = -brick; x < size + brick; x += brick) {
+          ctx.fillRect(x + offset, row * course, 1, course);
         }
       }
+    } else if (kind === 'wood') {
+      // Horizontal cladding boards with grain streaks and dark seams.
+      const board = 21;
+      for (let y = 0; y < size; y += board) {
+        ctx.fillStyle = shade(247, 16);
+        ctx.fillRect(0, y, size, board - 1);
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.10)';
+        ctx.lineWidth = 1;
+        for (let g = 0; g < 7; g++) {
+          const gy = y + 3 + rnd() * (board - 6);
+          const gx = rnd() * size;
+          const gw = 18 + rnd() * 46;
+          ctx.beginPath();
+          ctx.moveTo(gx, gy);
+          ctx.lineTo(gx + gw, gy + (rnd() - 0.5) * 1.5);
+          ctx.stroke();
+        }
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.22)';
+        ctx.fillRect(0, y + board - 1, size, 1);
+      }
     } else {
-      ctx.strokeRect(2, 2, 60, 60);
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.18)';
-      for (const c of [8, 54]) {
-        ctx.fillRect(c, 8, 3, 3);
-        ctx.fillRect(c, 54, 3, 3);
+      // Brushed metal panel: seam frame, horizontal grain, corner rivets.
+      ctx.fillStyle = shade(246, 10);
+      ctx.fillRect(0, 0, size, size);
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.16)';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(1, 1, size - 2, size - 2);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
+      ctx.lineWidth = 1;
+      for (let g = 0; g < 40; g++) {
+        const gy = rnd() * size;
+        const gx = rnd() * size * 0.5;
+        ctx.beginPath();
+        ctx.moveTo(gx, gy);
+        ctx.lineTo(gx + 30 + rnd() * 70, gy);
+        ctx.stroke();
+      }
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.20)';
+      for (const c of [9, size - 9]) {
+        for (const r of [9, size - 9]) {
+          ctx.beginPath();
+          ctx.arc(c, r, 2.4, 0, Math.PI * 2);
+          ctx.fill();
+        }
       }
     }
 
@@ -580,11 +642,18 @@ export class IslandWorld {
     const group = new THREE.Group();
     group.position.set(cx, baseY, cz);
 
+    // Phase C: the brick pattern doubles as a shallow bump so courses read as
+    // relief rather than paint. Same cached texture, no extra upload.
+    const wallPattern = this.getPatternTexture('stone');
     const wallMat = new THREE.MeshStandardMaterial({
       color: wallColor,
-      map: this.getPatternTexture('stone'),
+      map: wallPattern,
+      bumpMap: wallPattern,
+      bumpScale: 0.3,
       flatShading: true,
-      roughness: 0.7,
+      roughness: 0.86,
+      metalness: 0.0,
+      envMapIntensity: 0.55,
     });
     const roofMat = new THREE.MeshStandardMaterial({
       color: roofColor,

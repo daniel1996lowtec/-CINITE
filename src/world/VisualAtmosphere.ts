@@ -264,8 +264,59 @@ ${shader.vertexShader}`.replace(
   return material;
 }
 
-/** Small deterministic, world-owned textures: no downloads or frame-time painting. */
-export function createArchitectureTextures(): { roughness: THREE.DataTexture; contact: THREE.DataTexture } {
+/**
+ * Periodic value noise on an integer lattice. Every octave wraps exactly on
+ * the texture period, so the result tiles seamlessly under RepeatWrapping.
+ */
+function periodicValueNoise(size: number, period: number, seed: number): Float32Array {
+  const cells = new Float32Array(period * period);
+  let s = seed >>> 0;
+  for (let i = 0; i < cells.length; i++) {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    cells[i] = s / 4294967295;
+  }
+  const smooth = (t: number) => t * t * (3 - 2 * t);
+  const out = new Float32Array(size * size);
+  for (let y = 0; y < size; y++) {
+    const fy = (y / size) * period;
+    const y0 = Math.floor(fy);
+    const ty = smooth(fy - y0);
+    const y0w = ((y0 % period) + period) % period;
+    const y1w = ((y0 + 1) % period + period) % period;
+    for (let x = 0; x < size; x++) {
+      const fx = (x / size) * period;
+      const x0 = Math.floor(fx);
+      const tx = smooth(fx - x0);
+      const x0w = ((x0 % period) + period) % period;
+      const x1w = ((x0 + 1) % period + period) % period;
+      const n00 = cells[y0w * period + x0w];
+      const n10 = cells[y0w * period + x1w];
+      const n01 = cells[y1w * period + x0w];
+      const n11 = cells[y1w * period + x1w];
+      const nx0 = n00 + (n10 - n00) * tx;
+      const nx1 = n01 + (n11 - n01) * tx;
+      out[y * size + x] = nx0 + (nx1 - nx0) * ty;
+    }
+  }
+  return out;
+}
+
+/**
+ * Small deterministic, world-owned textures: no downloads or frame-time painting.
+ *
+ * `roughness` and `contact` are unchanged from the original release. Phase C
+ * adds two extra surface maps that are shared by every instanced architecture
+ * material, so the cost is two small uploads rather than per-building maps:
+ *   detail — near-white albedo multiply map (concrete mottling + faint
+ *            formwork banding) that lets each instance colour still drive hue.
+ *   bump   — height field derived from the same noise for micro relief.
+ */
+export function createArchitectureTextures(): {
+  roughness: THREE.DataTexture;
+  contact: THREE.DataTexture;
+  detail: THREE.DataTexture;
+  bump: THREE.DataTexture;
+} {
   const size = 32;
   const grain = new Uint8Array(size * size * 4);
   const shadow = new Uint8Array(size * size * 4);
@@ -287,5 +338,53 @@ export function createArchitectureTextures(): { roughness: THREE.DataTexture; co
   const contact = new THREE.DataTexture(shadow,size,size);
   contact.magFilter = contact.minFilter = THREE.LinearFilter;
   contact.needsUpdate = true;
-  return {roughness,contact};
+
+  // --- Phase C surface maps -------------------------------------------------
+  const surfaceSize = 128;
+  const blotch = periodicValueNoise(surfaceSize, 4, 9187);
+  const medium = periodicValueNoise(surfaceSize, 12, 4211);
+  const fine = periodicValueNoise(surfaceSize, 32, 6151);
+
+  const detailData = new Uint8Array(surfaceSize * surfaceSize * 4);
+  const bumpData = new Uint8Array(surfaceSize * surfaceSize * 4);
+  for (let y = 0; y < surfaceSize; y++) {
+    for (let x = 0; x < surfaceSize; x++) {
+      const p = y * surfaceSize + x;
+      const i = p * 4;
+      const noise =
+        blotch[p] * 0.52 + medium[p] * 0.31 + fine[p] * 0.17;
+      // Faint horizontal formwork/shutter lines: +-1.2%, never a visible band.
+      const band = (y % 26) < 1 ? -0.012 : 0;
+      // Kept near white so instance colour still owns the hue; only the
+      // luminance varies, which is what real concrete and plaster do.
+      const value = Math.min(1, Math.max(0.8, 0.865 + noise * 0.135 + band));
+      const channel = Math.round(value * 255);
+      detailData[i] = detailData[i + 1] = detailData[i + 2] = channel;
+      detailData[i + 3] = 255;
+      const height = Math.round(
+        Math.min(1, Math.max(0, noise * 0.85 + 0.075)) * 255
+      );
+      bumpData[i] = bumpData[i + 1] = bumpData[i + 2] = height;
+      bumpData[i + 3] = 255;
+    }
+  }
+
+  const detail = new THREE.DataTexture(detailData, surfaceSize, surfaceSize);
+  detail.wrapS = detail.wrapT = THREE.RepeatWrapping;
+  detail.repeat.set(6, 6);
+  detail.magFilter = THREE.LinearFilter;
+  detail.minFilter = THREE.LinearMipmapLinearFilter;
+  detail.generateMipmaps = true;
+  detail.colorSpace = THREE.SRGBColorSpace;
+  detail.needsUpdate = true;
+
+  const bump = new THREE.DataTexture(bumpData, surfaceSize, surfaceSize);
+  bump.wrapS = bump.wrapT = THREE.RepeatWrapping;
+  bump.repeat.set(6, 6);
+  bump.magFilter = THREE.LinearFilter;
+  bump.minFilter = THREE.LinearMipmapLinearFilter;
+  bump.generateMipmaps = true;
+  bump.needsUpdate = true;
+
+  return {roughness,contact,detail,bump};
 }
