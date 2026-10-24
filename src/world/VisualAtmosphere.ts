@@ -39,7 +39,12 @@ export const STARFIELD_RADIUS = 272;
 export const SUN_DISTANCE = 258;
 
 const SUN_OFFSETS: Record<AtmospherePreset, SunVector> = {
-  day: { x: 115, y: 165, z: 95 },
+  // Phase D: day sun lowered from 47.8deg to 38.9deg elevation at the same
+  // azimuth. A late-afternoon angle gives façades real directional modelling,
+  // longer readable cast shadows and more separation between lit and shaded
+  // planes, without moving the sun across the sky. The visible sun disc and the
+  // shadow-casting light both derive from this vector, so they stay aligned.
+  day: { x: 128, y: 133, z: 106 },
   sunset: { x: 150, y: 75, z: 110 },
   night: { x: -90, y: 150, z: -80 },
 };

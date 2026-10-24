@@ -891,10 +891,13 @@ export class GameEngine {
   }
 
   private setupLighting(): void {
-    this.hemiLight = new THREE.HemisphereLight(0xe0f2fe, 0x16a34a, 0.96);
+    // Phase D: the hemisphere light was carrying most of the illumination,
+    // which is why walls read flat - ambient light has no direction. Shifting
+    // energy from ambient into the key gives surfaces a lit and a shaded side.
+    this.hemiLight = new THREE.HemisphereLight(0xdcefff, 0x16a34a, 0.72);
     this.scene.add(this.hemiLight);
 
-    this.dirLight = new THREE.DirectionalLight(0xfffbeb, 1.54);
+    this.dirLight = new THREE.DirectionalLight(0xffefc8, 1.95);
     const initialSun = getSunOffset('day');
     this.sunOffset.set(initialSun.x, initialSun.y, initialSun.z);
     this.dirLight.position.copy(this.sunOffset);
@@ -1210,17 +1213,22 @@ export class GameEngine {
       }
     } else {
       this.scene.background = new THREE.Color(0x38bdf8);
+      // Phase D: subtle strengthening of aerial perspective only. 0.0019 is a
+      // 5% increase over the shipped 0.0018 - enough to separate distant
+      // scenery from the sea, small enough that a wall at 25m is untouched
+      // (about 0.2% fog at 25m, 1.3% at 60m, 24% at 380m).
       fog.color.setHex(0xcbdde5);
-      fog.density = 0.0018;
+      fog.density = 0.0019;
       this.hemiLight.color.setHex(0xe0f2fe);
       this.hemiLight.groundColor.setHex(0x6b7256);
-      this.hemiLight.intensity = 0.96;
-      this.dirLight.color.setHex(0xfffbeb);
-      this.dirLight.intensity = 1.54;
+      this.hemiLight.color.setHex(0xdcefff);
+      this.hemiLight.intensity = 0.72;
+      this.dirLight.color.setHex(0xffefc8);
+      this.dirLight.intensity = 1.95;
       this.dirLight.position.copy(this.dirLightTarget.position).add(this.sunOffset);
       if (this.fillLight) {
         this.fillLight.color.setHex(0x7dd3fc);
-        this.fillLight.intensity = 0.34;
+        this.fillLight.intensity = 0.3;
       }
     }
   }
